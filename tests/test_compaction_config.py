@@ -3,6 +3,7 @@
 import time
 
 import pytest
+from catalog_harness import resolve
 from model_harness import _MockClientFactory
 
 from minacode import compaction
@@ -369,7 +370,7 @@ def test_deepseek_tool_call_replay_travels_with_the_model_not_the_endpoint():
     direct = ProviderConfig.from_dict({"url": "https://api.deepseek.com/v1", "model": "deepseek-v4-chat"})
     gateway = ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "deepseek-v4-chat"})
 
-    assert direct.resolve().chat_reasoning_history == "tool_calls"
-    assert gateway.resolve().chat_reasoning_history == "tool_calls"
+    assert resolve(direct).chat_reasoning_history == "tool_calls"
+    assert resolve(gateway).chat_reasoning_history == "tool_calls"
     # A model the gateway does not document keeps the generic full-replay default.
-    assert ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "vendor/model"}).resolve().chat_reasoning_history == "all"
+    assert resolve(ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "vendor/model"})).chat_reasoning_history == "all"

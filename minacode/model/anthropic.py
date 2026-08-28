@@ -23,12 +23,7 @@ from minacode.base import (
 )
 from minacode.config import ProviderConfig
 from minacode.image import ImageInputs
-from minacode.providers.catalog import THINKING_BUDGETS
-from minacode.providers.compat import (
-    ResolvedProvider,
-    anthropic_thinking_always_on,
-    anthropic_thinking_params,
-)
+from minacode.providers.compat import ResolvedProvider
 
 if TYPE_CHECKING:
     from anthropic import Anthropic
@@ -44,13 +39,15 @@ def anthropic_params(
     replayable_echo: Callable[[Json, str], bool],
     images: ImageInputs,
     builtin_tools: Callable[[ResolvedProvider | None], list[Json]],
+    apply_request: Callable[[Json, ProviderConfig, ResolvedProvider], Json],
     text_only: bool = False,
 ) -> Json:
     """Assemble the Messages request body from normalized messages and provider settings.
 
     The caller supplies the ModelClient hooks the body depends on: endpoint identity
     (`provider_origin`), the echo replay gate (`replayable_echo`), image content substitution
-    (`images`), and builtin tool schemas (`builtin_tools`). `text_only` is the route's
+    (`images`), builtin tool schemas (`builtin_tools`), and the request-recipe application
+    (`apply_request`, the Anthropic wire's thinking/effort fold). `text_only` is the route's
     image-delivery verdict: raw blocks are suppressed but readable labels and asset paths stay.
     """
     system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
@@ -74,16 +71,12 @@ def anthropic_params(
     if request_tools := [*anthropic_tool_schemas(tools or []), *builtin_tools(resolved)]:
         params["tools"] = request_tools
         params["tool_choice"] = {"type": "auto"}
-    effort = provider.reasoning_effort()
-    thinking_params = anthropic_thinking_params(
-        provider.model,
-        provider.reasoning,
-        effort,
-        manual_thinking_budget(effort, provider.anthropic_output_cap()),
-    )
-    params.update(thinking_params)
-    thinking = thinking_params.get("thinking")
-    thinking_active = anthropic_thinking_always_on(provider.model) or (isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive"))
+    # The generation recipe (messages.manual / messages.adaptive, selected from the catalog by
+    # model version) fills in thinking and output_config; temperature is suppressed while thinking
+    # is active because the API pins it then.
+    params = apply_request(params, provider, resolved)
+    thinking = params.get("thinking")
+    thinking_active = resolved.reasoning_mandatory or (isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive"))
     # Anthropic SDK 1.0 removed the top-level `temperature` parameter; `extra_body` is merged
     # into the wire body by both 0.104.1 and 1.0.0, so the value still goes out the same way.
     if provider.temperature is not None and not thinking_active:
@@ -240,21 +233,6 @@ def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
         }
 
     return [convert(schema) for schema in tools]
-
-
-def manual_thinking_budget(effort: str, max_tokens: int) -> int:
-    """The manual thinking budget for one effort, kept inside the request's own output budget.
-
-    Every host with an integer budget rejects one that is not strictly below the output cap —
-    Anthropic on `max_tokens`, the OpenAI-compatible `enable_thinking` hosts on the
-    `max_completion_tokens` they fold that cap into — so a smaller configured
-    `provider.max_tokens` has to lower the budget with it rather than fail the request. The
-    1,024-token floor is the documented minimum; below that the budget cannot be satisfied at
-    all and the provider's own error is the honest answer.
-    Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
-              https://docs.qwencloud.com/api-reference/chat/openai-chat"""
-    budget = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
-    return max(1024, min(max_tokens - 1024, budget))
 
 
 def reassemble_stream(

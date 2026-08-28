@@ -16,9 +16,11 @@ Layers, from highest to lowest:
                    |
                 image.py
                    |
-      base.py  config.py  providers/compat.py
+      base.py  config.py  providers/compat.py  providers/sync.py
                    |
             providers/catalog.py
+                   |
+            providers/schema.py
 
 Same-layer imports are allowed; cross-layer imports may only point downward.
 prompts.py, cli/hints.py and cli/update.py are leaves: any layer may import them, and their own
@@ -73,6 +75,8 @@ LAYERS = {
     "minacode.providers": 9,
     "minacode.providers.catalog": 10,
     "minacode.providers.compat": 9,
+    "minacode.providers.schema": 11,
+    "minacode.providers.sync": 9,
 }
 # Leaves: any layer may depend on them; their own dependencies are not checked.
 LEAVES = ("minacode.prompts",)

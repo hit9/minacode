@@ -5,6 +5,7 @@ import time
 from types import SimpleNamespace
 
 from agent_harness import call, queue, session
+from catalog_harness import resolve
 from test_agent_turn import _runner
 
 from minacode.base import (
@@ -50,13 +51,13 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
 
 def test_provider_compatibility_and_prompt_cache_key(tmp_path):
     opencode_claude = ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="claude-sonnet", api="auto")
-    assert opencode_claude.resolve().api == "anthropic"
+    assert resolve(opencode_claude).api == "anthropic"
 
     opencode_qwen = ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="qwen3.7-max", api="auto")
-    assert opencode_qwen.resolve().api == "anthropic"
+    assert resolve(opencode_qwen).api == "anthropic"
 
     opencode_deepseek = ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="deepseek-v4-flash", api="auto")
-    resolved = opencode_deepseek.resolve()
+    resolved = resolve(opencode_deepseek)
     assert resolved.api == "chat"
     assert resolved.chat_reasoning == "thinking"
 

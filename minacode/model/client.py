@@ -16,7 +16,6 @@ from json_repair import repair_json
 
 # Aliased because the module name `anthropic` shadows the third-party SDK package of the same
 # name imported inside function bodies.
-import minacode.model.anthropic as anthropic_module
 from minacode.base import (
     HTTP_USER_AGENT,
     MODEL_REQUEST_RETRIES,
@@ -42,10 +41,11 @@ from minacode.image import IMAGE_REFS_KEY, ImageInputs
 from minacode.model import resilience, responses
 from minacode.model.protocol import AnthropicWire, ChatWire, ResponsesWire, WireProtocol
 from minacode.prompts import COMPACTION_REQUEST_EVENT
-from minacode.providers.catalog import THINKING_BUDGETS
 from minacode.providers.compat import (
+    ProviderPolicy,
     ResolvedProvider,
     builtin_tools_issue,
+    bundled_policy,
 )
 
 if TYPE_CHECKING:
@@ -155,6 +155,20 @@ class ModelClient:
             "anthropic": AnthropicWire(self),
         }
 
+    def policy(self) -> ProviderPolicy:
+        """The active catalog policy, or the bundled one before a session is bootstrapped."""
+
+        catalog = self.session.catalog
+        return catalog.policy if catalog is not None else bundled_policy()
+
+    def resolved(self, provider: ProviderConfig) -> ResolvedProvider:
+        return self.policy().resolve(provider)
+
+    def apply_request(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider, *, wire: str) -> Json:
+        """Run the resolved request recipe over a body this client assembled."""
+
+        return self.policy().apply_request(params, provider, resolved, wire=wire)
+
     def cancel(self) -> None:
         self.cancel_requested.set()
         with contextlib.suppress(Exception):
@@ -171,7 +185,7 @@ class ModelClient:
         """
         provider = provider if provider is not None else self.session.config.provider
         credential = hashlib.sha256(provider.key.encode("utf-8")).hexdigest()[:12] if provider.key else "-"
-        return f"{provider.resolve().base_url}/{provider.model.lower()}#{credential}"
+        return f"{self.resolved(provider).base_url}/{provider.model.lower()}#{credential}"
 
     @staticmethod
     def replayable_echo(message: Json, origin: str) -> bool:
@@ -210,7 +224,7 @@ class ModelClient:
     def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         """Estimate the actual protocol payload instead of minacode's normalized history."""
 
-        resolved = self.session.config.provider.resolve()
+        resolved = self.resolved(self.session.config.provider)
         # Measuring a payload must never fail on it: an entry this wire rejects is the request's
         # error to raise, not something that should break the status bar, /status, or resume.
         builtin = self.builtin_tools(resolved, strict=False)
@@ -414,7 +428,7 @@ class ModelClient:
         (config load, /api, the [worker] and [compaction] overrides) and `auto` resolves through
         the catalog to one of them. An unknown key here would be a bug worth raising, not a
         request quietly sent on the wrong wire."""
-        return self._wires[provider.resolve().api]
+        return self._wires[self.resolved(provider).api]
 
     def api_request(
         self,
@@ -483,7 +497,7 @@ class ModelClient:
 
         return OpenAI(
             api_key=provider.key,
-            base_url=provider.resolve().base_url,
+            base_url=self.resolved(provider).base_url,
             timeout=provider.timeout,
             max_retries=0,
             default_headers=self.request_headers(provider),
@@ -493,7 +507,7 @@ class ModelClient:
         provider = provider if provider is not None else self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        url = provider.resolve().base_url.rstrip("/")
+        url = self.resolved(provider).base_url.rstrip("/")
         # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
         from anthropic import Anthropic
 
@@ -555,7 +569,7 @@ class ModelClient:
         entries = provider.builtin_tools
         if not entries:
             return []
-        resolved = resolved or provider.resolve()
+        resolved = resolved or self.resolved(provider)
         issue = builtin_tools_issue(resolved, entries)
         if issue is not None:
             if issue.reason == "wire":
@@ -581,7 +595,7 @@ class ModelClient:
             return ""
         if configured != "auto":
             return configured
-        resolved = provider.resolve()
+        resolved = self.resolved(provider)
         if not resolved.prompt_cache_key:
             return ""
         tool_names: list[str] = []
@@ -603,47 +617,15 @@ class ModelClient:
         return "minacode-" + digest[:24]
 
     def apply_provider_params(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider | None = None) -> None:
-        resolved = resolved or provider.resolve()
-        chat_reasoning = resolved.chat_reasoning
-        reasoning_enabled = provider.reasoning != "off"
-        effort = provider.reasoning_effort()
+        resolved = resolved or self.resolved(provider)
+        # Provider-declared extra body first, so the recipe engine's path merge keeps the user's
+        # configured fields authoritative on key conflicts outside the managed path.
+        if provider.extra_body:
+            params["extra_body"] = {**provider.extra_body, **(params.get("extra_body") or {})}
         # Some native APIs fix or reject temperature for all or part of their thinking modes.
         if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
-        extra: Json = {}
-        if reasoning_enabled and chat_reasoning == "reasoning":
-            # The resolved effort, like every other control below: a host that documents a reduced
-            # scale must fold this one too, instead of the fold silently applying to its siblings.
-            extra["reasoning"] = {"effort": resolved.reasoning_effort or effort}
-        elif chat_reasoning == "reasoning_effort":
-            if value := resolved.reasoning_effort:
-                params["reasoning_effort"] = value
-        elif chat_reasoning == "thinking":
-            extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
-            if reasoning_enabled:
-                params["reasoning_effort"] = resolved.reasoning_effort
-        elif chat_reasoning in ("thinking_toggle", "thinking_effort"):
-            extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
-            if reasoning_enabled and chat_reasoning == "thinking_effort":
-                params["reasoning_effort"] = resolved.reasoning_effort
-        elif chat_reasoning == "enable_thinking":
-            extra["enable_thinking"] = reasoning_enabled
-            if reasoning_enabled:
-                # An unset max_tokens leaves the cap to the host, which sizes its own budget under it.
-                extra["thinking_budget"] = (
-                    anthropic_module.manual_thinking_budget(effort, provider.max_tokens)
-                    if provider.max_tokens > 0
-                    else THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
-                )
-        # Provider-declared extensions (e.g. Qianwen web search) pass through verbatim; minacode's
-        # own reasoning fields are layered on top so they stay authoritative on key conflicts.
-        extra_body = {**provider.extra_body, **extra}
-        configured_thinking = provider.extra_body.get("thinking")
-        managed_thinking = extra.get("thinking")
-        if isinstance(configured_thinking, dict) and isinstance(managed_thinking, dict):
-            extra_body["thinking"] = {**configured_thinking, **managed_thinking}
-        if extra_body:
-            params["extra_body"] = extra_body
+        self.apply_request(params, provider, resolved, wire=resolved.api)
 
     def assistant_message(self, message: Any) -> Json:
         data: Json = {"role": "assistant", "content": self.message_field(message, "content")}

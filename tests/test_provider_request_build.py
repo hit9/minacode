@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from catalog_harness import resolve
 from test_core_logic import session
 
 from minacode.base import (
@@ -119,7 +120,7 @@ def test_strict_tools_off_path_emits_non_strict_schema():
 
 def test_strict_tools_gating_and_beta_routing():
     def resolved(url, strict=False):
-        return ProviderConfig(url=url, strict_tools=strict).resolve()
+        return resolve(ProviderConfig(url=url, strict_tools=strict))
 
     # Unsupported hosts never activate strict, even when requested, and stay on their endpoint.
     for url in ("https://openrouter.ai/api/v1", "https://api.together.xyz/v1", "http://localhost:1234/v1"):
@@ -139,7 +140,7 @@ def test_strict_tools_gating_and_beta_routing():
 
 def test_resolved_base_url_removes_known_protocol_suffixes():
     def p(url):
-        return ProviderConfig(url=url).resolve().base_url
+        return resolve(ProviderConfig(url=url)).base_url
 
     assert p("https://api.openai.com/v1/chat/completions") == "https://api.openai.com/v1"
     assert p("https://api.openai.com/v1/responses") == "https://api.openai.com/v1"
@@ -150,15 +151,15 @@ def test_resolved_base_url_removes_known_protocol_suffixes():
 
 def test_provider_api_auto_recognizes_explicit_endpoint_suffixes():
     assert ProviderConfig.from_dict({"api": "responses"}).api == "responses"
-    assert ProviderConfig(url="https://api.openai.com/v1/responses").resolve().api == "responses"
-    assert ProviderConfig(url="https://api.openai.com/v1/chat/completions").resolve().api == "chat"
-    assert ProviderConfig(url="https://api.anthropic.com/v1/messages").resolve().api == "anthropic"
-    assert ProviderConfig(url="https://api.openai.com/v1").resolve().api == "chat"
-    assert ProviderConfig(url="https://api.openai.com/v1/responses", api="chat").resolve().api == "chat"
+    assert resolve(ProviderConfig(url="https://api.openai.com/v1/responses")).api == "responses"
+    assert resolve(ProviderConfig(url="https://api.openai.com/v1/chat/completions")).api == "chat"
+    assert resolve(ProviderConfig(url="https://api.anthropic.com/v1/messages")).api == "anthropic"
+    assert resolve(ProviderConfig(url="https://api.openai.com/v1")).api == "chat"
+    assert resolve(ProviderConfig(url="https://api.openai.com/v1/responses", api="chat")).api == "chat"
 
 def test_openai_responses_path_supports_strict_tools():
     provider = ProviderConfig(url="https://api.openai.com/v1", api="responses", strict_tools=True)
-    assert provider.resolve().strict_tools_active is True
+    assert resolve(provider).strict_tools_active is True
 
 def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     before = {name: json.dumps(tool.params_schema()) for name, tool in TOOL_REGISTRY.items()}

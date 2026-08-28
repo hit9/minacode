@@ -13,7 +13,8 @@ from dataclasses import replace
 import pytest
 
 from minacode.config import ProviderConfig
-from minacode.providers.catalog import PROVIDER_CATALOG
+from minacode.providers.catalog import decode_bundled
+from minacode.providers.compat import bundled_policy
 
 EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
@@ -43,7 +44,7 @@ MATRIX = (
     ("https://opencode.ai/zen/v1", "glm-5.2", "chat", "thinking_effort", "all", (None, "high", "high", "high", "high", "max", "max")),
     ("https://opencode.ai/zen/v1", "glm-5", "chat", "thinking_toggle", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
     ("https://opencode.ai/zen/v1", "kimi-k3", "chat", "reasoning_effort", "all", ("low", "low", "low", "high", "high", "max", "max")),
-    ("https://opencode.ai/zen/v1", "claude-sonnet-4-6", "anthropic", "off", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
+    ("https://opencode.ai/zen/v1", "claude-sonnet-4-6", "anthropic", "off", "all", (None, "low", "low", "medium", "high", "xhigh", "max")),
     ("https://api.deepseek.com", "deepseek-v4-flash", "chat", "thinking", "tool_calls", (None, "low", "low", "high", "high", "max", "max")),
     ("https://api.deepseek.com", "deepseek-chat", "chat", "thinking", "tool_calls", (None, "low", "low", "high", "high", "xhigh", "max")),
     (
@@ -102,15 +103,16 @@ MATRIX = (
     ("https://api.z.ai/api/paas/v4", "glm-4.5", "chat", "thinking_toggle", "current_turn", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
     ("https://open.bigmodel.cn/api/paas/v4", "glm-5.2", "chat", "thinking_effort", "current_turn", (None, "high", "high", "high", "high", "max", "max")),
     ("https://open.bigmodel.cn/api/paas/v4", "glm-5", "chat", "thinking_toggle", "current_turn", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
-    # Anthropic efforts are not folded through this path at all: the Messages wire derives its own
-    # thinking parameters from the model version (see providers/compat.anthropic_thinking_params).
+    # Claude 4.6 folds through resolve() like every model: its catalog rule narrows the scale to
+    # low..max (minimal folds to low), and the adaptive-xhigh-as-max recipe maps xhigh to max on
+    # the wire, so the sent effort matches what the Messages wire used to derive itself.
     (
         "https://api.anthropic.com/v1/messages",
         "claude-sonnet-4-6",
         "anthropic",
         "off",
         "all",
-        (None, "minimal", "low", "medium", "high", "xhigh", "max"),
+        (None, "low", "low", "medium", "high", "xhigh", "max"),
     ),
     # Families the catalog knows without knowing their endpoints: neither api.x.ai nor Google's
     # OpenAI-compatible host has a provider entry, and the models resolve anyway.
@@ -158,26 +160,35 @@ def test_catalogued_models_resolve_to_their_recorded_wire_settings(case):
     url, model, api, chat_reasoning, history, sent = case
     provider = ProviderConfig(url=url, key="k", model=model)
 
-    resolved = provider.resolve()
+    policy = bundled_policy()
+    resolved = policy.resolve(provider)
     assert (resolved.api, resolved.chat_reasoning, resolved.chat_reasoning_history) == (api, chat_reasoning, history)
-    assert tuple(replace(provider, reasoning=effort).resolve().reasoning_effort for effort in EFFORTS) == sent
+    assert tuple(policy.resolve(replace(provider, reasoning=effort)).reasoning_effort for effort in EFFORTS) == sent
 
 def test_anything_that_narrows_a_menu_cites_a_page_for_it():
     """`/reason` shows this text under a shortened list, so it is the user's only account of why
     their model has three levels instead of six. A rule that narrows without one leaves that
     question unanswered on screen — and an entry nobody can source is one nobody can check."""
-    from minacode.providers.catalog import MODEL_TRAITS, PROVIDER_CATALOG
+    snapshot = decode_bundled()
 
-    narrowing: list[dict] = [dict(trait) for trait in MODEL_TRAITS if trait.get("reasoning_effort_levels") or trait.get("mandatory_reasoning")]
-    for data in PROVIDER_CATALOG.values():
-        narrowing.extend(dict(rule) for rule in data.get("reasoning_effort_level_rules", ()))
+    narrowing = [
+        rule
+        for rule in snapshot.model_rules
+        if "reasoning.levels" in rule.set or rule.set.get("reasoning.mandatory")
+    ]
+    for provider in snapshot.providers:
+        narrowing.extend(
+            rule
+            for rule in provider.model_rules
+            if "reasoning.levels" in rule.set or rule.set.get("reasoning.mandatory")
+        )
 
     assert narrowing
     for entry in narrowing:
-        selector = entry.get("pattern") or "/".join(entry.get("prefixes", ()))
-        why = entry.get("why", "")
+        selector = "/".join(entry.selector.prefixes) or entry.id
+        why = entry.why
         assert why, selector
-        assert entry.get("evidence", "").startswith("https://"), selector
+        assert any(str(evidence).startswith("https://") for evidence in entry.evidence), selector
         # One line, and short enough to sit under a modal list on an ordinary terminal.
         assert "\n" not in why and len(why) <= 80, selector
         # It says what the endpoint does, not which levels survived: a restated list is a second
@@ -191,5 +202,5 @@ def test_every_catalogued_host_appears_in_the_matrix():
     """A new host must state what its models resolve to, or the net has a hole the size of it."""
     covered = {url.split("/")[2] for url, *_ in MATRIX}
 
-    for data in PROVIDER_CATALOG.values():
-        assert any(host in domain or domain.endswith(host) for host in data["hosts"] for domain in covered), data["hosts"]
+    for provider in decode_bundled().providers:
+        assert any(host in domain or domain.endswith(host) for host in provider.hosts for domain in covered), provider.hosts

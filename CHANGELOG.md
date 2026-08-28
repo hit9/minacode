@@ -24,6 +24,10 @@
   the entry into worker and compaction requests, and are listed by `/config`. Values are strings or
   plain integers; `key` still supplies authentication.
 
+- `/catalog` shows which compatibility catalog this session resolves against: its version, whether
+  it is the bundled copy or a synced one, and the last sync result. `/catalog sync` checks for a
+  newer catalog immediately instead of waiting for the daily background refresh.
+
 ### Changed
 
 - A well-known model now behaves the same wherever it is served. How a model takes reasoning — the

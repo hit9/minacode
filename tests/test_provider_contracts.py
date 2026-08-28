@@ -9,7 +9,7 @@ from model_harness import _AnthropicMockClientFactory, _MockClientFactory, _sess
 from provider_cases import PROVIDER_CONTRACTS, ProviderContract
 
 from minacode.model import ModelClient
-from minacode.providers.catalog import PROVIDER_CATALOG
+from minacode.providers.catalog import decode_bundled
 
 
 def _chat_response(model: str) -> dict:
@@ -60,7 +60,7 @@ def _assert_subset(actual: dict, expected: dict) -> None:
 def test_provider_catalog_entries_have_offline_wire_contracts():
     covered = {case.provider for case in PROVIDER_CONTRACTS}
 
-    assert set(PROVIDER_CATALOG) <= covered
+    assert {provider.id.removeprefix("provider.") for provider in decode_bundled().providers} <= covered
 
 
 @pytest.mark.parametrize("case", PROVIDER_CONTRACTS, ids=lambda case: case.id)
@@ -75,7 +75,7 @@ def test_provider_wire_contracts_are_serialized_by_the_real_sdks(tmp_path, monke
         stream=False,
     )
     model = ModelClient(session)
-    resolved = session.config.provider.resolve()
+    resolved = session.catalog.policy.resolve(session.config.provider)
 
     assert resolved.api == case.expected_api
     if case.expected_api == "anthropic":

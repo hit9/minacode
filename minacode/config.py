@@ -10,22 +10,16 @@ import sys
 import tomllib
 from dataclasses import dataclass, field, replace
 from typing import ClassVar
-from urllib.parse import urlparse
 
 from minacode.base import ConfigError, Json, builtin_function_names
-from minacode.providers.catalog import REASONING_LEVELS
-from minacode.providers.compat import (
-    COMPATIBILITY_PROFILES,
-    CompatibilityProfile,
-    ResolvedProvider,
-    compatibility_for_host,
-    is_text_only_model,
-    nearest_supported_effort,
-)
+from minacode.providers.compat import bundled_policy
 
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
-REASONING_CHOICES = ("off", *REASONING_LEVELS)
+# The normalized effort scale is catalog data (defaults.effort_order); the universal choice list
+# for input validation and UI defaults is compiled from the bundled snapshot so config parsing
+# needs no cache or network. The active session policy offers per-model choices at runtime.
+REASONING_CHOICES = ("off", *bundled_policy().effort_order)
 CHAT_REASONING_CHOICES = (
     "auto",
     "off",
@@ -120,8 +114,6 @@ class ModelOverride:
 
 @dataclass
 class ProviderConfig:
-    COMPATIBILITY: ClassVar[dict[str, CompatibilityProfile]] = COMPATIBILITY_PROFILES
-
     url: str = ""
     key: str = ""
     model: str = ""
@@ -258,50 +250,6 @@ class ProviderConfig:
         model = model or self.model
         return next((override.reasoning_levels for override in self.model_overrides if override.matches(model)), ())
 
-    def supported_efforts(self, model: str = "") -> tuple[str, ...]:
-        """The effort levels this model accepts — what `/reason` offers, and all it offers.
-
-        A configured declaration wins, then the catalog, and a model neither knows anything about
-        keeps minacode's full scale: unknown means unconstrained, not empty. Offering exactly this
-        is what removed the request-time fold — a level that cannot be picked never has to be
-        rewritten on the way out."""
-        model = (model or self.model).lower()
-        if declared := self.declared_levels(model):
-            return declared
-        host = (urlparse(self.url.rstrip("/")).hostname or "").lower()
-        return compatibility_for_host(host, self.COMPATIBILITY).supported_efforts(model) or REASONING_LEVELS
-
-    def reasoning_choices(self, model: str = "") -> tuple[str, ...]:
-        """Everything `/reason` may offer for this model.
-
-        `off` is among them unless the model documents that it always reasons — Grok, Kimi K3,
-        GLM-5.3. Listing it there would be the menu promising something the endpoint does not do,
-        which is the same fault as offering a level the model has no spelling for."""
-        model = (model or self.model).lower()
-        host = (urlparse(self.url.rstrip("/")).hostname or "").lower()
-        mandatory = not self.declared_levels(model) and compatibility_for_host(host, self.COMPATIBILITY).reasoning_is_mandatory(model)
-        return self.supported_efforts(model) if mandatory else ("off", *self.supported_efforts(model))
-
-    def effort_scale_source(self, model: str = "") -> tuple[str, str]:
-        """Why `/reason` offers what it offers, as (one line, page) — empty when it offers the
-        default scale and there is nothing to account for."""
-        model = (model or self.model).lower()
-        if self.declared_levels(model):
-            return "declared for this model in your config", ""
-        host = (urlparse(self.url.rstrip("/")).hostname or "").lower()
-        return compatibility_for_host(host, self.COMPATIBILITY).effort_source(model)
-
-    def normalized_reasoning(self, model: str = "") -> str:
-        """This entry's effort, moved onto `model`'s choices if it is not already among them.
-
-        Includes `off` moving to the weakest level on a model that always reasons: the request
-        would reason regardless, so leaving the setting on `off` would mean the session showing an
-        effort the model is not spending."""
-        choices = self.reasoning_choices(model)
-        if self.reasoning == "off":
-            return "off" if "off" in choices else choices[0]
-        return nearest_supported_effort(self.reasoning_effort(), self.supported_efforts(model))
-
     def missing_fields(self) -> list[str]:
         """The required fields this entry leaves empty. An entry missing any of them cannot serve a
         request, whichever role it is filling — the active provider, or the one `[compaction]`
@@ -312,66 +260,6 @@ class ProviderConfig:
         """Declared builtin functions, which the runner answers instead of rejecting as unknown.
         Evidence: https://platform.kimi.ai/docs/guide/use-web-search"""
         return builtin_function_names(self.builtin_tools)
-
-    def resolve(self) -> ResolvedProvider:
-        """Fold explicit configuration and documented compatibility into one request policy."""
-
-        url = self.url.rstrip("/").removesuffix("/chat/completions").removesuffix("/responses").removesuffix("/messages")
-        host = (urlparse(url).hostname or "").lower()
-        profile = compatibility_for_host(host, self.COMPATIBILITY)
-        model = self.model.lower()
-
-        api = self.api
-        if api == "auto":
-            path = urlparse(self.url.rstrip("/")).path
-            suffix_api = next(
-                (value for suffix, value in (("/responses", "responses"), ("/messages", "anthropic"), ("/chat/completions", "chat")) if path.endswith(suffix)),
-                None,
-            )
-            api = suffix_api or profile.rule_value(profile.api_rules, model) or "chat"
-
-        chat_reasoning = self.chat_reasoning
-        if chat_reasoning == "auto":
-            chat_reasoning = profile.chat_reasoning_for(model)
-
-        if self.reasoning == "off":
-            reasoning_effort = profile.reasoning_off_value(model)
-            if api == "responses":
-                reasoning_effort = profile.reasoning_off_value(model, responses=True) or reasoning_effort
-        else:
-            # Sent as chosen. `/reason` only offers what this model accepts and a model switch
-            # moves a stored effort onto the new scale, so by the time a request is built the
-            # effort is already one this model takes -- the last-resort move here is for an entry
-            # constructed directly, never for a session that has been through either path.
-            reasoning_effort = nearest_supported_effort(self.reasoning_effort(), self.supported_efforts(model))
-
-        suppress_temperature = profile.suppress_temperature or any(model.startswith(prefix) for prefix in profile.suppress_temperature_models)
-        if not suppress_temperature:
-            reasoning_enabled = self.reasoning != "off"
-            suppress_temperature = reasoning_enabled and chat_reasoning in ("thinking", "enable_thinking")
-
-        strict_tools_active = self.strict_tools and profile.strict_tools and api in ("chat", "responses")
-        if strict_tools_active and profile.strict_beta and not url.endswith("/beta"):
-            url += "/beta"
-
-        return ResolvedProvider(
-            api=api,
-            base_url=url,
-            host=host,
-            chat_reasoning=chat_reasoning,
-            chat_reasoning_history=profile.chat_reasoning_history_for(model),
-            reasoning_effort=reasoning_effort,
-            responses_reasoning=profile.responses_reasoning_models is None or any(model.startswith(prefix) for prefix in profile.responses_reasoning_models),
-            suppress_temperature=suppress_temperature,
-            prompt_cache_key=profile.prompt_cache_key,
-            strict_tools_active=strict_tools_active,
-            builtin_tools_by_wire=profile.builtin_tools_by_wire,
-            json_response_format=profile.json_response_format,
-            text_only=is_text_only_model(model, profile),
-        )
-
-    def reasoning_effort(self) -> str:
-        return self.reasoning if self.reasoning in REASONING_LEVELS or self.reasoning in self.declared_levels() else "medium"
 
     def output_token_budget(self) -> int:
         return self.max_tokens or DEFAULT_OUTPUT_RESERVE_TOKENS

@@ -67,7 +67,7 @@ dev = [
 packages = ["minacode", "minacode.builtin_skills", "minacode.cli", "minacode.model", "minacode.mcp", "minacode.providers", "minacode.session", "minacode.tools", "minacode.tui"]
 
 [tool.setuptools.package-data]
-minacode = ["builtin_skills/*/SKILL.md"]
+minacode = ["builtin_skills/*/SKILL.md", "providers/catalog.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

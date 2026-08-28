@@ -1,182 +1,98 @@
-"""Compile provider/model catalog data and resolve protocol compatibility.
+"""Compile a catalog snapshot and resolve protocol compatibility.
 
-The catalog describes documented host/model differences. This module applies generic matching and
-effort fallback; Chat, Responses, and Anthropic paths remain responsible for their wire formats.
+``catalog.json`` describes documented host/model differences. This module applies generic matching
+and effort fallback, then folds explicit config, provider overlays, and generic defaults into one
+request policy (``ProviderPolicy.resolve``) and applies request recipes (``RequestRuleEngine``).
+Chat, Responses, and Anthropic paths remain responsible for their wire formats; the policy only
+answers what the request body must carry.
 
-Model facts and endpoint facts are matched separately and meet here. For every reasoning field the
-order is:
-
-    this host's model rules  >  the model's trait  >  this host's plain value
-
-A host rule is the narrowest statement, so it wins. A trait beats the host's plain value because
-that value is the host's fallback for models it has nothing specific to say about. And a host that
-normalizes reasoning takes no traits at all -- see ``CompatibilityProfile.model_traits``.
+Nothing here names a provider or model; every fact lives in the JSON snapshot. The Python left
+behind is the generic part: selector matching, effort fallback, precedence folding, and the
+whitelisted recipe interpreter.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, cast
+from functools import lru_cache
+from typing import TYPE_CHECKING, Literal, Protocol, cast
+from urllib.parse import urlparse
 
-from .catalog import (
-    ANTHROPIC_MODELS,
-    CANONICAL_VENDORS,
-    MODEL_TRAITS,
-    PROVIDER_CATALOG,
-    REASONING_LEVELS,
-    TEXT_ONLY_MODEL_RULES,
-    BuiltinToolRuleData,
-    ModelEffortRuleData,
-    ModelRuleData,
-    ModelTraitData,
-    ProviderData,
+from .catalog import decode_bundled
+from .schema import (
+    CatalogSnapshot,
+    PolicyRule,
+    ProviderRule,
+    RecipeCondition,
+    RecipeValue,
+    RequestRecipe,
 )
 
-
-@dataclass(frozen=True)
-class ModelMatch:
-    """The model selector every catalog rule shares: family prefixes or a documented pattern."""
-
-    prefixes: tuple[str, ...] = ()
-    pattern: str = ""
-
-    def matches(self, model: str) -> bool:
-        return any(model.startswith(prefix) for prefix in self.prefixes) or bool(self.pattern and re.match(self.pattern, model))
+Json = dict[str, object]
 
 
-@dataclass(frozen=True)
-class ModelRule(ModelMatch):
-    """A value selected by model-family prefixes or a documented version pattern."""
+def _raw_condition(when: Mapping[str, object]) -> RecipeCondition:
+    """Compile a raw ``when`` mapping (step or case) into the schema's condition form."""
 
-    value: str = ""
-
-
-@dataclass(frozen=True)
-class ModelEffortRule(ModelMatch):
-    """Supported normalized efforts selected by model family."""
-
-    levels: tuple[str, ...] = ()
-    why: str = ""
-    evidence: str = ""
-
-
-@dataclass(frozen=True)
-class ModelTrait(ModelMatch):
-    """How one model family takes reasoning, wherever it is served.
-
-    These facts belong to the model, so they are matched on the model name alone and apply on
-    every host: `deepseek-v4-flash` wants thinking.type and its own effort scale whether it comes
-    from api.deepseek.com, a gateway, or a self-hosted proxy. Before this existed the same data sat
-    inside host entries that each had to claim it by name, which meant an endpoint the catalog had
-    never heard of got nothing at all — the common case for a model served by many gateways."""
-
-    chat_reasoning: str = ""
-    chat_reasoning_history: str = ""
-    reasoning_effort_levels: tuple[str, ...] = ()
-    reasoning_effort_off: str = ""
-    mandatory_reasoning: bool = False
-    why: str = ""
-    evidence: str = ""
+    eq: dict[str, object] = {}
+    contains: dict[str, tuple[object, ...]] = {}
+    present: dict[str, bool] = {}
+    for key, condition in when.items():
+        if isinstance(condition, dict):
+            if "in" in condition:
+                contains[key] = tuple(condition["in"])
+            if "present" in condition:
+                present[key] = bool(condition["present"])
+            if "eq" in condition:
+                eq[key] = condition["eq"]
+        else:
+            eq[key] = condition
+    return RecipeCondition(eq=eq, contains=contains, present=present)
 
 
-@dataclass(frozen=True)
-class CompatibilityProfile:
-    """Only the documented ways a host differs from generic protocol behavior."""
+# ---------------------------------------------------------------------------
+# Generic effort fallback (the only Python between a stored effort and the wire)
+# ---------------------------------------------------------------------------
 
-    api_rules: tuple[ModelRule, ...] = ()
-    chat_reasoning: str | None = None
-    chat_reasoning_rules: tuple[ModelRule, ...] = ()
-    chat_reasoning_history: str = "all"
-    chat_reasoning_history_rules: tuple[ModelRule, ...] = ()
-    reasoning_effort_levels: tuple[str, ...] = ()
-    reasoning_effort_level_rules: tuple[ModelEffortRule, ...] = ()
-    reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
-    responses_reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
-    responses_reasoning_models: tuple[str, ...] | None = None
-    prompt_cache_key: bool = True
-    # Chat-Completions `response_format={"type":"json_object"}`. Opt-in, not a default: an
-    # OpenAI-compatible gateway that does not implement it answers 400, and the only caller is
-    # compaction, whose failure is a silent downgrade to deterministic trimming. Off is the safe
-    # unknown -- the prompt reminder and the retry still apply everywhere.
-    json_response_format: bool = False
-    strict_tools: bool = False
-    strict_beta: bool = False
-    suppress_temperature: bool = False
-    suppress_temperature_models: tuple[str, ...] = ()
-    # Provider-side tool policy: which resolved wires may carry which provider-native JSON
-    # subsets. ``None`` keeps generic pass-through for unknown hosts; an empty mapping means no
-    # wire accepts tools.
-    builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None = None
-    # Documented text-only model families (static evidence, see catalog.TEXT_ONLY_MODEL_RULES).
-    # A route matching one of these must never be sent a raw image; anything else stays unknown
-    # and is tried on the main model.
-    text_only_rules: tuple[ModelRule, ...] = ()
-    # Model-keyed reasoning knowledge, carried by every profile including the empty one an unknown
-    # host resolves to. Precedence against this host's own settings, per field, is:
-    #
-    #   this host's model rules  >  the model's trait  >  this host's plain value
-    #
-    # A host rule is the most specific statement available, so it wins. A trait beats the host's
-    # plain value because that value is the host's fallback for models it has nothing specific to
-    # say about -- `moonshot.ai` replays only the current turn, except for the K3 family, whose
-    # own rule says otherwise. A host that re-encodes reasoning instead of passing each model's
-    # native spelling through opts out entirely (`normalizes_reasoning`), because for it no
-    # per-field precedence is right: OpenRouter would take DeepSeek's thinking.type and send it
-    # to an endpoint that documents only its own reasoning object.
-    model_traits: tuple[ModelTrait, ...] = ()
 
-    def trait(self, model: str) -> ModelTrait | None:
-        return next((trait for trait in self.model_traits if trait.matches(model)), None)
+def nearest_reasoning_effort(effort: str, supported: tuple[str, ...], effort_order: tuple[str, ...]) -> str:
+    """Return the closest supported normalized effort, preferring the higher level on a tie.
 
-    def effort_source(self, model: str) -> tuple[str, str]:
-        """Why this model's scale is what it is, and the page it came from.
+    ``effort_order`` is the catalog's normalized scale, so the rank comparison itself is data-driven.
+    """
 
-        Empty when nothing narrowed the scale — there is then nothing to explain. The source is
-        whichever statement won: a host rule outranks the model's trait, the same order the scale
-        itself resolves in, so the citation always belongs to the rule the user is looking at."""
+    if effort not in effort_order:
+        return effort
+    ranks = {level: rank for rank, level in enumerate(effort_order)}
+    candidates = tuple(level for level in supported if level in ranks)
+    if not candidates:
+        return effort
+    target = ranks[effort]
+    return min(candidates, key=lambda level: (abs(ranks[level] - target), -ranks[level]))
 
-        if rule := next((rule for rule in self.reasoning_effort_level_rules if rule.matches(model)), None):
-            return rule.why, rule.evidence
-        trait = self.trait(model)
-        return (trait.why, trait.evidence) if trait else ("", "")
 
-    def reasoning_is_mandatory(self, model: str) -> bool:
-        trait = self.trait(model)
-        return bool(trait and trait.mandatory_reasoning)
+def nearest_supported_effort(effort: str, levels: tuple[str, ...], effort_order: tuple[str, ...]) -> str:
+    """Move an effort onto a model's own scale, so a stored choice is never one it cannot take.
 
-    @staticmethod
-    def rule_value(rules: tuple[ModelRule, ...], model: str) -> str | None:
-        return next((rule.value for rule in rules if rule.matches(model)), None)
+    This runs when the scale changes under a stored effort -- a ``/model`` switch, a config written
+    against a different model -- and not on the way to the provider. What is offered is what a model
+    accepts, so a chosen effort is already on the scale and reaches the wire as written; a request
+    that quietly sent something other than the level on screen was the thing worth removing.
 
-    def supported_efforts(self, model: str) -> tuple[str, ...]:
-        """The effort scale for this model: host rule, else the model's trait, else the host's own."""
+    A scale of names minacode does not recognize has no comparable order, so an effort off it lands
+    on the middle entry rather than on a guessed rank.
+    """
 
-        if rule := next((rule for rule in self.reasoning_effort_level_rules if rule.matches(model)), None):
-            return rule.levels
-        trait = self.trait(model)
-        return (trait.reasoning_effort_levels if trait and trait.reasoning_effort_levels else ()) or self.reasoning_effort_levels
+    if not levels or effort in levels:
+        return effort
+    nearest = nearest_reasoning_effort(effort, levels, effort_order)
+    return nearest if nearest in levels else levels[len(levels) // 2]
 
-    def reasoning_effort_value(self, model: str, effort: str) -> str:
-        return nearest_reasoning_effort(effort, self.supported_efforts(model))
 
-    def reasoning_off_value(self, model: str, *, responses: bool = False) -> str | None:
-        """The wire spelling of "do not think" for this model, or None when none is documented."""
-
-        rules = self.responses_reasoning_effort_off_rules if responses else self.reasoning_effort_off_rules
-        if value := self.rule_value(rules, model):
-            return value
-        trait = self.trait(model)
-        return (trait.reasoning_effort_off or None) if trait else None
-
-    def chat_reasoning_for(self, model: str) -> str:
-        trait = self.trait(model)
-        return self.rule_value(self.chat_reasoning_rules, model) or (trait.chat_reasoning if trait else "") or self.chat_reasoning or "off"
-
-    def chat_reasoning_history_for(self, model: str) -> str:
-        trait = self.trait(model)
-        return self.rule_value(self.chat_reasoning_history_rules, model) or (trait.chat_reasoning_history if trait else "") or self.chat_reasoning_history
+# ---------------------------------------------------------------------------
+# Compiled resolution result and builtin-tool feedback
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -193,13 +109,19 @@ class ResolvedProvider:
     suppress_temperature: bool
     prompt_cache_key: bool
     strict_tools_active: bool
-    builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None = None
+    builtin_tools_by_wire: Mapping[str, tuple[dict[str, object], ...]] | None = None
     # Defaulted, and last: an unknown or hand-built provider must land on "no constrained
     # decoding" rather than fail to construct.
     json_response_format: bool = False
     # Static text-only evidence folded from the catalog. Learned session evidence lives in the
     # session image-routing state and is combined at delivery time; this is only the catalog half.
     text_only: bool = False
+    # The request recipe chosen for this model (see request_recipes), and whether the model is
+    # documented as always reasoning. ``reasoning_mandatory`` gates recipe branches that must not
+    # turn thinking off, and drives temperature suppression on wires that pin it.
+    reasoning_recipe: str = "off"
+    reasoning_mandatory: bool = False
+    catalog_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -260,212 +182,563 @@ def builtin_tools_issue(resolved: ResolvedProvider, entries: tuple[Mapping[str, 
     return None
 
 
-def nearest_reasoning_effort(effort: str, supported: tuple[str, ...]) -> str:
-    """Return the closest supported normalized effort, preferring the higher level on a tie."""
-
-    if effort not in REASONING_LEVELS:
-        return effort
-    ranks = {level: rank for rank, level in enumerate(REASONING_LEVELS)}
-    candidates = tuple(level for level in supported if level in ranks)
-    if not candidates:
-        return effort
-    target = ranks[effort]
-    return min(candidates, key=lambda level: (abs(ranks[level] - target), -ranks[level]))
+# ---------------------------------------------------------------------------
+# CompatibilityResolver: host lookup + per-field precedence
+# ---------------------------------------------------------------------------
+if TYPE_CHECKING:
+    from minacode.config import ProviderConfig
 
 
-def nearest_supported_effort(effort: str, levels: tuple[str, ...]) -> str:
-    """Move an effort onto a model's own scale, so a stored choice is never one it cannot take.
+class CompatibilityResolver:
+    """Compile a snapshot into host overlays and answer per-field policy questions.
 
-    This runs when the scale changes under a stored effort — a `/model` switch, a config written
-    against a different model — and not on the way to the provider. What is offered is what a model
-    accepts, so a chosen effort is already on the scale and reaches the wire as written; a request
-    that quietly sent something other than the level on screen was the thing worth removing.
-
-    A scale of names minacode does not recognize has no comparable order, so an effort off it lands
-    on the middle entry rather than on a guessed rank."""
-
-    if not levels or effort in levels:
-        return effort
-    nearest = nearest_reasoning_effort(effort, levels)
-    return nearest if nearest in levels else levels[len(levels) // 2]
-
-
-def _model_rules(*groups: tuple[ModelRuleData, ...]) -> tuple[ModelRule, ...]:
-    return tuple(ModelRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["value"]) for group in groups for rule in group)
-
-
-# The compiled static text-only negative list. Model evidence is global: a documented text-only
-# model stays text-only on any host, including unknown hosts and the default compatibility
-# profile, so the default rule set is this one rather than empty.
-TEXT_ONLY_RULES = _model_rules(TEXT_ONLY_MODEL_RULES)
-
-
-def _effort_rules(*groups: tuple[ModelEffortRuleData, ...]) -> tuple[ModelEffortRule, ...]:
-    return tuple(
-        ModelEffortRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["levels"], rule.get("why", ""), rule.get("evidence", ""))
-        for group in groups
-        for rule in group
-    )
-
-
-def _model_traits(data: ProviderData, traits: tuple[ModelTraitData, ...] = MODEL_TRAITS) -> tuple[ModelTrait, ...]:
-    """Compile the model-keyed traits this host may use — none, for a host that normalizes."""
-
-    if data.get("normalizes_reasoning"):
-        return ()
-    return tuple(
-        ModelTrait(
-            prefixes=trait.get("prefixes", ()),
-            pattern=trait.get("pattern", ""),
-            chat_reasoning=trait.get("chat_reasoning", ""),
-            chat_reasoning_history=trait.get("chat_reasoning_history", ""),
-            reasoning_effort_levels=trait.get("reasoning_effort_levels", ()),
-            reasoning_effort_off=trait.get("reasoning_effort_off", ""),
-            mandatory_reasoning=trait.get("mandatory_reasoning", False),
-            why=trait.get("why", ""),
-            evidence=trait.get("evidence", ""),
-        )
-        for trait in traits
-    )
-
-
-def _compatibility_profile(data: ProviderData) -> CompatibilityProfile:
-    """Compile one provider overlay and its reusable model capability sets."""
-
-    return CompatibilityProfile(
-        api_rules=_model_rules(data.get("api_rules", ())),
-        chat_reasoning=data.get("chat_reasoning"),
-        chat_reasoning_rules=_model_rules(data.get("chat_reasoning_rules", ())),
-        chat_reasoning_history=data.get("chat_reasoning_history", "all"),
-        chat_reasoning_history_rules=_model_rules(data.get("chat_reasoning_history_rules", ())),
-        # A host's own level list is its fallback vocabulary for models the trait table does not
-        # name -- every thinking model on api.deepseek.com takes the same scale, whether or not the
-        # catalog knows that model by name.
-        reasoning_effort_levels=data.get("reasoning_effort_levels", ()),
-        reasoning_effort_level_rules=_effort_rules(data.get("reasoning_effort_level_rules", ())),
-        reasoning_effort_off_rules=_model_rules(data.get("reasoning_effort_off_rules", ())),
-        responses_reasoning_effort_off_rules=_model_rules(data.get("responses_reasoning_effort_off_rules", ())),
-        model_traits=_model_traits(data),
-        responses_reasoning_models=data.get("responses_reasoning_models"),
-        prompt_cache_key=data.get("prompt_cache_key", True),
-        json_response_format=data.get("json_response_format", False),
-        strict_tools=data.get("strict_tools", False),
-        strict_beta=data.get("strict_beta", False),
-        suppress_temperature=data.get("suppress_temperature", False),
-        suppress_temperature_models=data.get("suppress_temperature_models", ()),
-        builtin_tools_by_wire=data.get("builtin_tools_by_wire"),
-        text_only_rules=_model_rules(TEXT_ONLY_MODEL_RULES),
-    )
-
-
-def _compatibility_profiles(catalog: Mapping[str, ProviderData] = PROVIDER_CATALOG) -> dict[str, CompatibilityProfile]:
-    profiles: dict[str, CompatibilityProfile] = {}
-    for data in catalog.values():
-        profile = _compatibility_profile(data)
-        for host in data["hosts"]:
-            if host in profiles:
-                raise ValueError(f"duplicate provider compatibility host: {host}")
-            profiles[host] = profile
-    return profiles
-
-
-COMPATIBILITY_PROFILES = _compatibility_profiles()
-# What an unknown endpoint resolves to: no endpoint policy, but the same model knowledge every
-# known host gets. Model traits are matched on the model name, so a host the catalog has never
-# seen is only missing facts about the host.
-GENERIC_PROFILE = _compatibility_profile(cast(ProviderData, {"hosts": ()}))
-_FAMILY_SPLIT_RE = re.compile(r"[^0-9a-z]+")
-
-
-def anthropic_model_version(model: str) -> tuple[int, int] | None:
-    """Return the first short numeric generation in a Claude model id, if present."""
-
-    tokens = [token for token in _FAMILY_SPLIT_RE.split(model.lower()) if token]
-    for index, token in enumerate(tokens):
-        if not (token.isdigit() and len(token) <= 2):
-            continue
-        following = tokens[index + 1] if index + 1 < len(tokens) else ""
-        minor = int(following) if following.isdigit() and len(following) <= 2 else 0
-        return int(token), minor
-    return None
-
-
-def anthropic_thinking_params(model: str, reasoning: str, effort: str, budget_tokens: int) -> dict[str, object]:
-    """Build the documented thinking fields for a known Claude generation.
-
-    Unknown aliases remain unconfigured. A gateway may point such a name at either side of the
-    adaptive-thinking boundary, and guessing would turn a valid alias into a 400 response.
+    Precedence, per policy field, is fixed (see PROVIDER_CATALOG_SPEC.md 5.3):
+    provider ``model_rules``, then top-level ``model_rules`` (unless the provider declares the
+    namespace ``ignore``), then the provider's ``defaults``, then the generic
+    ``defaults.provider_policy``. The algorithm contains no provider or model name.
     """
 
-    # Why: 4.5 and earlier require manual thinking; 4.6 recommends adaptive; 4.7+ rejects
-    # manual thinking. Opus 4.5 uniquely combines manual thinking with output_config.effort.
-    # Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
-    #           https://platform.claude.com/docs/en/build-with-claude/effort
-    version = anthropic_model_version(model)
-    if version is None:
-        return {}
-    families = _FAMILY_SPLIT_RE.split(model.lower())
-    adaptive = version >= ANTHROPIC_MODELS["adaptive_min_version"]
-    always_thinking = any(family in families for family in ANTHROPIC_MODELS["always_thinking_families"])
-    if reasoning == "off":
-        return {"thinking": {"type": "disabled"}} if adaptive and not always_thinking else {}
-    level = nearest_reasoning_effort(effort, ANTHROPIC_MODELS["effort_levels"]) if effort in REASONING_LEVELS else "high"
-    if not adaptive:
-        params: dict[str, object] = {"thinking": {"type": "enabled", "budget_tokens": budget_tokens}}
-        if version == (4, 5) and "opus" in families:
-            params["output_config"] = {"effort": level if level in ("low", "medium", "high") else "high"}
+    def __init__(self, snapshot: CatalogSnapshot):
+        self.snapshot = snapshot
+        self._host_providers: dict[str, ProviderRule] = {}
+        for provider in snapshot.providers:
+            for host in provider.hosts:
+                self._host_providers[host] = provider
+
+    # -- host matching -------------------------------------------------------
+
+    def provider_for_host(self, host: str) -> ProviderRule | None:
+        """The most specific domain overlay while respecting DNS label boundaries."""
+
+        matches = ((domain, provider) for domain, provider in self._host_providers.items() if host == domain or host.endswith(f".{domain}"))
+        return max(matches, key=lambda item: len(item[0]), default=("", None))[1]
+
+    # -- selector matching ---------------------------------------------------
+
+    @staticmethod
+    def _rule_matches(rule: PolicyRule, model: str) -> bool:
+        return rule.selector is not None and rule.selector.matches(model)
+
+    def _first_setting_rule(self, rules: tuple[PolicyRule, ...], model: str, path: str) -> PolicyRule | None:
+        """First rule in JSON order that matches the model and sets ``path``.
+
+        A rule may set several fields (a trait carries recipe + dialect + levels together), while
+        an earlier rule may set an unrelated one (the claude mandatory rule sets only
+        ``reasoning.mandatory``). The winner for one path is the first matching rule that sets that
+        path, so the mandatory rule does not shadow the generation recipes that follow it.
+        The full id is matched first; a canonical ``vendor/model`` gateway form is matched by its
+        model part only when the vendor prefix is a canonical family slug.
+        """
+
+        for rule in rules:
+            if self._rule_matches(rule, model) and path in rule.set:
+                return rule
+        for form in self.snapshot.model_id_forms:
+            if form.separator not in model:
+                continue
+            vendor, _, candidate = model.partition(form.separator)
+            if vendor not in form.vendors:
+                continue
+            for rule in rules:
+                if self._rule_matches(rule, candidate) and path in rule.set:
+                    return rule
+        return None
+
+    # -- field resolution ---------------------------------------------------
+
+    def field_value(self, provider: ProviderRule | None, model: str, path: str) -> object | None:
+        """The first value for ``path`` along the fixed precedence, or ``None`` when no source sets it."""
+
+        namespace = path.split(".", 1)[0]
+        if provider is not None:
+            if (rule := self._first_setting_rule(provider.model_rules, model, path)) is not None:
+                return rule.set[path]
+            if not provider.ignores(namespace) and (rule := self._first_setting_rule(self.snapshot.model_rules, model, path)) is not None:
+                return rule.set[path]
+            if path in provider.defaults:
+                return provider.defaults[path]
+        else:
+            if (rule := self._first_setting_rule(self.snapshot.model_rules, model, path)) is not None:
+                return rule.set[path]
+        if path in self.snapshot.defaults.provider_policy:
+            return self.snapshot.defaults.provider_policy[path]
+        return None
+
+    def field_rules(self, provider: ProviderRule | None, model: str, path: str) -> tuple[str, tuple[str, ...]]:
+        """(why, evidence) of the rule that won ``path`` for this model, or ("", ())."""
+
+        if provider is not None:
+            if (rule := self._first_setting_rule(provider.model_rules, model, path)) is not None:
+                return rule.why, rule.evidence
+            if not provider.ignores(path.split(".", 1)[0]) and (rule := self._first_setting_rule(self.snapshot.model_rules, model, path)) is not None:
+                return rule.why, rule.evidence
+        else:
+            if (rule := self._first_setting_rule(self.snapshot.model_rules, model, path)) is not None:
+                return rule.why, rule.evidence
+        return "", ()
+
+    # -- text-only model evidence (global, vendor-aware) --------------------
+
+    def text_only(self, model: str) -> bool:
+        """Whether a configured model ID resolves to documented static text-only evidence.
+
+        The full ID is matched first; a canonical ``vendor/model`` gateway form (OpenRouter/OpenCode)
+        is matched by its model part only when the vendor prefix is one of the canonical family
+        slugs, so a custom alias or an unknown host stays unknown and is probed on the main model.
+        """
+
+        rule = self._first_setting_rule(self.snapshot.model_rules, model, "image.input")
+        return bool(rule and rule.set.get("image.input"))
+
+
+# ---------------------------------------------------------------------------
+# RequestRuleEngine: the whitelisted recipe interpreter
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RequestPolicyContext:
+    """Everything a recipe may read. ``resolved_effort`` is the off spelling when reasoning is off."""
+
+    wire: str
+    reasoning_enabled: bool
+    resolved_effort: str | None
+    off_value: str | None = None
+    max_tokens: int | None = None
+    reasoning_mandatory: bool = False
+    temperature: float | None = None
+    model: str = ""
+
+    def get(self, key: str) -> object:
+        if key == "wire":
+            return self.wire
+        if key == "reasoning_enabled":
+            return self.reasoning_enabled
+        if key == "resolved_effort":
+            return self.resolved_effort
+        if key == "off_value":
+            return self.off_value
+        if key == "max_tokens":
+            return self.max_tokens
+        if key == "reasoning_mandatory":
+            return self.reasoning_mandatory
+        if key == "temperature":
+            return self.temperature
+        if key == "model":
+            return self.model
+        return None
+
+
+class RequestRuleEngine:
+    """Apply a request recipe to a constructed request body.
+
+    The interpreter is deliberately tiny: conditions are ``eq``/``in``/``present`` on a fixed context,
+    values are literal/source/case/lookup/bounded_budget, and actions are ``set``/``remove`` on
+    explicit paths under the body or ``extra_body``. No headers, URLs, filesystem, SDK parameters,
+    or callables are reachable.
+    """
+
+    def __init__(self, thinking_budgets: Mapping[str, int]):
+        self._tables: dict[str, Mapping[str, object]] = {"thinking_budgets": thinking_budgets}
+
+    # -- value evaluation ---------------------------------------------------
+
+    def _lookup(self, raw: object, context: RequestPolicyContext) -> object | None:
+        if not isinstance(raw, Mapping):
+            return None
+        table = self._tables.get(str(raw.get("table") or ""))
+        if table is None:
+            return None
+        key = context.get(str(raw.get("key") or "")) if raw.get("key") else raw.get("default")
+        value = table.get(str(key)) if key is not None else None
+        return value if value is not None else table.get(str(raw.get("default") or ""))
+
+    def _bounded_budget(self, raw: object, context: RequestPolicyContext) -> int | None:
+        """Integer from a table, clamped to ``minimum <= value <= max_tokens - headroom``."""
+
+        if not isinstance(raw, Mapping):
+            return None
+        table = self._tables.get(str(raw.get("table") or ""))
+        if table is None:
+            return None
+        minimum = int(raw.get("minimum") or 0)
+        headroom = int(raw.get("headroom") or 0)
+        value = table.get(str(context.resolved_effort or "")) or table.get("medium")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        value = int(value)
+        if context.max_tokens is not None:
+            return max(minimum, min(max(0, context.max_tokens - headroom), value))
+        return max(minimum, value)
+
+    def _eval_case(self, raw: object, context: RequestPolicyContext) -> object:
+        if not isinstance(raw, Mapping):
+            return None
+        cases = raw.get("case")
+        if not isinstance(cases, list):
+            return None
+        for case in cases:
+            if not isinstance(case, Mapping):
+                continue
+            condition = case.get("when")
+            if isinstance(condition, Mapping) and _raw_condition(condition).matches(context):
+                return self._eval_value(case.get("then"), context)
+        return self._eval_value(raw.get("else"), context)
+
+    def _eval_value(self, value: object, context: RequestPolicyContext) -> object:
+        if isinstance(value, Mapping):
+            if "source" in value and len(value) == 1:
+                return context.get(str(value["source"]))
+            if "case" in value:
+                return self._eval_case(value, context)
+            if "lookup" in value and len(value) == 1:
+                return self._lookup(value["lookup"], context)
+            if "bounded_budget" in value and len(value) == 1:
+                return self._bounded_budget(value["bounded_budget"], context)
+            return {key: self._eval_value(item, context) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._eval_value(item, context) for item in value]
+        return value
+
+    def evaluate(self, value: RecipeValue, context: RequestPolicyContext) -> object:
+        """Evaluate a compiled recipe value; nested special leaves inside literals resolve too."""
+
+        if value.kind == "source":
+            return context.get(str(value.raw))
+        if value.kind == "lookup":
+            return self._lookup(value.raw, context)
+        if value.kind == "bounded_budget":
+            return self._bounded_budget(value.raw, context)
+        if value.kind == "case":
+            return self._eval_case(value.raw, context)
+        return self._eval_value(value.raw, context)
+
+    # -- actions ------------------------------------------------------------
+
+    @staticmethod
+    def _set(params: dict[str, object], path: tuple[str, ...], value: object) -> None:
+        if not path:
+            return
+        node: dict[str, object] = params
+        for key in path[:-1]:
+            child = node.get(key)
+            if not isinstance(child, dict):
+                child = {}
+                node[key] = child
+            node = child
+        leaf = path[-1]
+        existing = node.get(leaf)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            # Shallow merge: user-configured extra_body fields stay authoritative on key conflicts
+            # outside the managed path, while the recipe's own keys win where they both set one.
+            node[leaf] = {**existing, **value}
+        else:
+            node[leaf] = value
+
+    @staticmethod
+    def _remove(params: dict[str, object], path: tuple[str, ...]) -> None:
+        node: dict[str, object] | None = params
+        for key in path[:-1]:
+            if not isinstance(node, dict) or not isinstance(node.get(key), dict):
+                return
+            node = cast(dict[str, object], node[key])
+        if isinstance(node, dict):
+            node.pop(path[-1], None)
+
+    def apply(self, params: dict[str, object], recipe: RequestRecipe, context: RequestPolicyContext) -> dict[str, object]:
+        """Apply the recipe's steps in order, mutating and returning ``params``."""
+
+        for step in recipe.steps:
+            if step.when is not None and not step.when.matches(context):
+                continue
+            for action in step.set:
+                self._set(params, action.path, self.evaluate(action.value, context))
+            for path in step.remove:
+                self._remove(params, path)
         return params
-    if level == "xhigh" and version < ANTHROPIC_MODELS["xhigh_min_version"]:
-        level = "max"
-    return {"thinking": {"type": "adaptive"}, "output_config": {"effort": level}}
 
 
-def anthropic_thinking_always_on(model: str) -> bool:
-    families = _FAMILY_SPLIT_RE.split(model.lower())
-    return any(family in families for family in ANTHROPIC_MODELS["always_thinking_families"])
+# ---------------------------------------------------------------------------
+# ProviderPolicy: the public entry a session holds
+# ---------------------------------------------------------------------------
 
 
-def anthropic_keeps_prior_thinking(model: str) -> bool:
-    """Whether Claude keeps earlier turns' thinking in its effective context."""
+# ---------------------------------------------------------------------------
+# Explicit-dialect escape hatch
+# ---------------------------------------------------------------------------
 
-    # Opus 4.5 and all numbered 4.6+ models preserve and bill all prior thinking. Sonnet/Haiku
-    # 4.5 and earlier models keep only the latest turn; unknown aliases stay conservative.
-    # Current-turn thinking blocks are required for tool use regardless of this distinction.
-    # Evidence: https://platform.claude.com/docs/en/build-with-claude/thinking
-    version = anthropic_model_version(model)
-    if version is None:
-        return True
-    families = _FAMILY_SPLIT_RE.split(model.lower())
-    return version >= ANTHROPIC_MODELS["adaptive_min_version"] or (version == (4, 5) and "opus" in families)
+# When the catalog names no recipe for a provider/model, an explicitly configured
+# `chat_reasoning` dialect picks the wire format itself, so the request-recipe data is still the
+# only description of how each format is built (see ProviderPolicy.resolve).
+_DIALECT_RECIPE_FALLBACK: dict[str, str] = {
+    "reasoning": "reasoning.object",
+    "reasoning_effort": "reasoning.effort",
+    "thinking": "thinking.with-effort",
+    "thinking_toggle": "thinking.toggle",
+    "thinking_effort": "thinking.effort",
+    "enable_thinking": "enable-thinking",
+    "mandatory_thinking": "mandatory",
+    "off": "off",
+}
 
 
-def is_text_only_model(model: str, profile: CompatibilityProfile | None = None) -> bool:
-    """Whether a configured model ID resolves to documented static text-only evidence.
+class PolicyConfig(Protocol):
+    """The config surface :class:`ProviderPolicy` reads; ``ProviderConfig`` and test fakes satisfy it."""
 
-    The full ID is matched first; a canonical `vendor/model` gateway form (OpenRouter/OpenCode)
-    is matched by its model part only when the vendor prefix is one of the canonical family
-    slugs, so a custom alias or an unknown host stays unknown and is probed on the main model.
-    The rules are global model evidence, so the default/unknown-host profile falls back to the
-    compiled list instead of matching nothing.
+    url: str
+    model: str
+    api: str
+    chat_reasoning: str
+    reasoning: str
+    max_tokens: int
+    temperature: float | None
+    strict_tools: bool
+
+    def declared_levels(self, model: str = "") -> tuple[str, ...]: ...
+
+
+class ProviderPolicy:
+    """Compile one snapshot into resolver + engine and answer everything config/CLI/model need.
+
+    ``resolve`` is the only place the catalog is queried for a request; ``apply_request`` runs the
+    chosen recipe against a body the adapter already assembled. ``reasoning_choices``,
+    ``supported_efforts``, ``effort_source``, ``normalized_reasoning`` and ``text_only`` are the
+    read-side helpers shared by config, ``/reason``, image routing and tests.
     """
 
-    rules = profile.text_only_rules if profile is not None and profile.text_only_rules else TEXT_ONLY_RULES
-    if CompatibilityProfile.rule_value(rules, model):
-        return True
-    if "/" in model:
-        vendor, _, candidate = model.partition("/")
-        if vendor in CANONICAL_VENDORS and CompatibilityProfile.rule_value(rules, candidate):
-            return True
-    return False
+    def __init__(self, snapshot: CatalogSnapshot):
+        self.snapshot = snapshot
+        self._resolver = CompatibilityResolver(snapshot)
+        self._engine = RequestRuleEngine(snapshot.defaults.thinking_budgets)
+        self._effort_order = snapshot.defaults.effort_order
+
+    @property
+    def effort_order(self) -> tuple[str, ...]:
+        return self._effort_order
+
+    # -- helpers shared by config/CLI/tests ---------------------------------
+
+    def _provider_for(self, config: PolicyConfig | None) -> ProviderRule | None:
+        url = getattr(config, "url", "")
+        host = (urlparse(str(url).rstrip("/")).hostname or "").lower()
+        return self._resolver.provider_for_host(host)
+
+    def supported_efforts(self, config: PolicyConfig, model: str = "") -> tuple[str, ...]:
+        """The effort levels this model accepts -- what ``/reason`` offers, and all it offers.
+
+        A configured declaration wins, then the catalog, and a model neither knows anything about
+        keeps the full scale: unknown means unconstrained, not empty.
+        """
+
+        model = (model or str(getattr(config, "model", ""))).lower()
+        if declared := config.declared_levels(model):
+            return declared
+        levels = self._resolver.field_value(self._provider_for(config), model, "reasoning.levels")
+        if isinstance(levels, (list, tuple)):
+            return tuple(levels)
+        return self._effort_order
+
+    def reasoning_mandatory(self, config: PolicyConfig, model: str = "") -> bool:
+        model = (model or str(getattr(config, "model", ""))).lower()
+        if config.declared_levels(model):
+            return False
+        return bool(self._resolver.field_value(self._provider_for(config), model, "reasoning.mandatory"))
+
+    def reasoning_choices(self, config: PolicyConfig, model: str = "") -> tuple[str, ...]:
+        """Everything ``/reason`` may offer for this model.
+
+        ``off`` is among them unless the model documents that it always reasons -- Grok, Kimi K3,
+        GLM-5.3. Listing it there would be the menu promising something the endpoint does not do.
+        """
+
+        model = (model or str(getattr(config, "model", ""))).lower()
+        mandatory = not config.declared_levels(model) and self.reasoning_mandatory(config, model)
+        return self.supported_efforts(config, model) if mandatory else ("off", *self.supported_efforts(config, model))
+
+    def effort_source(self, config: PolicyConfig, model: str = "") -> tuple[str, str]:
+        """Why ``/reason`` offers what it offers, as (one line, page) -- empty when default."""
+
+        model = (model or str(getattr(config, "model", ""))).lower()
+        if config.declared_levels(model):
+            return "declared for this model in your config", ""
+        why, evidence = self._resolver.field_rules(self._provider_for(config), model, "reasoning.levels")
+        return (why, evidence[0] if evidence else "")
+
+    def reasoning_effort_value(self, config: PolicyConfig) -> str:
+        """The stored effort if it is a known normalized level or user-declared, else ``medium``."""
+
+        reasoning = str(getattr(config, "reasoning", "off"))
+        if reasoning in self._effort_order or reasoning in config.declared_levels():
+            return reasoning
+        return "medium"
+
+    def normalized_reasoning(self, config: PolicyConfig, model: str = "") -> str:
+        """This entry's effort, moved onto ``model``'s choices if it is not already among them."""
+
+        choices = self.reasoning_choices(config, model)
+        if getattr(config, "reasoning", "off") == "off":
+            return "off" if "off" in choices else choices[0]
+        return nearest_supported_effort(self.reasoning_effort_value(config), self.supported_efforts(config, model), self._effort_order)
+
+    def text_only(self, config: PolicyConfig | None, model: str = "") -> bool:
+        return self._resolver.text_only((model or str(getattr(config, "model", ""))).lower())
+
+    # -- resolve ------------------------------------------------------------
+
+    def resolve(self, config: PolicyConfig) -> ResolvedProvider:
+        """Fold explicit configuration and documented compatibility into one request policy."""
+
+        url = str(getattr(config, "url", "")).rstrip("/").removesuffix("/chat/completions").removesuffix("/responses").removesuffix("/messages")
+        host = (urlparse(url).hostname or "").lower()
+        provider = self._resolver.provider_for_host(host)
+        model = str(getattr(config, "model", "")).lower()
+
+        api = str(getattr(config, "api", "auto"))
+        if api == "auto":
+            path = urlparse(str(getattr(config, "url", "")).rstrip("/")).path
+            suffix_api = next(
+                (value for suffix, value in (("/responses", "responses"), ("/messages", "anthropic"), ("/chat/completions", "chat")) if path.endswith(suffix)),
+                None,
+            )
+            api = str(suffix_api or self._resolver.field_value(provider, model, "api") or "chat")
+
+        chat_reasoning = str(getattr(config, "chat_reasoning", "auto"))
+        if chat_reasoning == "auto":
+            chat_reasoning = str(self._resolver.field_value(provider, model, "reasoning.dialect") or "off")
+
+        reasoning_recipe = str(self._resolver.field_value(provider, model, "reasoning.recipe") or "off")
+        # The explicit `chat_reasoning` config is the escape hatch for gateways the catalog has no
+        # evidence about: when the catalog names no recipe, the requested dialect picks the wire
+        # format, so an unrecognized endpoint still gets the reasoning/thinking fields it takes.
+        # A catalogued recipe wins (the catalog owns a known model's format), which is why this
+        # fallback only fires on the generic "off" recipe.
+        responses_models = self._resolver.field_value(provider, model, "responses.reasoning_models")
+        responses_reasoning = not isinstance(responses_models, (list, tuple)) or any(model.startswith(str(prefix)) for prefix in responses_models)
+        if reasoning_recipe == "off":
+            explicit_dialect = str(getattr(config, "chat_reasoning", "auto"))
+            if explicit_dialect != "auto":
+                reasoning_recipe = _DIALECT_RECIPE_FALLBACK.get(explicit_dialect, "off")
+            elif api == "responses" and responses_reasoning:
+                # The generic Responses default for a model the catalog does not know: a stateless
+                # reasoning request carries the effort in the top-level `reasoning` object, matching
+                # what the Responses adapter used to add for unknown models.
+                reasoning_recipe = "reasoning.effort"
+
+        if getattr(config, "reasoning", "off") == "off":
+            reasoning_effort = self._resolver.field_value(provider, model, "reasoning.off")
+            if api == "responses":
+                reasoning_effort = self._resolver.field_value(provider, model, "reasoning.off_responses") or reasoning_effort
+            if reasoning_effort is not None:
+                reasoning_effort = str(reasoning_effort)
+        else:
+            # Sent as chosen. ``/reason`` only offers what this model accepts and a model switch
+            # moves a stored effort onto the new scale, so by the time a request is built the
+            # effort is already one this model takes -- the last-resort move here is for an entry
+            # constructed directly, never for a session that has been through either path.
+            reasoning_effort = nearest_supported_effort(self.reasoning_effort_value(config), self.supported_efforts(config, model), self._effort_order)
+
+        suppress_value = self._resolver.field_value(provider, model, "temperature.suppress")
+        suppress_models = self._resolver.field_value(provider, model, "temperature.suppress_models")
+        suppress_temperature = bool(suppress_value) or any(
+            model.startswith(str(prefix)) for prefix in (suppress_models if isinstance(suppress_models, (list, tuple)) else ())
+        )
+        if not suppress_temperature:
+            recipe = self.snapshot.request_recipes.get(reasoning_recipe)
+            suppress_temperature = getattr(config, "reasoning", "off") != "off" and bool(recipe and recipe.pins_temperature)
+
+        strict_tools_active = (
+            bool(getattr(config, "strict_tools", False)) and bool(self._resolver.field_value(provider, model, "strict.tools")) and api in ("chat", "responses")
+        )
+        if strict_tools_active and self._resolver.field_value(provider, model, "strict.beta") and not url.endswith("/beta"):
+            url += "/beta"
+
+        history = self._resolver.field_value(provider, model, "history.reasoning")
+        chat_reasoning_history = str(history or "all")
+
+        return ResolvedProvider(
+            api=api,
+            base_url=url,
+            host=host,
+            chat_reasoning=chat_reasoning,
+            chat_reasoning_history=chat_reasoning_history,
+            reasoning_effort=reasoning_effort,
+            responses_reasoning=responses_reasoning,
+            suppress_temperature=suppress_temperature,
+            prompt_cache_key=bool(self._resolver.field_value(provider, model, "cache.prompt_key")),
+            strict_tools_active=strict_tools_active,
+            builtin_tools_by_wire=provider.builtin_tools_by_wire if provider is not None else None,
+            json_response_format=bool(self._resolver.field_value(provider, model, "json.response_format")),
+            text_only=self._resolver.text_only(model),
+            reasoning_recipe=reasoning_recipe,
+            reasoning_mandatory=self.reasoning_mandatory(config, model),
+            catalog_version=self.snapshot.version,
+        )
+
+    # -- request recipes ----------------------------------------------------
+
+    def apply_request(self, params: Json, config: object, resolved: ResolvedProvider, *, wire: str) -> Json:
+        """Run the resolved recipe against a request body the adapter already assembled.
+
+        ``wire`` is ``chat``, ``responses`` or ``anthropic``; recipes gate their steps on it. The
+        body is mutated and returned, so extra_body/thinking merges keep user-configured fields.
+        """
+
+        recipe = self.snapshot.request_recipes.get(resolved.reasoning_recipe)
+        if recipe is None:
+            return params
+        reasoning_enabled = getattr(config, "reasoning", "off") != "off"
+        # The adapter may already have resolved the effective output cap into params (the anthropic
+        # path sets max_tokens = anthropic_output_cap() before this runs), so the budget clamp
+        # must compare against the cap that will actually be sent, not just the raw config value.
+        max_tokens = params.get("max_tokens")
+        if not isinstance(max_tokens, int):
+            max_tokens = int(getattr(config, "max_tokens", 0) or 0) or None
+        context = RequestPolicyContext(
+            wire=wire,
+            reasoning_enabled=reasoning_enabled,
+            resolved_effort=resolved.reasoning_effort,
+            off_value=resolved.reasoning_effort if not reasoning_enabled else None,
+            max_tokens=max_tokens,
+            reasoning_mandatory=resolved.reasoning_mandatory,
+            temperature=getattr(config, "temperature", None),
+            model=str(getattr(config, "model", "")).lower(),
+        )
+        return cast(Json, self._engine.apply(params, recipe, context))
+
+    # -- catalog-dependent config validation --------------------------------
+
+    def validate_config(self, config: PolicyConfig, provider: ProviderConfig | None = None) -> None:
+        """Second-phase config checks that need the catalog (reasoning scale, API values)."""
+
+        from minacode.config import REASONING_CHOICES, ConfigError
+
+        reasoning = getattr(config, "reasoning", "off")
+        if reasoning == "off":
+            return
+        if reasoning in self.supported_efforts(config):
+            return
+        levels = REASONING_CHOICES
+        raise ConfigError(f"reasoning must be one of {', '.join(levels)} for {getattr(config, 'model', '') or '(no model)'} on this provider")
 
 
-def compatibility_for_host(host: str, profiles: Mapping[str, CompatibilityProfile] = COMPATIBILITY_PROFILES) -> CompatibilityProfile:
-    """Return the most specific domain profile while respecting label boundaries.
+# ---------------------------------------------------------------------------
+# Bundled-policy accessor for tooling and tests
+# ---------------------------------------------------------------------------
 
-    An unmatched host resolves to GENERIC_PROFILE rather than an empty one: it still knows the
-    models, it just has nothing to add about the endpoint. That is the ordinary case for a gateway
-    or self-hosted proxy serving a well-known model, and matching nothing there is what made a
-    catalogued model behave like an unknown one purely because of the domain it arrived from."""
 
-    matches = ((domain, profile) for domain, profile in profiles.items() if host == domain or host.endswith(f".{domain}"))
-    return max(matches, key=lambda item: len(item[0]), default=("", GENERIC_PROFILE))[1]
+@lru_cache(maxsize=1)
+def bundled_policy() -> ProviderPolicy:
+    """The policy compiled from the bundled catalog.json; shared by tests and offline tooling.
+
+    Sessions compile their own policy from the selected snapshot (see sync.CatalogRuntime); this
+    accessor exists so config-free call sites -- tests, ``/catalog`` reporting, image fallback --
+    see exactly what the package ships without constructing a runtime.
+    """
+
+    return ProviderPolicy(decode_bundled())
+
+
+def is_text_only_model(model: str) -> bool:
+    """Catalog-side text-only evidence for the bundled snapshot (tests and tooling)."""
+
+    return bundled_policy().text_only(None, model)

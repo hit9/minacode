@@ -22,6 +22,7 @@ from minacode.base import (
 from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
 from minacode.image import ImageInputs, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
+from minacode.providers.sync import CatalogRuntime
 from minacode.session.codec import TRANSCRIPT_SYNC_VERSION, SessionSnapshotCodec
 from minacode.session.diffs import net_diff_sections
 from minacode.session.images import ImageRoute
@@ -292,6 +293,10 @@ class Session:
     skills: SkillLibrary | None = None
     mentions: FileMentions | None = None  # runtime handle; holds the cached @file: path list
     images: ImageInputs = field(init=False, repr=False)
+    # The provider/model catalog this session resolves against: snapshot + compiled policy + sync
+    # state. Attached by bootstrap_features (which also owns the feature packages), so the session
+    # dataclass itself stays feature-free; absent until a session is bootstrapped.
+    catalog: CatalogRuntime | None = None
     # Session-local learned text-only route evidence, keyed by ImageRoute.identity(). Runtime
     # only: SessionSnapshotCodec is an explicit whitelist, so this never reaches a snapshot and
     # a resumed session starts unknown unless the catalog supplies static evidence.
@@ -586,3 +591,7 @@ def bootstrap_features(session: Session) -> None:
         from minacode.mentions import FileMentions  # local import: mentions is built on top of session
 
         session.mentions = FileMentions(session)
+    if session.catalog is None:
+        from minacode.providers.sync import CatalogRuntime  # local import: keeps providers above session
+
+        session.catalog = CatalogRuntime(session.config.data_dir)

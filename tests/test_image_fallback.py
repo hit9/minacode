@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from catalog_harness import resolve
 from PIL import Image
 
 from minacode.base import ImageRouteNotice, ModelError, ModelRequestRetry, ToolCall
@@ -160,7 +161,7 @@ def test_gateway_vendor_forms_match_only_canonical_vendors(model, expected):
 
 def test_resolve_folds_static_text_only_evidence():
     def resolved(model):
-        return ProviderConfig(url="http://main.test", key="key", model=model).resolve()
+        return resolve(ProviderConfig(url="http://main.test", key="key", model=model))
 
     assert resolved("deepseek-chat").text_only is True
     assert resolved("deepseek/deepseek-chat").text_only is True
@@ -171,7 +172,7 @@ def test_resolve_folds_static_text_only_evidence():
 
 def test_route_identity_keys_learned_evidence_per_main_route(tmp_path):
     s = session(tmp_path, model="main-model", vision=True)
-    resolved = s.config.provider.resolve()
+    resolved = resolve(s.config.provider)
     assert s.image_route.identity() == ("default", resolved.api, resolved.base_url, "main-model")
     assert s.image_route.state() == "unknown"
 

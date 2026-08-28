@@ -49,9 +49,11 @@ from minacode.config import (
     compaction_provider_config,
 )
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED
-from minacode.providers.compat import builtin_tools_issue
+from minacode.providers.compat import ProviderPolicy, builtin_tools_issue, bundled_policy
+from minacode.providers.schema import CatalogSyncError
+from minacode.providers.sync import CATALOG_URL
 from minacode.render import markdown_table, progress_bar
-from minacode.session import SessionEntry, SessionSnapshotStore
+from minacode.session import Session, SessionEntry, SessionSnapshotStore
 from minacode.tools import CodeIndex
 
 if TYPE_CHECKING:
@@ -93,9 +95,16 @@ SET_VALUES: dict[str, tuple[str, ...]] = {
 # fmt: on
 
 
-def _status_model_line(config: Config) -> str:
+def _policy(session: Session) -> ProviderPolicy:
+    """The active catalog policy, or the bundled one before a session is bootstrapped."""
+
+    catalog = session.catalog
+    return catalog.policy if catalog is not None else bundled_policy()
+
+
+def _status_model_line(session: Session, config: Config) -> str:
     active = config.provider
-    return f"`{config.active_provider}/{active.model or '(empty)'}`; `{active.resolve().api}`; `{active.reasoning}`"
+    return f"`{config.active_provider}/{active.model or '(empty)'}`; `{_policy(session).resolve(active).api}`; `{active.reasoning}`"
 
 
 def _status_context_line(tokens: int, budget: int, percent: int) -> str:
@@ -168,7 +177,8 @@ def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     when the effort is being chosen for a model the entry has not switched to yet."""
     provider = loop.session.config.provider
     current = provider.reasoning
-    choices = provider.reasoning_choices(model)
+    policy = _policy(loop.session)
+    choices = policy.reasoning_choices(provider, model)
     labels = {"off": "off - disable reasoning"}
     labels[current] = labels.get(current, current) + " (current)"
     # A shortened list raises the question the same screen should answer, so the reason it is
@@ -176,7 +186,7 @@ def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     # about the list, not about whichever level the cursor happens to be on. It opens by naming
     # itself, since text appearing under a list of choices otherwise reads as being about the
     # choice rather than about the list.
-    why, evidence = provider.effort_scale_source(model)
+    why, evidence = _policy(loop.session).effort_source(provider, model)
     # Fragments rather than a plain preview string, to take the dim style every other secondary
     # line in a modal uses. The preview default is green italic, which reads as content; this is
     # a note about the screen, like the key hints above it.
@@ -189,7 +199,7 @@ def select_api(loop: CommandLoop, model: str) -> str | object | None:
     # a /models listing does not say which. Confirm the wire alongside the model that needs it.
     provider = loop.session.config.provider
     current = provider.api
-    inferred = replace(provider, api="auto", model=model).resolve().api
+    inferred = _policy(loop.session).resolve(replace(provider, api="auto", model=model)).api
     labels = {"auto": f"auto - infer from the endpoint URL and model ({inferred})"}
     labels[current] = labels.get(current, current) + " (current)"
     return select_choice(loop, "Request API", PROVIDER_API_CHOICES, labels=labels, current=current)
@@ -265,7 +275,7 @@ def status(loop: CommandLoop, args: str) -> str:
         runtime.append("update " + update)
     rows.append(("runtime", "; ".join(f"`{value}`" for value in runtime)))
 
-    rows.append(("model", _status_model_line(loop.session.config)))
+    rows.append(("model", _status_model_line(loop.session, loop.session.config)))
     rows.append(("context", _status_context_line(context_tokens, context_budget, context_percent)))
     rows.append(("cache", _status_cache_line(usage) if usage.prompt_tokens else "(no requests yet)"))
     visible_activity = [(name, value) for name, value in activity if value]
@@ -296,7 +306,7 @@ def status(loop: CommandLoop, args: str) -> str:
         return markdown_table(["field", "value"], rows)
     worker_usage = worker.usage
     state = f"`{'delegating' if worker._active_turn_messages else 'idle'}`, rounds `{worker.state.round_count}`"
-    rows.append(("worker", _status_model_line(worker.config)))
+    rows.append(("worker", _status_model_line(worker, worker.config)))
     if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
         percent = worker_usage.context_percent()
         context = _status_context_line(worker_usage.last_prompt_tokens, worker_usage.last_prompt_budget, percent)
@@ -305,6 +315,41 @@ def status(loop: CommandLoop, args: str) -> str:
     rows.append(("worker ctx", f"{context}; {state}"))
     if worker_usage.prompt_tokens:
         rows.append(("worker cache", _status_cache_line(worker_usage)))
+    return markdown_table(["field", "value"], rows)
+
+
+def catalog_command(loop: CommandLoop, args: str) -> str:
+    """Show the provider catalog this session resolves against, or force a sync with `sync`."""
+
+    parts = args.split()
+    if len(parts) > 1:
+        return "Usage: /catalog [sync]"
+    catalog = loop.session.catalog
+    if catalog is None:
+        return "catalog: bundled (no session catalog yet)"
+    if parts:
+        previous = catalog.snapshot.version
+        try:
+            snapshot = catalog.sync_now()
+        except CatalogSyncError as error:
+            return f"catalog sync failed: {error}"
+        if snapshot.version > previous:
+            return f"catalog synced: activated version `{snapshot.version}` from `{catalog.source}` (previous `{previous}`)"
+        return f"catalog sync: current (no newer catalog; active is `{snapshot.version}`)"
+    state = catalog.sync_state
+    rows = [
+        ("version", str(catalog.snapshot.version)),
+        ("source", "`" + catalog.source + "`"),
+    ]
+    if catalog.note:
+        rows.append(("note", catalog.note))
+    if state.error:
+        rows.append(("sync", "error: " + state.error))
+    elif state.checking:
+        rows.append(("sync", "checking..."))
+    elif state.last_synced_at:
+        rows.append(("sync", "last " + time.strftime("%H:%M", time.localtime(state.last_synced_at))))
+    rows.append(("remote", CATALOG_URL))
     return markdown_table(["field", "value"], rows)
 
 
@@ -362,7 +407,7 @@ def diff_command(loop: CommandLoop, args: str) -> str | None:
 
 def config(loop: CommandLoop, args: str) -> str:
     provider = loop.session.config.provider
-    resolved = provider.resolve()
+    resolved = _policy(loop.session).resolve(provider)
     compaction_effective = compaction_provider_config(loop.session.config)
     configured_builtin_tools = ", ".join(str(entry.get("type") or "?") for entry in provider.builtin_tools) or "(off)"
     builtin_issue = builtin_tools_issue(resolved, provider.builtin_tools)
@@ -388,7 +433,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
             f"provider.reasoning: {provider.reasoning}",
             f"provider.resolved_reasoning_effort: {resolved.reasoning_effort or '(off)'}",
-            f"provider.supported_reasoning: {', '.join(provider.reasoning_choices())}",
+            f"provider.supported_reasoning: {', '.join(_policy(loop.session).reasoning_choices(provider))}",
             f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
             f"provider.chat_reasoning: {provider.chat_reasoning}",
             f"provider.resolved_chat_reasoning_history: {resolved.chat_reasoning_history}",
@@ -750,7 +795,7 @@ def realign_reasoning(loop: CommandLoop, model: str = "") -> str:
     on screen, which is what this replaced. It happens where the scale changes underneath a stored
     choice — switching entry or model — never per request."""
     provider = loop.session.config.provider
-    aligned = provider.normalized_reasoning(model)
+    aligned = _policy(loop.session).normalized_reasoning(provider, model)
     if aligned == provider.reasoning:
         return ""
     previous, provider.reasoning = provider.reasoning, aligned
@@ -818,7 +863,7 @@ def remote_models(loop: CommandLoop, provider: ProviderConfig) -> tuple[str, ...
 
         page = OpenAI(
             api_key=provider.key,
-            base_url=provider.resolve().base_url,
+            base_url=_policy(loop.session).resolve(provider).base_url,
             timeout=min(provider.timeout, 10),
             max_retries=0,
             default_headers={"User-Agent": HTTP_USER_AGENT},
@@ -870,7 +915,7 @@ def reason(loop: CommandLoop, args: str) -> str:
     if value:
         # Typed efforts are held to the same list the picker offers, so `/reason` and the picker
         # cannot disagree about what this model takes.
-        choices = loop.session.config.provider.reasoning_choices()
+        choices = _policy(loop.session).reasoning_choices(loop.session.config.provider)
         if value not in choices:
             return "Usage: /reason " + "|".join(choices)
         return set_reasoning(loop, value)
@@ -894,7 +939,7 @@ def set_api(loop: CommandLoop, value: str) -> str:
     provider.api = value
     record_provider_override(loop.session, "api", value)
     # "auto" is the usual choice, so name the wire it resolved to rather than echoing the setting back.
-    resolved = provider.resolve()
+    resolved = _policy(loop.session).resolve(provider)
     result = f"Set provider.api = {value} (wire: {resolved.api})"
     issue = builtin_tools_issue(resolved, provider.builtin_tools)
     if issue is not None:
@@ -917,7 +962,7 @@ def strict(loop: CommandLoop, args: str) -> str:
     provider.strict_tools = not provider.strict_tools
     state = "on" if provider.strict_tools else "off"
     if provider.strict_tools:
-        resolved = provider.resolve()
+        resolved = _policy(loop.session).resolve(provider)
         if not resolved.strict_tools_active:
             return f"strict_tools: {state} (inactive: {resolved.host or 'this provider'} does not support strict tool calling)"
     return f"strict_tools: {state}"

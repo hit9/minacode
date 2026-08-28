@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import openai as openai_module
 import pytest
+from catalog_harness import resolve
 from test_command_ui import ModalHarness, diff_loop
 from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, wait_until
 
@@ -151,7 +152,7 @@ def test_reason_only_accepts_efforts_the_active_model_takes(tmp_path):
     provider.model = "gpt-5.5"
 
     assert reason(command_loop, "xhigh") == "Set provider.reasoning = xhigh"
-    assert command_loop.session.config.provider.resolve().reasoning_effort == "xhigh"
+    assert resolve(command_loop.session.config.provider).reasoning_effort == "xhigh"
     # gpt-5.5 has no `max`, so it is not offered and cannot be set: the effort on screen is the
     # effort sent, with nothing rewritten in between.
     assert reason(command_loop, "max").startswith("Usage: /reason ")
@@ -163,7 +164,7 @@ def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
     )
 
     assert reason(command_loop, "ultra") == "Set provider.reasoning = ultra"
-    assert command_loop.session.config.provider.resolve().reasoning_effort == "ultra"
+    assert resolve(command_loop.session.config.provider).reasoning_effort == "ultra"
     assert reason(command_loop, "elsewhere").startswith("Usage: /reason ")
     # A level minacode knows but this model does not is refused like any other unavailable one.
     assert reason(command_loop, "medium").startswith("Usage: /reason ")
@@ -213,9 +214,9 @@ def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_pa
     provider.api = "responses"
 
     assert api(command_loop, "grpc").startswith("Usage: /api ")
-    assert provider.resolve().api == "responses"
+    assert resolve(provider).api == "responses"
     assert api(command_loop, "chat") == "Set provider.api = chat (wire: chat)"
-    assert provider.resolve().api == "chat"
+    assert resolve(provider).api == "chat"
     # "auto" reports the wire it inferred rather than echoing "auto" back.
     assert api(command_loop, "auto") == "Set provider.api = auto (wire: chat)"
 

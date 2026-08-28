@@ -10,6 +10,7 @@ import threading
 
 import pytest
 from agent_harness import session, session_with_provider
+from catalog_harness import resolve
 
 from minacode import compaction
 from minacode.base import (
@@ -270,7 +271,7 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
     def reasoning_history(path):
         live_session = session_with_provider(path)
         live_session.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        assert live_session.config.provider.resolve().chat_reasoning_history == "current_turn"
+        assert resolve(live_session.config.provider).chat_reasoning_history == "current_turn"
         live_session.messages = [
             {"role": "user", "content": "earlier task"},
             {

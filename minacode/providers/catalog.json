@@ -1,0 +1,1963 @@
+{
+  "schema_version": 1,
+  "version": 2026082801,
+  "updated_at": "2026-08-28",
+  "defaults": {
+    "effort_order": [
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "thinking_budgets": {
+      "minimal": 1024,
+      "low": 1024,
+      "medium": 4096,
+      "high": 8192,
+      "xhigh": 16384,
+      "max": 32768
+    },
+    "provider_policy": {
+      "api": "chat",
+      "reasoning.recipe": "off",
+      "reasoning.dialect": "off",
+      "history.reasoning": "all",
+      "cache.prompt_key": true,
+      "json.response_format": false,
+      "strict.tools": false,
+      "strict.beta": false,
+      "temperature.suppress": false
+    }
+  },
+  "model_id_forms": [
+    {
+      "id": "form.vendor-slash-model",
+      "separator": "/",
+      "vendors": [
+        "deepseek",
+        "z-ai",
+        "bigmodel",
+        "qwen",
+        "moonshotai",
+        "minimax",
+        "openai"
+      ],
+      "why": "A gateway id in canonical vendor/model form is matched by its model part only for these canonical vendor slugs",
+      "evidence": [
+        "https://openrouter.ai/docs/features/model-support"
+      ],
+      "notes": [
+        "A different vendor prefix keeps the id unknown even when its suffix would match a rule; a custom alias such as production-model stays unknown and is probed."
+      ]
+    }
+  ],
+  "request_recipes": {
+    "off": {
+      "id": "off",
+      "steps": []
+    },
+    "reasoning.object": {
+      "id": "reasoning.object",
+      "steps": [
+        {
+          "when": {
+            "wire": "chat",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "reasoning"
+              ],
+              "value": {
+                "effort": {
+                  "source": "resolved_effort"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "when": {
+            "wire": "responses",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "reasoning"
+              ],
+              "value": {
+                "effort": {
+                  "source": "resolved_effort"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "reasoning.effort": {
+      "id": "reasoning.effort",
+      "steps": [
+        {
+          "when": {
+            "wire": "chat",
+            "resolved_effort": {
+              "present": true
+            }
+          },
+          "set": [
+            {
+              "path": [
+                "reasoning_effort"
+              ],
+              "value": {
+                "source": "resolved_effort"
+              }
+            }
+          ]
+        },
+        {
+          "when": {
+            "wire": "responses",
+            "resolved_effort": {
+              "present": true
+            }
+          },
+          "set": [
+            {
+              "path": [
+                "reasoning"
+              ],
+              "value": {
+                "effort": {
+                  "source": "resolved_effort"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "thinking.with-effort": {
+      "id": "thinking.with-effort",
+      "pins_temperature": true,
+      "steps": [
+        {
+          "when": {
+            "wire": "chat",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "thinking",
+                "type"
+              ],
+              "value": "enabled"
+            },
+            {
+              "path": [
+                "reasoning_effort"
+              ],
+              "value": {
+                "source": "resolved_effort"
+              }
+            }
+          ]
+        },
+        {
+          "when": {
+            "wire": "chat",
+            "reasoning_enabled": false
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "thinking",
+                "type"
+              ],
+              "value": "disabled"
+            }
+          ]
+        }
+      ]
+    },
+    "thinking.toggle": {
+      "id": "thinking.toggle",
+      "steps": [
+        {
+          "when": {
+            "wire": "chat",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "thinking",
+                "type"
+              ],
+              "value": "enabled"
+            }
+          ]
+        },
+        {
+          "when": {
+            "wire": "chat",
+            "reasoning_enabled": false
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "thinking",
+                "type"
+              ],
+              "value": "disabled"
+            }
+          ]
+        }
+      ]
+    },
+    "thinking.effort": {
+      "id": "thinking.effort",
+      "steps": [
+        {
+          "when": {
+            "wire": "chat",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "thinking",
+                "type"
+              ],
+              "value": "enabled"
+            },
+            {
+              "path": [
+                "reasoning_effort"
+              ],
+              "value": {
+                "source": "resolved_effort"
+              }
+            }
+          ]
+        },
+        {
+          "when": {
+            "wire": "chat",
+            "reasoning_enabled": false
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "thinking",
+                "type"
+              ],
+              "value": "disabled"
+            }
+          ]
+        }
+      ]
+    },
+    "enable-thinking": {
+      "id": "enable-thinking",
+      "pins_temperature": true,
+      "steps": [
+        {
+          "when": {
+            "wire": "chat"
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "enable_thinking"
+              ],
+              "value": {
+                "source": "reasoning_enabled"
+              }
+            }
+          ]
+        },
+        {
+          "when": {
+            "wire": "chat",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "extra_body",
+                "thinking_budget"
+              ],
+              "value": {
+                "bounded_budget": {
+                  "table": "thinking_budgets",
+                  "minimum": 1024,
+                  "headroom": 1024
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "mandatory": {
+      "id": "mandatory",
+      "steps": []
+    },
+    "messages.manual": {
+      "id": "messages.manual",
+      "steps": [
+        {
+          "when": {
+            "wire": "anthropic",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "thinking",
+                "type"
+              ],
+              "value": "enabled"
+            },
+            {
+              "path": [
+                "thinking",
+                "budget_tokens"
+              ],
+              "value": {
+                "bounded_budget": {
+                  "table": "thinking_budgets",
+                  "minimum": 1024,
+                  "headroom": 1024
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "messages.manual-opus-45": {
+      "id": "messages.manual-opus-45",
+      "steps": [
+        {
+          "when": {
+            "wire": "anthropic",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "thinking",
+                "type"
+              ],
+              "value": "enabled"
+            },
+            {
+              "path": [
+                "thinking",
+                "budget_tokens"
+              ],
+              "value": {
+                "bounded_budget": {
+                  "table": "thinking_budgets",
+                  "minimum": 1024,
+                  "headroom": 1024
+                }
+              }
+            },
+            {
+              "path": [
+                "output_config",
+                "effort"
+              ],
+              "value": {
+                "case": [
+                  {
+                    "when": {
+                      "resolved_effort": {
+                        "in": [
+                          "low",
+                          "medium",
+                          "high"
+                        ]
+                      }
+                    },
+                    "then": {
+                      "source": "resolved_effort"
+                    }
+                  }
+                ],
+                "else": "high"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "messages.adaptive": {
+      "id": "messages.adaptive",
+      "steps": [
+        {
+          "when": {
+            "wire": "anthropic",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "thinking",
+                "type"
+              ],
+              "value": "adaptive"
+            },
+            {
+              "path": [
+                "output_config",
+                "effort"
+              ],
+              "value": {
+                "source": "resolved_effort"
+              }
+            }
+          ]
+        },
+        {
+          "when": {
+            "wire": "anthropic",
+            "reasoning_enabled": false,
+            "reasoning_mandatory": false
+          },
+          "set": [
+            {
+              "path": [
+                "thinking",
+                "type"
+              ],
+              "value": "disabled"
+            }
+          ]
+        }
+      ]
+    },
+    "messages.adaptive-xhigh-as-max": {
+      "id": "messages.adaptive-xhigh-as-max",
+      "steps": [
+        {
+          "when": {
+            "wire": "anthropic",
+            "reasoning_enabled": true
+          },
+          "set": [
+            {
+              "path": [
+                "thinking",
+                "type"
+              ],
+              "value": "adaptive"
+            },
+            {
+              "path": [
+                "output_config",
+                "effort"
+              ],
+              "value": {
+                "case": [
+                  {
+                    "when": {
+                      "resolved_effort": {
+                        "eq": "xhigh"
+                      }
+                    },
+                    "then": "max"
+                  }
+                ],
+                "else": {
+                  "source": "resolved_effort"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "when": {
+            "wire": "anthropic",
+            "reasoning_enabled": false,
+            "reasoning_mandatory": false
+          },
+          "set": [
+            {
+              "path": [
+                "thinking",
+                "type"
+              ],
+              "value": "disabled"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "model_rules": [
+    {
+      "id": "model.trait-00",
+      "match": {
+        "pattern": "gpt-5\\.6(?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "reasoning.off": "none"
+      },
+      "why": "minimal is not a spelling on gpt-5.6",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-5.5"
+      ]
+    },
+    {
+      "id": "model.trait-01",
+      "match": {
+        "pattern": "gpt-5\\.(?:2|4|5)-pro(?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "reasoning.off": "medium"
+      },
+      "why": "the Pro models reject anything below medium, and have no max",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-5.4-pro"
+      ]
+    },
+    {
+      "id": "model.trait-02",
+      "match": {
+        "pattern": "gpt-5\\.(?:2|3)-codex(?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "reasoning.off": "low"
+      },
+      "why": "the Codex models have neither minimal nor max",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-5.3-codex"
+      ]
+    },
+    {
+      "id": "model.trait-03",
+      "match": {
+        "pattern": "gpt-5\\.(?:2|4|5)(?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "reasoning.off": "none"
+      },
+      "why": "this generation dropped minimal, and max is not a spelling here",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-5.5"
+      ]
+    },
+    {
+      "id": "model.trait-04",
+      "match": {
+        "pattern": "gpt-5\\.1(?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning.off": "none"
+      },
+      "why": "gpt-5.1 predates xhigh and max, and has no minimal",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-5.1"
+      ]
+    },
+    {
+      "id": "model.trait-05",
+      "match": {
+        "pattern": "gpt-5-pro(?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "high"
+        ],
+        "reasoning.off": "high"
+      },
+      "why": "gpt-5-pro runs at high and takes no other level",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-5"
+      ]
+    },
+    {
+      "id": "model.trait-06",
+      "match": {
+        "pattern": "gpt-5(?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "why": "gpt-5 predates xhigh and max",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-5"
+      ]
+    },
+    {
+      "id": "model.trait-07",
+      "match": {
+        "pattern": "o[1-4](?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "why": "the o-series predates minimal, xhigh and max",
+      "evidence": [
+        "https://developers.openai.com/api/docs/guides/reasoning"
+      ]
+    },
+    {
+      "id": "model.trait-08",
+      "match": {
+        "prefixes": [
+          "deepseek-v4-pro"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "thinking.with-effort",
+        "reasoning.dialect": "thinking",
+        "history.reasoning": "tool_calls",
+        "reasoning.levels": [
+          "high",
+          "max"
+        ]
+      },
+      "why": "DeepSeek V4 Pro serves a low request as high",
+      "evidence": [
+        "https://api-docs.deepseek.com/guides/thinking_mode/"
+      ]
+    },
+    {
+      "id": "model.trait-09",
+      "match": {
+        "prefixes": [
+          "deepseek-v4-"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "thinking.with-effort",
+        "reasoning.dialect": "thinking",
+        "history.reasoning": "tool_calls",
+        "reasoning.levels": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "why": "DeepSeek serves medium and xhigh as high",
+      "evidence": [
+        "https://api-docs.deepseek.com/guides/thinking_mode/"
+      ]
+    },
+    {
+      "id": "model.trait-10",
+      "match": {
+        "prefixes": [
+          "kimi-k3"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "history.reasoning": "all",
+        "reasoning.levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "reasoning.off": "low",
+        "reasoning.mandatory": true
+      },
+      "why": "K3 has no medium or xhigh, and cannot stop thinking",
+      "evidence": [
+        "https://platform.kimi.com/docs/guide/use-thinking-models"
+      ]
+    },
+    {
+      "id": "model.trait-11",
+      "match": {
+        "prefixes": [
+          "kimi-k2.5",
+          "kimi-k2.6"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "thinking.toggle",
+        "reasoning.dialect": "thinking_toggle"
+      }
+    },
+    {
+      "id": "model.trait-12",
+      "match": {
+        "prefixes": [
+          "kimi-k2.7-code"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "mandatory",
+        "reasoning.dialect": "mandatory_thinking",
+        "history.reasoning": "all"
+      }
+    },
+    {
+      "id": "model.trait-13",
+      "match": {
+        "prefixes": [
+          "k3"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "history.reasoning": "all",
+        "reasoning.levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "reasoning.off": "none"
+      },
+      "why": "Kimi Code's K3 has no medium or xhigh",
+      "evidence": [
+        "https://www.kimi.com/code/docs/kimi-code/models.html"
+      ]
+    },
+    {
+      "id": "model.trait-14",
+      "match": {
+        "prefixes": [
+          "kimi-for-coding"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "mandatory",
+        "reasoning.dialect": "mandatory_thinking",
+        "history.reasoning": "all"
+      }
+    },
+    {
+      "id": "model.trait-15",
+      "match": {
+        "prefixes": [
+          "glm-5.3"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "thinking.effort",
+        "reasoning.dialect": "thinking_effort",
+        "reasoning.levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "reasoning.mandatory": true
+      },
+      "why": "GLM-5.3 has no medium or xhigh, and cannot stop thinking",
+      "evidence": [
+        "https://docs.z.ai/guides/overview/migrate-to-glm-new"
+      ]
+    },
+    {
+      "id": "model.trait-16",
+      "match": {
+        "prefixes": [
+          "glm-5.2"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "thinking.effort",
+        "reasoning.dialect": "thinking_effort",
+        "reasoning.levels": [
+          "high",
+          "max"
+        ]
+      },
+      "why": "GLM-5.2 serves anything but high as max",
+      "evidence": [
+        "https://docs.z.ai/guides/capabilities/thinking-mode"
+      ]
+    },
+    {
+      "id": "model.trait-17",
+      "match": {
+        "prefixes": [
+          "glm-4.5",
+          "glm-4.6",
+          "glm-4.7",
+          "glm-5"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "thinking.toggle",
+        "reasoning.dialect": "thinking_toggle"
+      }
+    },
+    {
+      "id": "model.trait-18",
+      "match": {
+        "prefixes": [
+          "grok-4.6",
+          "grok-4.20-multi-agent"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "reasoning.mandatory": true
+      },
+      "why": "Grok 4.6 adds xhigh and cannot stop reasoning",
+      "evidence": [
+        "https://docs.x.ai/developers/model-capabilities/text/reasoning"
+      ]
+    },
+    {
+      "id": "model.trait-19",
+      "match": {
+        "prefixes": [
+          "grok-4.5"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning.mandatory": true
+      },
+      "why": "Grok 4.5 serves an xhigh request as high, and cannot stop reasoning",
+      "evidence": [
+        "https://docs.x.ai/developers/model-capabilities/text/reasoning"
+      ]
+    },
+    {
+      "id": "model.trait-20",
+      "match": {
+        "prefixes": [
+          "gemini-3.1-pro"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning.mandatory": true
+      },
+      "why": "3.1 Pro maps minimal to low, rejects xhigh, and cannot stop reasoning",
+      "evidence": [
+        "https://ai.google.dev/gemini-api/docs/openai"
+      ]
+    },
+    {
+      "id": "model.trait-21",
+      "match": {
+        "prefixes": [
+          "gemini-3-flash",
+          "gemini-3.1-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning.mandatory": true
+      },
+      "why": "Gemini Flash rejects xhigh and max, and always thinks",
+      "evidence": [
+        "https://ai.google.dev/gemini-api/docs/openai"
+      ]
+    },
+    {
+      "id": "model.trait-22",
+      "match": {
+        "prefixes": [
+          "gemini-2.5-pro"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning.mandatory": true
+      },
+      "why": "2.5 gives minimal and low the same budget; Pro cannot stop reasoning",
+      "evidence": [
+        "https://ai.google.dev/gemini-api/docs/openai"
+      ]
+    },
+    {
+      "id": "model.trait-23",
+      "match": {
+        "prefixes": [
+          "gemini-2.5"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "reasoning.off": "none"
+      },
+      "why": "2.5 gives minimal and low the same 1,024-token budget, and disables with none",
+      "evidence": [
+        "https://ai.google.dev/gemini-api/docs/openai"
+      ]
+    },
+    {
+      "id": "model.trait-24",
+      "match": {
+        "prefixes": [
+          "qwen3.8-"
+        ]
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "xhigh"
+        ],
+        "reasoning.off": "none"
+      },
+      "why": "Qwen3.8-Max has no minimal, and neither high nor max is a spelling",
+      "evidence": [
+        "https://docs.qwencloud.com/api-reference/chat/openai-chat"
+      ]
+    },
+    {
+      "id": "model.text-only-00",
+      "match": {
+        "pattern": "deepseek-chat(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented DeepSeek text model family; the vision variants never match",
+      "evidence": [
+        "https://api-docs.deepseek.com/quick_start/pricing",
+        "https://api-docs.deepseek.com/guides/vision"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-01",
+      "match": {
+        "pattern": "deepseek-reasoner(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented DeepSeek text model family; the vision variants never match",
+      "evidence": [
+        "https://api-docs.deepseek.com/quick_start/pricing",
+        "https://api-docs.deepseek.com/guides/vision"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-02",
+      "match": {
+        "pattern": "deepseek-v4-(?:flash|pro)(?:-(?!vision)|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented DeepSeek text model family; the vision variants never match",
+      "evidence": [
+        "https://api-docs.deepseek.com/quick_start/pricing",
+        "https://api-docs.deepseek.com/guides/vision"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-03",
+      "match": {
+        "pattern": "deepseek-v3(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented DeepSeek text model family; the vision variants never match",
+      "evidence": [
+        "https://api-docs.deepseek.com/quick_start/pricing",
+        "https://api-docs.deepseek.com/guides/vision"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-04",
+      "match": {
+        "pattern": "deepseek-v3\\.\\d+(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented DeepSeek text model family; the vision variants never match",
+      "evidence": [
+        "https://api-docs.deepseek.com/quick_start/pricing",
+        "https://api-docs.deepseek.com/guides/vision"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-05",
+      "match": {
+        "pattern": "deepseek-r1(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented DeepSeek text model family; the vision variants never match",
+      "evidence": [
+        "https://api-docs.deepseek.com/quick_start/pricing",
+        "https://api-docs.deepseek.com/guides/vision"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-06",
+      "match": {
+        "pattern": "glm-5(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Z.AI / BigModel GLM text family; -V and OCR variants never match",
+      "evidence": [
+        "https://docs.z.ai/guides/overview/overview"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-07",
+      "match": {
+        "pattern": "glm-5-turbo(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Z.AI / BigModel GLM text family; -V and OCR variants never match",
+      "evidence": [
+        "https://docs.z.ai/guides/overview/overview"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-08",
+      "match": {
+        "pattern": "glm-5\\.\\d+(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Z.AI / BigModel GLM text family; -V and OCR variants never match",
+      "evidence": [
+        "https://docs.z.ai/guides/overview/overview"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-09",
+      "match": {
+        "pattern": "glm-4\\.[567](?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Z.AI / BigModel GLM text family; -V and OCR variants never match",
+      "evidence": [
+        "https://docs.z.ai/guides/overview/overview"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-10",
+      "match": {
+        "pattern": "glm-4-32b-0414-128k(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Z.AI / BigModel GLM text family; -V and OCR variants never match",
+      "evidence": [
+        "https://docs.z.ai/guides/overview/overview"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-11",
+      "match": {
+        "pattern": "qwen3-max-2026-01-23(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Qwen coding-plan model documented without direct vision; do not generalize to Qwen3.5/3.6/3.7 or Qwen-VL",
+      "evidence": [
+        "https://help.aliyun.com/zh/model-studio/add-vision-skill",
+        "https://help.aliyun.com/zh/model-studio/vision-model/"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-12",
+      "match": {
+        "pattern": "qwen3-coder-(?:next|plus)(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Qwen coding-plan model documented without direct vision; do not generalize to Qwen3.5/3.6/3.7 or Qwen-VL",
+      "evidence": [
+        "https://help.aliyun.com/zh/model-studio/add-vision-skill",
+        "https://help.aliyun.com/zh/model-studio/vision-model/"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-13",
+      "match": {
+        "pattern": "kimi-k3(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
+      "evidence": [
+        "https://platform.kimi.com/docs/models",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-14",
+      "match": {
+        "pattern": "kimi-k2\\.7-code(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
+      "evidence": [
+        "https://platform.kimi.com/docs/models",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-15",
+      "match": {
+        "pattern": "kimi-k2(?!\\.5|\\.6)(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
+      "evidence": [
+        "https://platform.kimi.com/docs/models",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-16",
+      "match": {
+        "pattern": "k3(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
+      "evidence": [
+        "https://platform.kimi.com/docs/models",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-17",
+      "match": {
+        "pattern": "kimi-for-coding(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
+      "evidence": [
+        "https://platform.kimi.com/docs/models",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-18",
+      "match": {
+        "pattern": "moonshot-v1-(?:8k|32k|128k)(?:-(?!vision)|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Moonshot v1 text sizes; a moonshot-v1-*-vision-preview id never matches",
+      "evidence": [
+        "https://platform.kimi.com/docs/models"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-19",
+      "match": {
+        "pattern": "minimax-m2\\.5(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "Documented text-only Minimax model",
+      "evidence": [
+        "https://platform.minimaxi.com/document/Models"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.text-only-20",
+      "match": {
+        "pattern": "gpt-oss-(?:20b|120b)(?:-|$)"
+      },
+      "set": {
+        "image.input": "text_only"
+      },
+      "why": "gpt-oss text models; the vision-tuned variants never match",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-oss-120b"
+      ],
+      "notes": [
+        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
+        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
+        "Claude stays unknown/main-first and is never in the negative list."
+      ]
+    },
+    {
+      "id": "model.claude-mandatory",
+      "match": {
+        "pattern": ".*(?:claude-fable|claude-mythos).*"
+      },
+      "set": {
+        "reasoning.mandatory": true
+      },
+      "why": "These families always reason; off is not a choice",
+      "evidence": [
+        "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+      ],
+      "notes": [
+        "Always-thinking families keep thinking active even when a config names off: the adaptive recipe's disable step is gated on reasoning.mandatory."
+      ]
+    },
+    {
+      "id": "model.claude-opus-4.5-manual-effort",
+      "match": {
+        "pattern": ".*claude-opus.*",
+        "version": {
+          "pattern": "(?:^|[^0-9a-z])(?P<major>[0-9]{1,2})(?:[^0-9a-z](?P<minor>[0-9]{1,2}))?(?=$|[^0-9a-z])",
+          "min_inclusive": [
+            4,
+            5
+          ],
+          "max_exclusive": [
+            4,
+            6
+          ]
+        }
+      },
+      "set": {
+        "reasoning.recipe": "messages.manual-opus-45",
+        "reasoning.dialect": "off",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "history.reasoning": "all"
+      },
+      "why": "Opus 4.5 uniquely combines manual thinking with output_config.effort",
+      "evidence": [
+        "https://platform.claude.com/docs/en/build-with-claude/extended-thinking",
+        "https://platform.claude.com/docs/en/build-with-claude/effort"
+      ]
+    },
+    {
+      "id": "model.claude-manual-thinking",
+      "match": {
+        "pattern": ".*claude-.*",
+        "version": {
+          "pattern": "(?:^|[^0-9a-z])(?P<major>[0-9]{1,2})(?:[^0-9a-z](?P<minor>[0-9]{1,2}))?(?=$|[^0-9a-z])",
+          "max_exclusive": [
+            4,
+            6
+          ]
+        }
+      },
+      "set": {
+        "reasoning.recipe": "messages.manual",
+        "reasoning.dialect": "off",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "history.reasoning": "current_turn"
+      },
+      "why": "4.5 and earlier require manual thinking",
+      "evidence": [
+        "https://platform.claude.com/docs/en/build-with-claude/extended-thinking"
+      ],
+      "notes": [
+        "Unknown aliases receive no generation recipe; guessing can turn a valid alias into HTTP 400.",
+        "History: Sonnet/Haiku 4.5 and earlier keep only the latest turn's thinking; Opus 4.5 keeps all (matched above)."
+      ]
+    },
+    {
+      "id": "model.claude-4.6.adaptive-thinking",
+      "match": {
+        "pattern": ".*claude-.*",
+        "version": {
+          "pattern": "(?:^|[^0-9a-z])(?P<major>[0-9]{1,2})(?:[^0-9a-z](?P<minor>[0-9]{1,2}))?(?=$|[^0-9a-z])",
+          "min_inclusive": [
+            4,
+            6
+          ],
+          "max_exclusive": [
+            4,
+            7
+          ]
+        }
+      },
+      "set": {
+        "reasoning.recipe": "messages.adaptive-xhigh-as-max",
+        "reasoning.dialect": "off",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "history.reasoning": "all"
+      },
+      "why": "This generation uses adaptive thinking and maps xhigh to max",
+      "evidence": [
+        "https://platform.claude.com/docs/en/build-with-claude/extended-thinking",
+        "https://platform.claude.com/docs/en/build-with-claude/effort"
+      ],
+      "notes": [
+        "4.6 rejects manual thinking and has no xhigh spelling yet; xhigh requests are served as max."
+      ]
+    },
+    {
+      "id": "model.claude-4.7.adaptive-thinking",
+      "match": {
+        "pattern": ".*claude-.*",
+        "version": {
+          "pattern": "(?:^|[^0-9a-z])(?P<major>[0-9]{1,2})(?:[^0-9a-z](?P<minor>[0-9]{1,2}))?(?=$|[^0-9a-z])",
+          "min_inclusive": [
+            4,
+            7
+          ]
+        }
+      },
+      "set": {
+        "reasoning.recipe": "messages.adaptive",
+        "reasoning.dialect": "off",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "history.reasoning": "all"
+      },
+      "why": "4.7+ adaptive thinking takes the full effort scale",
+      "evidence": [
+        "https://platform.claude.com/docs/en/build-with-claude/extended-thinking",
+        "https://platform.claude.com/docs/en/build-with-claude/effort"
+      ],
+      "notes": [
+        "4.7+ rejects manual thinking; only adaptive is offered."
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "id": "provider.openai",
+      "hosts": [
+        "api.openai.com"
+      ],
+      "defaults": {
+        "json.response_format": true,
+        "strict.tools": true,
+        "temperature.suppress_models": [
+          "o",
+          "gpt-5"
+        ],
+        "responses.reasoning_models": [
+          "o",
+          "gpt-5"
+        ]
+      },
+      "model_rules": [
+        {
+          "id": "provider-rule.reasoning-0.o-gpt-5",
+          "match": {
+            "prefixes": [
+              "o",
+              "gpt-5"
+            ]
+          },
+          "set": {
+            "reasoning.recipe": "reasoning.effort",
+            "reasoning.dialect": "reasoning_effort"
+          }
+        }
+      ],
+      "builtin_tools_by_wire": {
+        "responses": [
+          {
+            "type": "web_search"
+          }
+        ]
+      },
+      "notes": [
+        "Why: Chat Completions accepts reasoning_effort only for reasoning model families,",
+        "while strict function schemas are an OpenAI capability rather than a generic default.",
+        "Responses models from GPT-5.1 onward document `none` as the no-reasoning effort; the",
+        "original GPT-5 does not. The optional Responses reasoning object is limited to these",
+        "reasoning families: GPT-4.1 supports Responses but is explicitly non-reasoning. Reasoning",
+        "families reject temperature, while sibling chat models such as gpt-4o retain it.",
+        "Evidence: : https://developers.openai.com/api/docs/guides/reasoning",
+        "https://developers.openai.com/api/docs/models/gpt-5",
+        "https://developers.openai.com/api/docs/models/gpt-5.1",
+        "https://developers.openai.com/api/docs/models/gpt-4.1",
+        "https://developers.openai.com/api/docs/guides/function-calling#strict-mode"
+      ]
+    },
+    {
+      "id": "provider.openrouter",
+      "hosts": [
+        "openrouter.ai"
+      ],
+      "defaults": {
+        "reasoning.recipe": "reasoning.object",
+        "reasoning.dialect": "reasoning"
+      },
+      "model_rules": [],
+      "model_rule_modes": {
+        "reasoning": "ignore",
+        "history": "ignore"
+      },
+      "builtin_tools_by_wire": {
+        "chat": [
+          {
+            "type": "openrouter:web_search"
+          },
+          {
+            "type": "openrouter:web_fetch"
+          },
+          {
+            "type": "openrouter:datetime"
+          }
+        ],
+        "responses": [
+          {
+            "type": "openrouter:web_search"
+          },
+          {
+            "type": "openrouter:web_fetch"
+          },
+          {
+            "type": "openrouter:datetime"
+          }
+        ]
+      },
+      "notes": [
+        "Why: OpenRouter normalizes providers behind its own top-level reasoning object.",
+        "Evidence: : https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
+      ]
+    },
+    {
+      "id": "provider.opencode",
+      "hosts": [
+        "opencode.ai"
+      ],
+      "defaults": {},
+      "model_rules": [
+        {
+          "id": "provider-rule.api-0.claude--qwen",
+          "match": {
+            "prefixes": [
+              "claude-",
+              "qwen"
+            ]
+          },
+          "set": {
+            "api": "anthropic"
+          }
+        },
+        {
+          "id": "provider-rule.api-1.gpt--grok-",
+          "match": {
+            "prefixes": [
+              "gpt-",
+              "grok-"
+            ]
+          },
+          "set": {
+            "api": "responses"
+          }
+        }
+      ],
+      "builtin_tools_by_wire": {},
+      "notes": [
+        "Why: one OpenCode base URL multiplexes wire protocols by model, so api=auto cannot infer",
+        "the protocol from the URL: Claude and Qwen are served by Messages, GPT and Grok by",
+        "Responses, and the rest by Chat Completions. Its model traits reuse the canonical effort",
+        "capabilities above; only routing remains an OpenCode provider overlay.",
+        "Evidence: : https://opencode.ai/docs/zen"
+      ]
+    },
+    {
+      "id": "provider.deepseek",
+      "hosts": [
+        "api.deepseek.com"
+      ],
+      "defaults": {
+        "reasoning.recipe": "thinking.with-effort",
+        "reasoning.dialect": "thinking",
+        "history.reasoning": "tool_calls",
+        "reasoning.levels": [
+          "low",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cache.prompt_key": false,
+        "json.response_format": true,
+        "strict.tools": true,
+        "strict.beta": true
+      },
+      "model_rules": [],
+      "builtin_tools_by_wire": {},
+      "notes": [
+        "Why: DeepSeek uses thinking.type plus a reduced effort scale, does not define OpenAI's",
+        "prompt_cache_key, and requires the /beta endpoint for strict function schemas. Ordinary",
+        "turns may omit reasoning, but every assistant tool-call message must retain it.",
+        "Evidence: : https://api-docs.deepseek.com/guides/thinking_mode/",
+        "https://api-docs.deepseek.com/api/create-chat-completion/",
+        "https://api-docs.deepseek.com/guides/tool_calls",
+        "https://api-docs.deepseek.com/guides/thinking_mode"
+      ]
+    },
+    {
+      "id": "provider.qwen",
+      "hosts": [
+        "aliyuncs.com"
+      ],
+      "defaults": {
+        "history.reasoning": "current_turn",
+        "json.response_format": true
+      },
+      "model_rules": [
+        {
+          "id": "provider-rule.levels-0.glm-5.3",
+          "match": {
+            "prefixes": [
+              "glm-5.3"
+            ]
+          },
+          "set": {
+            "reasoning.levels": [
+              "low",
+              "high",
+              "max"
+            ]
+          },
+          "why": "GLM-5.3 keeps its own scale on Alibaba",
+          "evidence": [
+            "https://docs.qwencloud.com/api-reference/chat/openai-chat"
+          ]
+        },
+        {
+          "id": "provider-rule.levels-1.deepseek-v4--glm-",
+          "match": {
+            "prefixes": [
+              "deepseek-v4-",
+              "glm-"
+            ]
+          },
+          "set": {
+            "reasoning.levels": [
+              "high",
+              "max"
+            ]
+          },
+          "why": "Alibaba serves low and medium as high for these models",
+          "evidence": [
+            "https://docs.qwencloud.com/api-reference/chat/openai-chat"
+          ]
+        }
+      ],
+      "builtin_tools_by_wire": {
+        "responses": [
+          {
+            "type": "web_search"
+          },
+          {
+            "type": "web_extractor"
+          }
+        ]
+      },
+      "notes": [
+        "Why: Qwen ignores prior-turn reasoning by default, while tool loops should replay it.",
+        "Explicit preserve_thinking=true is folded at request time.",
+        "Evidence: : https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking"
+      ]
+    },
+    {
+      "id": "provider.kimi_open",
+      "hosts": [
+        "moonshot.ai",
+        "moonshot.cn"
+      ],
+      "defaults": {
+        "history.reasoning": "current_turn",
+        "reasoning.levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "strict.tools": true,
+        "temperature.suppress": true
+      },
+      "model_rules": [],
+      "builtin_tools_by_wire": {
+        "chat": [
+          {
+            "type": "builtin_function",
+            "function": {
+              "name": "$web_search"
+            }
+          }
+        ]
+      },
+      "notes": [
+        "Why: the international and China Kimi open platforms expose the same model controls",
+        "on different regional domains. Their temperature values are fixed; explicit",
+        "thinking.keep=\"all\" is folded at request time.",
+        "Evidence: : https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model",
+        "https://platform.kimi.com/docs/guide/use-kimi-k2-thinking-model",
+        "https://platform.kimi.ai/docs/api/models-overview",
+        "https://platform.kimi.ai/docs/api/chat"
+      ]
+    },
+    {
+      "id": "provider.kimi_code",
+      "hosts": [
+        "kimi.com"
+      ],
+      "defaults": {
+        "reasoning.levels": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "model_rules": [],
+      "builtin_tools_by_wire": {},
+      "notes": [
+        "Why: Kimi Code is a separate subscription API whose official client tools (WebSearch,",
+        "FetchURL) run on the client; no coding-endpoint server-tool contract exists.",
+        "Evidence: : https://platform.kimi.ai/docs/api/chat"
+      ]
+    },
+    {
+      "id": "provider.zai",
+      "hosts": [
+        "z.ai"
+      ],
+      "defaults": {
+        "history.reasoning": "current_turn",
+        "cache.prompt_key": false
+      },
+      "model_rules": [],
+      "builtin_tools_by_wire": {
+        "chat": [
+          {
+            "type": "web_search",
+            "web_search": {}
+          }
+        ]
+      },
+      "notes": [
+        "Why: both Z.AI regions share thinking controls and automatic context caching.",
+        "Evidence: : https://docs.z.ai/guides/capabilities/thinking",
+        "https://docs.z.ai/guides/capabilities/cache"
+      ]
+    },
+    {
+      "id": "provider.bigmodel",
+      "hosts": [
+        "bigmodel.cn"
+      ],
+      "defaults": {
+        "history.reasoning": "current_turn",
+        "cache.prompt_key": false
+      },
+      "model_rules": [],
+      "builtin_tools_by_wire": {
+        "chat": [
+          {
+            "type": "web_search",
+            "web_search": {}
+          }
+        ]
+      },
+      "notes": [
+        "Why: China's BigModel endpoint documents the same thinking and automatic-cache contract.",
+        "Evidence: : https://docs.bigmodel.cn/cn/guide/capabilities/thinking",
+        "https://docs.bigmodel.cn/cn/guide/capabilities/cache"
+      ]
+    },
+    {
+      "id": "provider.volcengine",
+      "hosts": [
+        "volces.com"
+      ],
+      "defaults": {},
+      "model_rules": [
+        {
+          "id": "provider-rule.levels-0.pattern",
+          "match": {
+            "pattern": ".*"
+          },
+          "set": {
+            "reasoning.levels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "why": "Volcengine Ark gives every model it hosts these four levels",
+          "evidence": [
+            "https://www.volcengine.com/docs/82379/1330310"
+          ]
+        }
+      ],
+      "notes": [
+        "Why: Ark gives every model it hosts one effort scale of its own rather than each model's, so",
+        "the levels a model takes here are the endpoint's fact and outrank the model's -- DeepSeek V4",
+        "and GLM both arrive with three or two levels of their own and are served with these four.",
+        "Evidence: : https://www.volcengine.com/docs/82379/1330310"
+      ]
+    },
+    {
+      "id": "provider.anthropic",
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "defaults": {},
+      "model_rules": [],
+      "builtin_tools_by_wire": {
+        "anthropic": [
+          {
+            "type": "web_search_20250305",
+            "name": "web_search"
+          }
+        ]
+      },
+      "notes": [
+        "Why: Anthropic server tools (web_search_20250305) are Messages tool definitions; only the",
+        "tested web search version is offered so far. OpenCode Zen documents endpoint routing only,",
+        "with no gateway server-tool contract, so no provider-side tools are assumed for it.",
+        "Evidence: : https://platform.claude.com/docs/en/build-with-claude/tool-use"
+      ]
+    }
+  ]
+}

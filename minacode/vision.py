@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from minacode.base import Billing, ModelError
 from minacode.image import ImageRef
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
+from minacode.providers.compat import bundled_policy
 
 if TYPE_CHECKING:
     from minacode.model.client import ModelClient
@@ -40,11 +41,13 @@ class VisionObserver:
         provider = self.model.session.config.providers[entry_name]
         if missing := provider.missing_fields():
             raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
+        catalog = self.model.session.catalog
+        policy = catalog.policy if catalog is not None else bundled_policy()
         messages = [
             {"role": "system", "content": VISION_OBSERVE_PROMPT},
             {
                 "role": "user",
-                "content": self.model.session.images.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
+                "content": self.model.session.images.vision_content(images, policy.resolve(provider).api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
             },
         ]
         # Billed as a vision observation: joins the session totals but must not overwrite the

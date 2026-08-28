@@ -1,5 +1,6 @@
 """provider chat params (split from tests/test_core_logic.py)."""
 import pytest
+from catalog_harness import resolve
 from test_core_logic import session
 
 from minacode.base import (
@@ -14,6 +15,7 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.model import ModelClient
+from minacode.providers.catalog import decode_bundled
 
 
 def test_runtime_settings_reads_theme_from_config():
@@ -80,11 +82,17 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
 
 def test_every_resolvable_chat_reasoning_mode_is_configurable_by_hand():
     """`chat_reasoning` is the escape hatch when auto guesses wrong for a gateway or an
-    unrecognized model name, so every mode the compatibility rules can resolve to must also be
+    unrecognized model name, so every dialect the catalog can resolve to must also be
     accepted from config."""
-    resolvable = {rule.value for compatibility in ProviderConfig.COMPATIBILITY.values() for rule in compatibility.chat_reasoning_rules} | {
-        compatibility.chat_reasoning for compatibility in ProviderConfig.COMPATIBILITY.values() if compatibility.chat_reasoning is not None
-    }
+    snapshot = decode_bundled()
+
+    def dialects(setmaps) -> set[str]:
+        return {str(mapping["reasoning.dialect"]) for mapping in setmaps if "reasoning.dialect" in mapping}
+
+    resolvable = dialects(rule.set for rule in snapshot.model_rules)
+    for provider in snapshot.providers:
+        resolvable |= dialects([provider.defaults])
+        resolvable |= dialects(rule.set for rule in provider.model_rules)
 
     assert resolvable <= set(CHAT_REASONING_CHOICES), sorted(resolvable - set(CHAT_REASONING_CHOICES))
     for mode in resolvable:
@@ -94,13 +102,13 @@ def test_openai_suppresses_temperature_only_for_reasoning_families(tmp_path):
     """Reasoning models reject temperature outright, while sibling chat models still take it."""
     client = ModelClient(session(tmp_path))
     reasoning = ProviderConfig(url="https://api.openai.com/v1", model="gpt-5", reasoning="medium", temperature=0.7)
-    assert reasoning.resolve().suppress_temperature is True
+    assert resolve(reasoning).suppress_temperature is True
     params = {}
     client.apply_provider_params(params, reasoning)
     assert params == {"reasoning_effort": "medium"}
 
     chat = ProviderConfig(url="https://api.openai.com/v1", model="gpt-4o", temperature=0.7)
-    assert chat.resolve().suppress_temperature is False
+    assert resolve(chat).suppress_temperature is False
     params = {}
     client.apply_provider_params(params, chat)
     assert params == {"temperature": 0.7}
@@ -109,7 +117,7 @@ def test_opencode_routes_each_model_family_to_its_documented_protocol():
     """One base URL multiplexes three wire protocols by model, so api=auto cannot read the URL."""
 
     def api(model):
-        return ProviderConfig(url="https://opencode.ai/zen/v1", model=model).resolve().api
+        return resolve(ProviderConfig(url="https://opencode.ai/zen/v1", model=model)).api
 
     assert api("claude-sonnet-5") == "anthropic"
     assert api("qwen3-coder") == "anthropic"
@@ -245,16 +253,16 @@ def test_anthropic_thinking_budget_stays_under_the_requested_output_budget(tmp_p
     provider.max_tokens, provider.reasoning = 32_000, "medium"
     assert client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)["thinking"]["budget_tokens"] == 4_096
 
-def test_openrouter_reasoning_effort_uses_the_resolved_level(tmp_path):
-    """Every other control sends the resolved effort; the top-level reasoning object must too, or a
-    documented per-model fold would silently apply to some hosts and not others."""
+def test_openrouter_reasoning_object_recipe_sends_the_resolved_effort(tmp_path):
+    """OpenRouter normalizes reasoning behind its own object, so the recipe reads the resolved
+    effort rather than the configured value directly (equal here, because the host's ignore-mode
+    leaves the model's scale unconstrained)."""
     client = ModelClient(session(tmp_path))
     params: dict = {}
 
-    # Kimi documents low/high/max, so "medium" folds up on any host whose profile carries that scale.
-    client.apply_provider_params(params, ProviderConfig(url="https://api.moonshot.ai/v1", model="kimi-k3", chat_reasoning="reasoning", reasoning="medium"))
+    client.apply_provider_params(params, ProviderConfig(url="https://openrouter.ai/api/v1", model="kimi-k3", reasoning="medium"))
 
-    assert params["extra_body"] == {"reasoning": {"effort": "high"}}
+    assert params["extra_body"] == {"reasoning": {"effort": "medium"}}
 
 def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
     """The API verifies that thinking blocks return exactly as it produced them, signature

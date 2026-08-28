@@ -32,6 +32,11 @@ description.
 **`/config`** — Shows the active configuration: provider blocks, runtime settings,
 and their resolved values.
 
+**`/catalog [sync]`** — Shows which compatibility catalog this session resolves against:
+its version, whether it is the bundled copy or a synced one, and the last sync result.
+`sync` checks for a newer catalog immediately instead of waiting for the background
+refresh.
+
 ## The code index
 
 **`/index [force]`** — Build or rebuild the code symbol index that powers

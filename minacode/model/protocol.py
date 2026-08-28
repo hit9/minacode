@@ -16,7 +16,6 @@ import minacode.model.responses as responses_module
 from minacode.base import ANTHROPIC_CONTENT_KEY, PROVIDER_ORIGIN_KEY, Billing, Json, ModelError, Text, ToolCall
 from minacode.config import ProviderConfig
 from minacode.image import ImageInputs
-from minacode.providers.compat import anthropic_keeps_prior_thinking
 
 if TYPE_CHECKING:
     from minacode.model.client import ModelClient
@@ -70,7 +69,7 @@ class ChatWire:
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
         messages = self.messages(messages, provider=provider)
-        resolved = provider.resolve()
+        resolved = self._client.resolved(provider)
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         params = chat_module.chat_params(
             messages,
@@ -112,7 +111,7 @@ class ChatWire:
         if text_only is None:
             text_only = self._client.session.image_route.is_text_only()
         return chat_module.chat_messages(
-            messages, provider, provider.resolve(), self._client.session.images, self._client.latest_user_position, text_only=text_only
+            messages, provider, self._client.resolved(provider), self._client.session.images, self._client.latest_user_position, text_only=text_only
         )
 
     def estimation_payload(self, messages: list[Json], tools: list[Json] | None, builtin: list[Json]) -> Json:
@@ -164,7 +163,7 @@ class ResponsesWire:
         billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
-        resolved = provider.resolve()
+        resolved = self._client.resolved(provider)
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         params: Json = {
             "model": provider.model,
@@ -187,13 +186,11 @@ class ResponsesWire:
         if prompt_cache_key := self._client.prompt_cache_key(provider, tools):
             params["prompt_cache_key"] = prompt_cache_key
         # Stateless requests return encrypted reasoning items by default, so the replay below needs
-        # no `include`; effort goes through the compatibility fold like the chat path, and a host
+        # no `include`; effort goes through the request-recipe fold like the chat path, and a host
         # that defines an explicit "off" spelling still gets it when reasoning is off.
-        if resolved.responses_reasoning:
-            if effort := resolved.reasoning_effort:
-                params["reasoning"] = {"effort": effort}
-            elif provider.reasoning == "off":
-                raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
+        if resolved.responses_reasoning and provider.reasoning == "off" and resolved.reasoning_effort is None:
+            raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
+        self._client.apply_request(params, provider, resolved, wire="responses")
         if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
         if provider.extra_body and (extra_body := responses_module.responses_extra_body(provider.extra_body, params)):
@@ -303,11 +300,12 @@ class AnthropicWire:
             messages,
             tools,
             provider,
-            provider.resolve(),
+            self._client.resolved(provider),
             provider_origin=self._client.provider_origin,
             replayable_echo=self._client.replayable_echo,
             images=self._client.session.images,
             builtin_tools=self._client.builtin_tools,
+            apply_request=lambda params, entry, resolved: self._client.apply_request(params, entry, resolved, wire="anthropic"),
             text_only=self._client.session.image_route.is_text_only(),
         )
 
@@ -326,7 +324,8 @@ class AnthropicWire:
         """The wire-shaped payload for one token estimate, matching what request() would send."""
         system = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
         estimated_messages = messages
-        if not anthropic_keeps_prior_thinking(self._client.session.config.provider.model):
+        resolved = self._client.resolved(self._client.session.config.provider)
+        if resolved.chat_reasoning_history != "all":
             latest_user = max(
                 (index for index, message in enumerate(messages) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
                 default=-1,

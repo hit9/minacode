@@ -101,6 +101,7 @@ class CommandLoop:
 
 - `/help` — Show this help.
 - `/status` — Show runtime status.
+- `/catalog [sync]` — Show the provider catalog in use, or force a sync.
 - `/ps` — Show active background jobs.
 - `/diff` — Show latest edits and overall session diff.
 - `/skills` — List installed skills (load with `Skill(name)` or reference inline with `$name`).
@@ -220,7 +221,7 @@ Full documentation: https://minacode.readthedocs.io
         self.input_completer = CommandCompleter(
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
-            reasoning_choices=lambda: self.session.config.provider.reasoning_choices(),
+            reasoning_choices=lambda: self.session.catalog.policy.reasoning_choices(self.session.config.provider) if self.session.catalog else ("off",),
             worker_models=lambda: tuple(
                 dict.fromkeys(
                     (*self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider].available_models, "default")
@@ -488,6 +489,11 @@ Full documentation: https://minacode.readthedocs.io
         mcp = self.session.mcp
         if mcp is not None:
             threading.Thread(target=mcp.discover_auto, name="mcp-discover", daemon=True).start()
+        # The provider catalog refresh runs off the startup path after the first screen, gated to
+        # once per 72h (see sync.CatalogRuntime); a failure only shows through /catalog.
+        catalog = self.session.catalog
+        if catalog is not None:
+            catalog.start_background_sync()
 
     def clean_expired_sessions_async(self) -> None:
         """Run the retention sweep off the startup path: on a network filesystem it can cost
@@ -1005,6 +1011,7 @@ Full documentation: https://minacode.readthedocs.io
 COMMANDS: tuple[Command, ...] = (
     Command("/help", commands.help, render="answer"),
     Command("/status", commands.status, queue_safe=True, render="compact"),
+    Command("/catalog", commands.catalog_command, queue_safe=True, render="answer"),
     Command("/ps", commands.ps_command, queue_safe=True, render="answer"),
     Command("/diff", commands.diff_command, queue_safe=True, render="answer"),
     Command("/skills", commands.skills_command, queue_safe=True, render="answer"),
