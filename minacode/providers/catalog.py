@@ -3,6 +3,20 @@
 The catalog is advisory rather than an allowlist. Unmatched providers and model names stay on
 minacode's generic protocol path, while ``provider_compat`` folds these documented exceptions into
 the resolved request policy.
+
+Two tables, split by what a fact is about:
+
+* ``MODEL_TRAITS`` — how a model family takes reasoning. Matched on the model name alone and
+  applied on every host, because the same model wants the same thinking format and effort scale
+  whoever serves it. A model reached through a gateway or a self-hosted proxy is still that model.
+* ``PROVIDER_CATALOG`` — what an endpoint does: which wire, caching, strict schemas, provider-side
+  tools, and a fallback effort vocabulary for the models on it the trait table does not name.
+
+These were one table until model knowledge had to be claimed by each host by name, which meant an
+endpoint the catalog had never seen resolved a well-known model as if it were unknown — the
+ordinary case, since popular models are served from many domains. Model facts now apply by
+default; an endpoint that re-encodes reasoning rather than passing each model's own spelling
+through opts out with ``normalizes_reasoning``.
 """
 
 from __future__ import annotations
@@ -29,10 +43,31 @@ class ModelEffortRuleData(TypedDict):
 BuiltinToolRuleData = dict[str, object]
 
 
+class ModelTraitData(TypedDict, total=False):
+    """One model family and everything the catalog knows about how it takes reasoning.
+
+    Keyed by the model rather than by a host, because these facts belong to the model: the same
+    family served by a gateway wants the same thinking format, replay rule, and effort scale. The
+    selector is the one every catalog rule uses — family prefixes or a documented version pattern.
+    """
+
+    prefixes: NotRequired[tuple[str, ...]]
+    pattern: NotRequired[str]
+    chat_reasoning: str
+    chat_reasoning_history: str
+    reasoning_effort_levels: tuple[str, ...]
+    # The wire spelling of "do not think" for this family. Chat and Responses have never needed
+    # different spellings for the same model, so one field serves both.
+    reasoning_effort_off: str
+
+
 class CompatibilityData(TypedDict, total=False):
     """Data compiled into one provider compatibility profile."""
 
-    model_capabilities: tuple[str, ...]
+    # An endpoint that speaks its own normalized reasoning dialect rather than each model's native
+    # one. Model traits are skipped for it entirely: sending a model's own spelling to a gateway
+    # that re-encodes reasoning is wrong in a way no per-field precedence can express.
+    normalizes_reasoning: bool
     api_rules: tuple[ModelRuleData, ...]
     chat_reasoning: str
     chat_reasoning_rules: tuple[ModelRuleData, ...]
@@ -102,99 +137,97 @@ ANTHROPIC_MODELS: AnthropicModelData = {
 #           https://developers.openai.com/api/docs/models/gpt-5.3-codex
 #           https://developers.openai.com/api/docs/models/gpt-5.1
 #           https://developers.openai.com/api/docs/models/gpt-5
-OPENAI_EFFORT_CAPABILITY: CompatibilityData = {
-    "reasoning_effort_level_rules": (
-        {"levels": ("low", "medium", "high", "xhigh", "max"), "pattern": r"gpt-5\.6(?:-|$)"},
-        {"levels": ("medium", "high", "xhigh"), "pattern": r"gpt-5\.(?:2|4|5)-pro(?:-|$)"},
-        {"levels": ("low", "medium", "high", "xhigh"), "pattern": r"gpt-5\.(?:2|3)-codex(?:-|$)"},
-        {"levels": ("low", "medium", "high", "xhigh"), "pattern": r"gpt-5\.(?:2|4|5)(?:-|$)"},
-        {"levels": ("low", "medium", "high"), "pattern": r"gpt-5\.1(?:-|$)"},
-        {"levels": ("high",), "pattern": r"gpt-5-pro(?:-|$)"},
-        {"levels": ("minimal", "low", "medium", "high"), "pattern": r"gpt-5(?:-|$)"},
-        {"levels": ("low", "medium", "high"), "pattern": r"o[1-4](?:-|$)"},
-    ),
-    "reasoning_effort_off_rules": (
-        {"value": "medium", "pattern": r"gpt-5\.(?:2|4|5)-pro(?:-|$)"},
-        {"value": "low", "pattern": r"gpt-5\.(?:2|3)-codex(?:-|$)"},
-        {"value": "high", "pattern": r"gpt-5-pro(?:-|$)"},
-        {"value": "none", "pattern": r"gpt-5\.(?:[1-9]\d*)(?:-|$)"},
-    ),
-    "responses_reasoning_effort_off_rules": (
-        {"value": "medium", "pattern": r"gpt-5\.(?:2|4|5)-pro(?:-|$)"},
-        {"value": "low", "pattern": r"gpt-5\.(?:2|3)-codex(?:-|$)"},
-        {"value": "high", "pattern": r"gpt-5-pro(?:-|$)"},
-        {"value": "none", "pattern": r"gpt-5\.(?:[1-9]\d*)(?:-|$)"},
-    ),
-}
-
-MODEL_CAPABILITIES: dict[str, CompatibilityData] = {
-    "openai_effort": OPENAI_EFFORT_CAPABILITY,
+MODEL_TRAITS: tuple[ModelTraitData, ...] = (
+    {
+        "pattern": r"gpt-5\.6(?:-|$)",
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high", "xhigh", "max"),
+        "reasoning_effort_off": "none",
+    },
+    {
+        "pattern": r"gpt-5\.(?:2|4|5)-pro(?:-|$)",
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("medium", "high", "xhigh"),
+        "reasoning_effort_off": "medium",
+    },
+    {
+        "pattern": r"gpt-5\.(?:2|3)-codex(?:-|$)",
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high", "xhigh"),
+        "reasoning_effort_off": "low",
+    },
+    {
+        "pattern": r"gpt-5\.(?:2|4|5)(?:-|$)",
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high", "xhigh"),
+        "reasoning_effort_off": "none",
+    },
+    {
+        "pattern": r"gpt-5\.1(?:-|$)",
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high"),
+        "reasoning_effort_off": "none",
+    },
+    {
+        "pattern": r"gpt-5-pro(?:-|$)",
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("high",),
+        "reasoning_effort_off": "high",
+    },
+    # Bare gpt-5 has no documented "off" spelling; only the 5.x generations define one.
+    {"pattern": r"gpt-5(?:-|$)", "chat_reasoning": "reasoning_effort", "reasoning_effort_levels": ("minimal", "low", "medium", "high")},
+    {"pattern": r"o[1-4](?:-|$)", "chat_reasoning": "reasoning_effort", "reasoning_effort_levels": ("low", "medium", "high")},
     # DeepSeek V4 uses thinking.type and accepts low/high/max plus xhigh as a model-specific
     # compatibility level. The host folds medium/high/xhigh to high server-side, so only low and
     # max are distinct efforts; xhigh is kept in the level list because the endpoint accepts it.
-    # Its tool-call replay rule travels with the model, not the endpoint: a
-    # gateway serving the same model still requires reasoning on tool-call messages and ignores it
-    # everywhere else.
     # Evidence: https://api-docs.deepseek.com/guides/thinking_mode/
-    "deepseek_v4": {
-        "chat_reasoning_rules": ({"value": "thinking", "prefixes": ("deepseek-v4-",)},),
-        "chat_reasoning_history_rules": ({"value": "tool_calls", "prefixes": ("deepseek-v4-",)},),
-        "reasoning_effort_level_rules": ({"levels": ("low", "high", "xhigh", "max"), "prefixes": ("deepseek-v4-",)},),
+    {
+        "prefixes": ("deepseek-v4-",),
+        "chat_reasoning": "thinking",
+        "chat_reasoning_history": "tool_calls",
+        "reasoning_effort_levels": ("low", "high", "xhigh", "max"),
     },
     # K3 uses normalized effort, K2.5/K2.6 use thinking.type, and K2.7 is always-thinking. K3 and
     # K2.7 preserve thinking across turns; K3 cannot disable thinking on the open platform.
     # Evidence: https://platform.kimi.com/docs/guide/use-thinking-models
-    "kimi_open": {
-        "chat_reasoning_rules": (
-            {"value": "reasoning_effort", "prefixes": ("kimi-k3",)},
-            {"value": "thinking_toggle", "prefixes": ("kimi-k2.5", "kimi-k2.6")},
-            {"value": "mandatory_thinking", "prefixes": ("kimi-k2.7-code",)},
-        ),
-        "chat_reasoning_history_rules": ({"value": "all", "prefixes": ("kimi-k3", "kimi-k2.7-code")},),
-        "reasoning_effort_level_rules": ({"levels": ("low", "high", "max"), "prefixes": ("kimi-k3",)},),
-        "reasoning_effort_off_rules": ({"value": "low", "prefixes": ("kimi-k3",)},),
+    {
+        "prefixes": ("kimi-k3",),
+        "chat_reasoning": "reasoning_effort",
+        "chat_reasoning_history": "all",
+        "reasoning_effort_levels": ("low", "high", "max"),
+        "reasoning_effort_off": "low",
     },
-    # The standard Z.AI APIs use thinking.type for GLM-4.5+ and reasoning_effort for GLM-5.2+.
-    # GLM-5.2 documents two effort levels and resolves anything other than "high" to max, so an
-    # unfolded "low" buys the most expensive setting rather than the cheapest: its low end is high.
+    {"prefixes": ("kimi-k2.5", "kimi-k2.6"), "chat_reasoning": "thinking_toggle"},
+    {"prefixes": ("kimi-k2.7-code",), "chat_reasoning": "mandatory_thinking", "chat_reasoning_history": "all"},
+    # Kimi Code has distinct model IDs and K3 off semantics from the open platform. `k3` and
+    # `kimi-k3` never match each other, so the two families coexist.
+    # Evidence: https://www.kimi.com/code/docs/kimi-code/models.html
+    {
+        "prefixes": ("k3",),
+        "chat_reasoning": "reasoning_effort",
+        "chat_reasoning_history": "all",
+        "reasoning_effort_levels": ("low", "high", "max"),
+        "reasoning_effort_off": "none",
+    },
+    {"prefixes": ("kimi-for-coding",), "chat_reasoning": "mandatory_thinking", "chat_reasoning_history": "all"},
+    # GLM uses thinking.type for 4.5+ and reasoning_effort for 5.2+. GLM-5.2 documents two effort
+    # levels and resolves anything other than "high" to max, so an unfolded "low" buys the most
+    # expensive setting rather than the cheapest: its low end is high.
     # Evidence: https://docs.z.ai/guides/capabilities/thinking-mode
     #           https://docs.z.ai/guides/overview/migrate-to-glm-new
-    "zai_standard": {
-        "chat_reasoning_rules": (
-            {"value": "thinking_effort", "prefixes": ("glm-5.2",)},
-            {"value": "thinking_toggle", "prefixes": ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5")},
-        ),
-        "reasoning_effort_level_rules": ({"levels": ("high", "max"), "prefixes": ("glm-5.2",)},),
-    },
-    # OpenCode currently exposes the same controls for its documented GLM-5 families.
-    # Evidence: https://opencode.ai/docs/zen
-    "zai_opencode": {
-        "chat_reasoning_rules": (
-            {"value": "thinking_effort", "prefixes": ("glm-5.2",)},
-            {"value": "thinking_toggle", "prefixes": ("glm-5",)},
-        ),
-        "reasoning_effort_level_rules": ({"levels": ("high", "max"), "prefixes": ("glm-5.2",)},),
-    },
+    #           https://opencode.ai/docs/zen
+    {"prefixes": ("glm-5.2",), "chat_reasoning": "thinking_effort", "reasoning_effort_levels": ("high", "max")},
+    {"prefixes": ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5"), "chat_reasoning": "thinking_toggle"},
     # Qwen3.8 Chat uses top-level reasoning_effort, including none to disable thinking. Its Max
     # models document low/medium/xhigh only: high and max are not accepted spellings there.
     # Evidence: https://docs.qwencloud.com/api-reference/chat/openai-chat
-    "qwen3_8": {
-        "chat_reasoning_rules": ({"value": "reasoning_effort", "prefixes": ("qwen3.8-",)},),
-        "reasoning_effort_level_rules": ({"levels": ("low", "medium", "xhigh"), "prefixes": ("qwen3.8-",)},),
-        "reasoning_effort_off_rules": ({"value": "none", "prefixes": ("qwen3.8-",)},),
+    {
+        "prefixes": ("qwen3.8-",),
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "xhigh"),
+        "reasoning_effort_off": "none",
     },
-    # Kimi Code has distinct model IDs and K3 off semantics from the open platform.
-    # Evidence: https://www.kimi.com/code/docs/kimi-code/models.html
-    "kimi_code": {
-        "chat_reasoning_rules": (
-            {"value": "reasoning_effort", "prefixes": ("k3",)},
-            {"value": "mandatory_thinking", "prefixes": ("kimi-for-coding",)},
-        ),
-        "chat_reasoning_history_rules": ({"value": "all", "prefixes": ("k3", "kimi-for-coding")},),
-        "reasoning_effort_level_rules": ({"levels": ("low", "high", "max"), "prefixes": ("k3",)},),
-        "reasoning_effort_off_rules": ({"value": "none", "prefixes": ("k3",)},),
-    },
-}
+)
 
 
 TEXT_ONLY_VALUE = "text_only"
@@ -292,7 +325,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     "openai": {
         "hosts": ("api.openai.com",),
         "json_response_format": True,
-        "model_capabilities": ("openai_effort",),
         "chat_reasoning_rules": ({"value": "reasoning_effort", "prefixes": ("o", "gpt-5")},),
         "responses_reasoning_models": ("o", "gpt-5"),
         "strict_tools": True,
@@ -308,6 +340,10 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     "openrouter": {
         "hosts": ("openrouter.ai",),
         "chat_reasoning": "reasoning",
+        # Every upstream is re-encoded into that object, so a model's native spelling must never
+        # reach it: DeepSeek's thinking.type or Qwen's enable_thinking would be sent to a gateway
+        # that documents neither.
+        "normalizes_reasoning": True,
         # Why: OpenRouter documents server tools as `openrouter:*` entries in the Chat or
         # Responses tools array. The legacy `plugins`/`:online` search config is deprecated.
         # Evidence: https://openrouter.ai/docs/guides/features/server-tools/overview
@@ -331,7 +367,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     # Evidence: https://opencode.ai/docs/zen
     "opencode": {
         "hosts": ("opencode.ai",),
-        "model_capabilities": ("openai_effort", "deepseek_v4", "zai_opencode", "kimi_open"),
         "api_rules": (
             {"value": "anthropic", "prefixes": ("claude-", "qwen")},
             {"value": "responses", "prefixes": ("gpt-", "grok-")},
@@ -351,7 +386,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     "deepseek": {
         "hosts": ("api.deepseek.com",),
         "json_response_format": True,
-        "model_capabilities": ("deepseek_v4",),
         "chat_reasoning": "thinking",
         "chat_reasoning_history": "tool_calls",
         "reasoning_effort_levels": ("low", "high", "xhigh", "max"),
@@ -368,7 +402,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     "qwen": {
         "hosts": ("aliyuncs.com",),
         "json_response_format": True,
-        "model_capabilities": ("qwen3_8",),
         "chat_reasoning_history": "current_turn",
         # Why: Qwen Responses documents web_search/web_extractor as provider-side tools, while
         # Qwen Chat Completions configures search in the request body. The remaining Responses
@@ -386,7 +419,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     #           https://platform.kimi.ai/docs/api/chat
     "kimi_open": {
         "hosts": ("moonshot.ai", "moonshot.cn"),
-        "model_capabilities": ("kimi_open",),
         "chat_reasoning_history": "current_turn",
         "reasoning_effort_levels": ("low", "high", "max"),
         "strict_tools": True,
@@ -400,7 +432,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     # Evidence: https://platform.kimi.ai/docs/api/chat
     "kimi_code": {
         "hosts": ("kimi.com",),
-        "model_capabilities": ("kimi_code",),
         "reasoning_effort_levels": ("low", "high", "max"),
         "builtin_tools_by_wire": {},
     },
@@ -409,7 +440,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     #           https://docs.z.ai/guides/capabilities/cache
     "zai": {
         "hosts": ("z.ai",),
-        "model_capabilities": ("zai_standard",),
         "chat_reasoning_history": "current_turn",
         "prompt_cache_key": False,
         # Why: Z.AI's web_search entry lives in the Chat tools array; retrieval and server MCP
@@ -422,7 +452,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     #           https://docs.bigmodel.cn/cn/guide/capabilities/cache
     "bigmodel": {
         "hosts": ("bigmodel.cn",),
-        "model_capabilities": ("zai_standard",),
         "chat_reasoning_history": "current_turn",
         "prompt_cache_key": False,
         "builtin_tools_by_wire": {"chat": ({"type": "web_search", "web_search": {}},)},

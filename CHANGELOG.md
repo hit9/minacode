@@ -27,6 +27,14 @@
 
 ### Changed
 
+- A well-known model now behaves the same wherever it is served. How a model takes reasoning — the
+  thinking format, the replay rule, the effort scale — is a fact about the model, so it is matched
+  on the model name and applies on every endpoint, including one minacode has never seen. Until
+  now that knowledge was reachable only through a recognized host, so `deepseek-v4-flash` on a
+  gateway or a self-hosted proxy was treated as an unknown model and sent generic requests.
+  Endpoint facts (wire, caching, strict schemas, provider-side tools) still come from the host, and
+  a gateway that re-encodes reasoning into its own format — OpenRouter — keeps its own spelling.
+
 - `/reason` now names the effort the provider will actually receive — `Set provider.reasoning =
   max → xhigh` — instead of folding silently, and its picker labels every level with what that
   level sends. Both values show even when they match, so an unmarked line never leaves you

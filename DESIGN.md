@@ -234,6 +234,12 @@ generic standards path.
 - `providers/catalog.py` declares overlays/capabilities with primary evidence beside each exception;
   `providers/compat.py` owns generic matching and fallback. Neither wraps SDKs nor allowlists valid
   models.
+- Catalog knowledge is split by what a fact is about. How a model takes reasoning belongs to the
+  model and is matched on the model name on every host, including hosts the catalog has never
+  seen; what an endpoint does — wire, caching, strict schemas, provider-side tools, and a fallback
+  effort vocabulary — belongs to the host. Per field, a host's own model rule beats the model's
+  trait, which beats the host's plain value; a host that re-encodes reasoning instead of relaying
+  each model's native spelling declares `normalizes_reasoning` and takes no traits.
 - `ModelClient` owns the Chat, Responses, and Anthropic wire formats; history stays one normalized
   model with namespaced opaque fields for continuation data.
 - Lifecycle/checkpoint metadata is local bookkeeping, not a provider extension: adapters strip the

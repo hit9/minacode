@@ -288,12 +288,12 @@ class ProviderConfig:
 
         chat_reasoning = self.chat_reasoning
         if chat_reasoning == "auto":
-            chat_reasoning = profile.rule_value(profile.chat_reasoning_rules, model) or profile.chat_reasoning or "off"
+            chat_reasoning = profile.chat_reasoning_for(model)
 
         if self.reasoning == "off":
-            reasoning_effort = profile.rule_value(profile.reasoning_effort_off_rules, model)
+            reasoning_effort = profile.reasoning_off_value(model)
             if api == "responses":
-                reasoning_effort = profile.rule_value(profile.responses_reasoning_effort_off_rules, model) or reasoning_effort
+                reasoning_effort = profile.reasoning_off_value(model, responses=True) or reasoning_effort
         else:
             effort = self.reasoning_effort()
             # A declaration is the user telling minacode what this model actually accepts, so it
@@ -315,7 +315,7 @@ class ProviderConfig:
             base_url=url,
             host=host,
             chat_reasoning=chat_reasoning,
-            chat_reasoning_history=profile.rule_value(profile.chat_reasoning_history_rules, model) or profile.chat_reasoning_history,
+            chat_reasoning_history=profile.chat_reasoning_history_for(model),
             reasoning_effort=reasoning_effort,
             responses_reasoning=profile.responses_reasoning_models is None or any(model.startswith(prefix) for prefix in profile.responses_reasoning_models),
             suppress_temperature=suppress_temperature,

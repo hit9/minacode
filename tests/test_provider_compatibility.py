@@ -141,8 +141,11 @@ def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
     provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert provider.resolve().chat_reasoning == "reasoning_effort"
 
+    # A lookalike domain is not the endpoint — but the model is still the model, and how it takes
+    # reasoning is a fact about it, so the format follows the model name rather than the domain.
     provider.url = "https://notaliyuncs.com/compatible-mode/v1"
-    assert provider.resolve().chat_reasoning == "off"
+    assert provider.resolve().chat_reasoning == "reasoning_effort"
+    assert provider.resolve().chat_reasoning_history == "all"
 
     provider.model = "other-model"
     assert provider.resolve().chat_reasoning == "off"
@@ -264,16 +267,21 @@ def test_zai_older_reasoning_families_use_only_thinking_toggle(url, tmp_path):
         ("https://notbigmodel.cn/api/paas/v4", "glm-5.2"),
     ),
 )
-def test_provider_compatibility_requires_a_real_domain_boundary(url, model, tmp_path):
-    client = ModelClient(session(tmp_path))
+def test_provider_compatibility_requires_a_real_domain_boundary(url, model):
+    """A lookalike domain adopts none of the real endpoint's policy.
+
+    What it does keep is the model's own reasoning format, which is deliberate: that is a fact
+    about the model and applies wherever the model is served. The boundary exists to stop a
+    domain from claiming an endpoint's caching, strictness, and tool contracts — the settings
+    that describe the service — not to make a known model unrecognizable.
+    """
     provider = ProviderConfig(url=url, model=model, reasoning="high", temperature=0.4)
     resolved = provider.resolve()
-    assert resolved.chat_reasoning == "off"
-    assert resolved.prompt_cache_key is True
 
-    params = {}
-    client.apply_provider_params(params, provider)
-    assert params == {"temperature": 0.4}
+    assert resolved.prompt_cache_key is True
+    assert resolved.strict_tools_active is False
+    assert resolved.builtin_tools_by_wire is None
+    assert ProviderConfig(url=url, model="other-model").resolve().chat_reasoning == "off"
 
 def test_unknown_provider_resolution_stays_generic_and_explicit_values_win():
     provider = ProviderConfig(

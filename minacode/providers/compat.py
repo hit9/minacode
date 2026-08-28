@@ -2,6 +2,15 @@
 
 The catalog describes documented host/model differences. This module applies generic matching and
 effort fallback; Chat, Responses, and Anthropic paths remain responsible for their wire formats.
+
+Model facts and endpoint facts are matched separately and meet here. For every reasoning field the
+order is:
+
+    this host's model rules  >  the model's trait  >  this host's plain value
+
+A host rule is the narrowest statement, so it wins. A trait beats the host's plain value because
+that value is the host's fallback for models it has nothing specific to say about. And a host that
+normalizes reasoning takes no traits at all -- see ``CompatibilityProfile.model_traits``.
 """
 
 from __future__ import annotations
@@ -14,13 +23,14 @@ from typing import Literal, cast
 from .catalog import (
     ANTHROPIC_MODELS,
     CANONICAL_VENDORS,
-    MODEL_CAPABILITIES,
+    MODEL_TRAITS,
     PROVIDER_CATALOG,
     REASONING_LEVELS,
     TEXT_ONLY_MODEL_RULES,
     BuiltinToolRuleData,
     ModelEffortRuleData,
     ModelRuleData,
+    ModelTraitData,
     ProviderData,
 )
 
@@ -48,6 +58,22 @@ class ModelEffortRule(ModelMatch):
     """Supported normalized efforts selected by model family."""
 
     levels: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ModelTrait(ModelMatch):
+    """How one model family takes reasoning, wherever it is served.
+
+    These facts belong to the model, so they are matched on the model name alone and apply on
+    every host: `deepseek-v4-flash` wants thinking.type and its own effort scale whether it comes
+    from api.deepseek.com, a gateway, or a self-hosted proxy. Before this existed the same data sat
+    inside host entries that each had to claim it by name, which meant an endpoint the catalog had
+    never heard of got nothing at all — the common case for a model served by many gateways."""
+
+    chat_reasoning: str = ""
+    chat_reasoning_history: str = ""
+    reasoning_effort_levels: tuple[str, ...] = ()
+    reasoning_effort_off: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,14 +108,54 @@ class CompatibilityProfile:
     # A route matching one of these must never be sent a raw image; anything else stays unknown
     # and is tried on the main model.
     text_only_rules: tuple[ModelRule, ...] = ()
+    # Model-keyed reasoning knowledge, carried by every profile including the empty one an unknown
+    # host resolves to. Precedence against this host's own settings, per field, is:
+    #
+    #   this host's model rules  >  the model's trait  >  this host's plain value
+    #
+    # A host rule is the most specific statement available, so it wins. A trait beats the host's
+    # plain value because that value is the host's fallback for models it has nothing specific to
+    # say about -- `moonshot.ai` replays only the current turn, except for the K3 family, whose
+    # own rule says otherwise. A host that re-encodes reasoning instead of passing each model's
+    # native spelling through opts out entirely (`normalizes_reasoning`), because for it no
+    # per-field precedence is right: OpenRouter would take DeepSeek's thinking.type and send it
+    # to an endpoint that documents only its own reasoning object.
+    model_traits: tuple[ModelTrait, ...] = ()
+
+    def trait(self, model: str) -> ModelTrait | None:
+        return next((trait for trait in self.model_traits if trait.matches(model)), None)
 
     @staticmethod
     def rule_value(rules: tuple[ModelRule, ...], model: str) -> str | None:
         return next((rule.value for rule in rules if rule.matches(model)), None)
 
+    def supported_efforts(self, model: str) -> tuple[str, ...]:
+        """The effort scale for this model: host rule, else the model's trait, else the host's own."""
+
+        if rule := next((rule for rule in self.reasoning_effort_level_rules if rule.matches(model)), None):
+            return rule.levels
+        trait = self.trait(model)
+        return (trait.reasoning_effort_levels if trait and trait.reasoning_effort_levels else ()) or self.reasoning_effort_levels
+
     def reasoning_effort_value(self, model: str, effort: str) -> str:
-        levels = next((rule.levels for rule in self.reasoning_effort_level_rules if rule.matches(model)), self.reasoning_effort_levels)
-        return nearest_reasoning_effort(effort, levels)
+        return nearest_reasoning_effort(effort, self.supported_efforts(model))
+
+    def reasoning_off_value(self, model: str, *, responses: bool = False) -> str | None:
+        """The wire spelling of "do not think" for this model, or None when none is documented."""
+
+        rules = self.responses_reasoning_effort_off_rules if responses else self.reasoning_effort_off_rules
+        if value := self.rule_value(rules, model):
+            return value
+        trait = self.trait(model)
+        return (trait.reasoning_effort_off or None) if trait else None
+
+    def chat_reasoning_for(self, model: str) -> str:
+        trait = self.trait(model)
+        return self.rule_value(self.chat_reasoning_rules, model) or (trait.chat_reasoning if trait else "") or self.chat_reasoning or "off"
+
+    def chat_reasoning_history_for(self, model: str) -> str:
+        trait = self.trait(model)
+        return self.rule_value(self.chat_reasoning_history_rules, model) or (trait.chat_reasoning_history if trait else "") or self.chat_reasoning_history
 
 
 @dataclass(frozen=True)
@@ -243,43 +309,41 @@ def _effort_rules(*groups: tuple[ModelEffortRuleData, ...]) -> tuple[ModelEffort
     return tuple(ModelEffortRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["levels"]) for group in groups for rule in group)
 
 
-ModelRuleField = Literal[
-    "api_rules",
-    "chat_reasoning_rules",
-    "chat_reasoning_history_rules",
-    "reasoning_effort_off_rules",
-    "responses_reasoning_effort_off_rules",
-]
+def _model_traits(data: ProviderData, traits: tuple[ModelTraitData, ...] = MODEL_TRAITS) -> tuple[ModelTrait, ...]:
+    """Compile the model-keyed traits this host may use — none, for a host that normalizes."""
 
-
-def _capability_model_rules(data: ProviderData, field: ModelRuleField) -> tuple[tuple[ModelRuleData, ...], ...]:
-    groups: list[tuple[ModelRuleData, ...]] = []
-    for name in data.get("model_capabilities", ()):
-        capability = MODEL_CAPABILITIES[name]
-        groups.append(cast(tuple[ModelRuleData, ...], capability.get(field, ())))
-    return tuple(groups)
-
-
-def _capability_effort_rules(data: ProviderData) -> tuple[tuple[ModelEffortRuleData, ...], ...]:
-    return tuple(MODEL_CAPABILITIES[name].get("reasoning_effort_level_rules", ()) for name in data.get("model_capabilities", ()))
+    if data.get("normalizes_reasoning"):
+        return ()
+    return tuple(
+        ModelTrait(
+            prefixes=trait.get("prefixes", ()),
+            pattern=trait.get("pattern", ""),
+            chat_reasoning=trait.get("chat_reasoning", ""),
+            chat_reasoning_history=trait.get("chat_reasoning_history", ""),
+            reasoning_effort_levels=trait.get("reasoning_effort_levels", ()),
+            reasoning_effort_off=trait.get("reasoning_effort_off", ""),
+        )
+        for trait in traits
+    )
 
 
 def _compatibility_profile(data: ProviderData) -> CompatibilityProfile:
     """Compile one provider overlay and its reusable model capability sets."""
 
     return CompatibilityProfile(
-        api_rules=_model_rules(data.get("api_rules", ()), *_capability_model_rules(data, "api_rules")),
+        api_rules=_model_rules(data.get("api_rules", ())),
         chat_reasoning=data.get("chat_reasoning"),
-        chat_reasoning_rules=_model_rules(data.get("chat_reasoning_rules", ()), *_capability_model_rules(data, "chat_reasoning_rules")),
+        chat_reasoning_rules=_model_rules(data.get("chat_reasoning_rules", ())),
         chat_reasoning_history=data.get("chat_reasoning_history", "all"),
-        chat_reasoning_history_rules=_model_rules(data.get("chat_reasoning_history_rules", ()), *_capability_model_rules(data, "chat_reasoning_history_rules")),
+        chat_reasoning_history_rules=_model_rules(data.get("chat_reasoning_history_rules", ())),
+        # A host's own level list is its fallback vocabulary for models the trait table does not
+        # name -- every thinking model on api.deepseek.com takes the same scale, whether or not the
+        # catalog knows that model by name.
         reasoning_effort_levels=data.get("reasoning_effort_levels", ()),
-        reasoning_effort_level_rules=_effort_rules(data.get("reasoning_effort_level_rules", ()), *_capability_effort_rules(data)),
-        reasoning_effort_off_rules=_model_rules(data.get("reasoning_effort_off_rules", ()), *_capability_model_rules(data, "reasoning_effort_off_rules")),
-        responses_reasoning_effort_off_rules=_model_rules(
-            data.get("responses_reasoning_effort_off_rules", ()),
-            *_capability_model_rules(data, "responses_reasoning_effort_off_rules"),
-        ),
+        reasoning_effort_level_rules=_effort_rules(data.get("reasoning_effort_level_rules", ())),
+        reasoning_effort_off_rules=_model_rules(data.get("reasoning_effort_off_rules", ())),
+        responses_reasoning_effort_off_rules=_model_rules(data.get("responses_reasoning_effort_off_rules", ())),
+        model_traits=_model_traits(data),
         responses_reasoning_models=data.get("responses_reasoning_models"),
         prompt_cache_key=data.get("prompt_cache_key", True),
         json_response_format=data.get("json_response_format", False),
@@ -304,6 +368,10 @@ def _compatibility_profiles(catalog: Mapping[str, ProviderData] = PROVIDER_CATAL
 
 
 COMPATIBILITY_PROFILES = _compatibility_profiles()
+# What an unknown endpoint resolves to: no endpoint policy, but the same model knowledge every
+# known host gets. Model traits are matched on the model name, so a host the catalog has never
+# seen is only missing facts about the host.
+GENERIC_PROFILE = _compatibility_profile(cast(ProviderData, {"hosts": ()}))
 _FAMILY_SPLIT_RE = re.compile(r"[^0-9a-z]+")
 
 
@@ -390,7 +458,12 @@ def is_text_only_model(model: str, profile: CompatibilityProfile | None = None) 
 
 
 def compatibility_for_host(host: str, profiles: Mapping[str, CompatibilityProfile] = COMPATIBILITY_PROFILES) -> CompatibilityProfile:
-    """Return the most specific domain profile while respecting label boundaries."""
+    """Return the most specific domain profile while respecting label boundaries.
+
+    An unmatched host resolves to GENERIC_PROFILE rather than an empty one: it still knows the
+    models, it just has nothing to add about the endpoint. That is the ordinary case for a gateway
+    or self-hosted proxy serving a well-known model, and matching nothing there is what made a
+    catalogued model behave like an unknown one purely because of the domain it arrived from."""
 
     matches = ((domain, profile) for domain, profile in profiles.items() if host == domain or host.endswith(f".{domain}"))
-    return max(matches, key=lambda item: len(item[0]), default=("", CompatibilityProfile()))[1]
+    return max(matches, key=lambda item: len(item[0]), default=("", GENERIC_PROFILE))[1]

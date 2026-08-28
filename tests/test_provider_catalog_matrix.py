@@ -34,7 +34,10 @@ MATRIX = (
     ("https://openrouter.ai/api/v1", "gpt-5.5", "chat", "reasoning", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
     ("https://openrouter.ai/api/v1", "glm-5.2", "chat", "reasoning", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
     ("https://openrouter.ai/api/v1", "kimi-k3", "chat", "reasoning", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
-    ("https://opencode.ai/zen/v1", "gpt-5.5", "responses", "off", "all", ("none", "low", "low", "medium", "high", "xhigh", "xhigh")),
+    # `chat_reasoning` is now stated by the gpt-5 trait rather than by the openai host, so it is
+    # filled in here too. OpenCode routes gpt-* to the Responses wire, which builds its own
+    # reasoning parameters, so the value is recorded but never sent.
+    ("https://opencode.ai/zen/v1", "gpt-5.5", "responses", "reasoning_effort", "all", ("none", "low", "low", "medium", "high", "xhigh", "xhigh")),
     ("https://opencode.ai/zen/v1", "deepseek-v4-flash", "chat", "thinking", "tool_calls", (None, "low", "low", "high", "high", "xhigh", "max")),
     ("https://opencode.ai/zen/v1", "glm-5.2", "chat", "thinking_effort", "all", (None, "high", "high", "high", "high", "max", "max")),
     ("https://opencode.ai/zen/v1", "glm-5", "chat", "thinking_toggle", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
@@ -81,10 +84,11 @@ MATRIX = (
         "all",
         (None, "minimal", "low", "medium", "high", "xhigh", "max"),
     ),
-    # An uncatalogued gateway serving a catalogued model. Model knowledge is reached only through
-    # the host today, so none of it applies here.
-    ("https://gw.example/v1", "deepseek-v4-flash", "chat", "off", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
-    ("https://gw.example/v1", "gpt-5.5", "chat", "off", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
+    # An uncatalogued gateway serving a catalogued model gets the model's own knowledge: the same
+    # thinking format, replay rule, and effort scale it would get from the model's own vendor. Only
+    # endpoint policy is missing, because only the endpoint is unknown.
+    ("https://gw.example/v1", "deepseek-v4-flash", "chat", "thinking", "tool_calls", (None, "low", "low", "high", "high", "xhigh", "max")),
+    ("https://gw.example/v1", "gpt-5.5", "chat", "reasoning_effort", "all", ("none", "low", "low", "medium", "high", "xhigh", "xhigh")),
     ("https://gw.example/v1", "custom-model", "chat", "off", "all", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
 )
 
