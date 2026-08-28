@@ -53,6 +53,16 @@ MATRIX = (
         "current_turn",
         ("none", "low", "low", "medium", "xhigh", "xhigh", "xhigh"),
     ),
+    # Alibaba re-hosts DeepSeek and GLM but narrows their effort scale to high/max, so the host's
+    # own rule takes precedence over the model's trait — the one case the precedence exists for.
+    (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "deepseek-v4-flash",
+        "chat",
+        "thinking",
+        "tool_calls",
+        (None, "high", "high", "high", "high", "max", "max"),
+    ),
     (
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "qwen3-max",

@@ -53,6 +53,10 @@
   ordinary GLM-5: it was matching the family rule and being sent a disable it does not honour. It
   offers low/high/max.
 
+- DeepSeek and GLM models served through Alibaba's endpoint offer `high` and `max` only, which is
+  what that endpoint distinguishes: it serves `low` and `medium` as `high`. Their own scales still
+  apply everywhere else, GLM-5.3 keeping low/high/max there too.
+
 - DeepSeek's effort levels are `low`, `high` and `max`. `medium` and `xhigh` are accepted for
   backward compatibility and both resolve to `high` server-side, so they were two menu entries
   that did the same thing as a third.

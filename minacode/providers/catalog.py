@@ -478,6 +478,16 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "hosts": ("aliyuncs.com",),
         "json_response_format": True,
         "chat_reasoning_history": "current_turn",
+        # Why: models Alibaba re-hosts keep their own thinking format but not their own effort
+        # scale. DeepSeek-V4 and the GLM families are documented as distinguishing only `high` and
+        # `max` here -- `low` and `medium` are served as `high`, `xhigh` as `max` -- so their own
+        # scales would offer levels that do nothing on this endpoint. GLM-5.3 is the exception the
+        # same page records, keeping low/high/max, and is matched first.
+        # Evidence: https://docs.qwencloud.com/api-reference/chat/openai-chat
+        "reasoning_effort_level_rules": (
+            {"levels": ("low", "high", "max"), "prefixes": ("glm-5.3",)},
+            {"levels": ("high", "max"), "prefixes": ("deepseek-v4-", "glm-")},
+        ),
         # Why: Qwen Responses documents web_search/web_extractor as provider-side tools, while
         # Qwen Chat Completions configures search in the request body. The remaining Responses
         # tools need output/resource lifecycle coverage first.
