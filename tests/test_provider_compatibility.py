@@ -62,13 +62,16 @@ def test_openai_reasoning_off_uses_the_models_lowest_supported_level(model, expe
 
     assert provider.resolve().reasoning_effort == expected
 
-def test_opencode_routes_grok_through_responses_without_allowlisting_effort():
-    provider = ProviderConfig(url="https://opencode.ai/zen/v1", model="grok-4.5", reasoning="max")
+def test_opencode_routes_grok_through_responses_and_uses_its_documented_levels():
+    """Routing is OpenCode's; the effort scale is Grok's, and it reaches OpenCode without OpenCode
+    having to say anything about Grok."""
+    provider = ProviderConfig(url="https://opencode.ai/zen/v1", model="grok-4.5", reasoning="high")
 
     resolved = provider.resolve()
 
     assert resolved.api == "responses"
-    assert resolved.reasoning_effort == "max"
+    assert resolved.reasoning_effort == "high"
+    assert provider.reasoning_choices() == ("low", "medium", "high")
 
 @pytest.mark.parametrize(
     ("model", "reasoning", "chat_reasoning", "effort"),

@@ -103,3 +103,32 @@ def test_switching_to_a_model_without_the_stored_level_moves_it_onto_that_model_
 
     on_deepseek = replace(stored, url="https://api.deepseek.com", model="deepseek-v4-flash")
     assert on_deepseek.normalized_reasoning() == "low"
+
+def test_a_model_that_always_reasons_does_not_offer_off():
+    """Grok, Kimi K3 and GLM-5.3 document that reasoning cannot be turned off. Offering `off`
+    anyway would be the menu promising something the endpoint does not do."""
+    for url, model in (
+        ("https://api.x.ai/v1", "grok-4.6"),
+        ("https://api.moonshot.ai/v1", "kimi-k3"),
+        ("https://api.z.ai/api/paas/v4", "glm-5.3"),
+        ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.5-flash"),
+    ):
+        assert "off" not in ProviderConfig(url=url, key="k", model=model).reasoning_choices(), model
+
+    # Gemini 2.5 documents `none`, so it keeps the choice.
+    gemini_25 = ProviderConfig(url="https://generativelanguage.googleapis.com/v1beta/openai", key="k", model="gemini-2.5-flash")
+    assert gemini_25.reasoning_choices()[0] == "off"
+
+def test_off_stored_against_an_always_reasoning_model_moves_to_its_weakest_level():
+    """The request reasons either way, so leaving the setting on `off` would show an effort the
+    model is not spending."""
+    grok = ProviderConfig(url="https://api.x.ai/v1", key="k", model="grok-4.6", reasoning="off")
+
+    assert grok.normalized_reasoning() == "low"
+
+def test_kimi_k3_still_sends_its_closest_to_off_spelling_when_a_config_names_off():
+    """`off` is not offered, but a config can still name it, and the open platform documents the
+    weakest level as the closest thing it has."""
+    kimi = ProviderConfig(url="https://api.moonshot.ai/v1", key="k", model="kimi-k3", reasoning="off")
+
+    assert kimi.resolve().reasoning_effort == "low"

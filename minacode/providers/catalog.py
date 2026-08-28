@@ -59,6 +59,12 @@ class ModelTraitData(TypedDict, total=False):
     # The wire spelling of "do not think" for this family. Chat and Responses have never needed
     # different spellings for the same model, so one field serves both.
     reasoning_effort_off: str
+    # This family always reasons. `off` is then not a choice and is left out of what `/reason`
+    # offers, for the same reason an effort the model has no level for is: a menu that lists what
+    # cannot happen is the thing that made a fold necessary. A family that also documents a
+    # closest-to-off spelling still sets `reasoning_effort_off`, which is what a config that names
+    # `off` anyway resolves to.
+    mandatory_reasoning: bool
 
 
 class CompatibilityData(TypedDict, total=False):
@@ -189,7 +195,9 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "reasoning_effort_levels": ("low", "high", "max"),
     },
     # K3 uses normalized effort, K2.5/K2.6 use thinking.type, and K2.7 is always-thinking. K3 and
-    # K2.7 preserve thinking across turns; K3 cannot disable thinking on the open platform.
+    # K2.7 preserve thinking across turns; K3 cannot disable thinking on the open platform, so it
+    # does not offer `off` -- and a config that asks for it anyway still resolves to the weakest
+    # level it does have, which is as close as the endpoint gets.
     # Evidence: https://platform.kimi.com/docs/guide/use-thinking-models
     {
         "prefixes": ("kimi-k3",),
@@ -197,6 +205,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning_history": "all",
         "reasoning_effort_levels": ("low", "high", "max"),
         "reasoning_effort_off": "low",
+        "mandatory_reasoning": True,
     },
     {"prefixes": ("kimi-k2.5", "kimi-k2.6"), "chat_reasoning": "thinking_toggle"},
     {"prefixes": ("kimi-k2.7-code",), "chat_reasoning": "mandatory_thinking", "chat_reasoning_history": "all"},
@@ -211,6 +220,13 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "reasoning_effort_off": "none",
     },
     {"prefixes": ("kimi-for-coding",), "chat_reasoning": "mandatory_thinking", "chat_reasoning_history": "all"},
+    # GLM-5.3 and GLM-5.3-Flash reason under all conditions -- the thinking-mode guide lists them
+    # as forced thinking that cannot be disabled -- so they must be matched before the `glm-5`
+    # family rule below, which would otherwise offer them a disable they do not honour. The guide
+    # spells thinking as `thinking: {"type": ...}` throughout and documents no effort scale for
+    # them, so none is claimed here.
+    # Evidence: https://docs.z.ai/guides/capabilities/thinking-mode
+    {"prefixes": ("glm-5.3",), "chat_reasoning": "mandatory_thinking", "mandatory_reasoning": True},
     # GLM uses thinking.type for 4.5+ and reasoning_effort for 5.2+. GLM-5.2 documents two effort
     # levels and resolves anything other than "high" to max, so an unfolded "low" buys the most
     # expensive setting rather than the cheapest: its low end is high.
@@ -219,6 +235,56 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
     #           https://opencode.ai/docs/zen
     {"prefixes": ("glm-5.2",), "chat_reasoning": "thinking_effort", "reasoning_effort_levels": ("high", "max")},
     {"prefixes": ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5"), "chat_reasoning": "thinking_toggle"},
+    # Grok takes OpenAI's top-level reasoning_effort and cannot be told not to reason. 4.6 adds
+    # xhigh; 4.5 documents that an xhigh request is served as high, which makes it a spelling
+    # rather than a level and keeps it out of what 4.5 offers. On grok-4.20-multi-agent the same
+    # parameter selects how many agents collaborate rather than how long one thinks -- the levels
+    # are the documented ones either way, and the difference is the model's, not the wire's.
+    # Evidence: https://docs.x.ai/developers/model-capabilities/text/reasoning
+    {
+        "prefixes": ("grok-4.6", "grok-4.20-multi-agent"),
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high", "xhigh"),
+        "mandatory_reasoning": True,
+    },
+    {
+        "prefixes": ("grok-4.5",),
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high"),
+        "mandatory_reasoning": True,
+    },
+    # Gemini's OpenAI-compatible layer maps reasoning_effort onto thinking levels and documents the
+    # table per family: minimal/low/medium/high/none are accepted and xhigh is not. A value that
+    # lands on the same thinking level as its neighbour is left out, since offering both would be
+    # offering one choice twice: 3.1 Pro maps minimal to low, and 2.5 maps both to a 1,024-token
+    # budget. Gemini 3 models cannot stop reasoning; 2.5 models other than Pro disable it with
+    # `none`.
+    # Evidence: https://ai.google.dev/gemini-api/docs/openai
+    #           https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.5
+    {
+        "prefixes": ("gemini-3.1-pro",),
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high"),
+        "mandatory_reasoning": True,
+    },
+    {
+        "prefixes": ("gemini-3-flash", "gemini-3.1-flash", "gemini-3.5-flash"),
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("minimal", "low", "medium", "high"),
+        "mandatory_reasoning": True,
+    },
+    {
+        "prefixes": ("gemini-2.5-pro",),
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high"),
+        "mandatory_reasoning": True,
+    },
+    {
+        "prefixes": ("gemini-2.5",),
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high"),
+        "reasoning_effort_off": "none",
+    },
     # Qwen3.8 Chat uses top-level reasoning_effort, including none to disable thinking. Its Max
     # models document low/medium/xhigh only: high and max are not accepted spellings there.
     # Evidence: https://docs.qwencloud.com/api-reference/chat/openai-chat

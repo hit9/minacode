@@ -272,13 +272,25 @@ class ProviderConfig:
         return compatibility_for_host(host, self.COMPATIBILITY).supported_efforts(model) or REASONING_LEVELS
 
     def reasoning_choices(self, model: str = "") -> tuple[str, ...]:
-        """Everything `/reason` may offer for this model, `off` included."""
-        return ("off", *self.supported_efforts(model))
+        """Everything `/reason` may offer for this model.
+
+        `off` is among them unless the model documents that it always reasons — Grok, Kimi K3,
+        GLM-5.3. Listing it there would be the menu promising something the endpoint does not do,
+        which is the same fault as offering a level the model has no spelling for."""
+        model = (model or self.model).lower()
+        host = (urlparse(self.url.rstrip("/")).hostname or "").lower()
+        mandatory = not self.declared_levels(model) and compatibility_for_host(host, self.COMPATIBILITY).reasoning_is_mandatory(model)
+        return self.supported_efforts(model) if mandatory else ("off", *self.supported_efforts(model))
 
     def normalized_reasoning(self, model: str = "") -> str:
-        """This entry's effort, moved onto `model`'s scale if it is not already on it."""
+        """This entry's effort, moved onto `model`'s choices if it is not already among them.
+
+        Includes `off` moving to the weakest level on a model that always reasons: the request
+        would reason regardless, so leaving the setting on `off` would mean the session showing an
+        effort the model is not spending."""
+        choices = self.reasoning_choices(model)
         if self.reasoning == "off":
-            return self.reasoning
+            return "off" if "off" in choices else choices[0]
         return nearest_supported_effort(self.reasoning_effort(), self.supported_efforts(model))
 
     def missing_fields(self) -> list[str]:

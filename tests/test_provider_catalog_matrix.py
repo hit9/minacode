@@ -84,6 +84,38 @@ MATRIX = (
         "all",
         (None, "minimal", "low", "medium", "high", "xhigh", "max"),
     ),
+    # Families the catalog knows without knowing their endpoints: neither api.x.ai nor Google's
+    # OpenAI-compatible host has a provider entry, and the models resolve anyway.
+    ("https://api.x.ai/v1", "grok-4.6", "chat", "reasoning_effort", "all", (None, "low", "low", "medium", "high", "xhigh", "xhigh")),
+    ("https://api.x.ai/v1", "grok-4.5", "chat", "reasoning_effort", "all", (None, "low", "low", "medium", "high", "high", "high")),
+    (
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-3.5-flash",
+        "chat",
+        "reasoning_effort",
+        "all",
+        (None, "minimal", "low", "medium", "high", "high", "high"),
+    ),
+    (
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-3.1-pro",
+        "chat",
+        "reasoning_effort",
+        "all",
+        (None, "low", "low", "medium", "high", "high", "high"),
+    ),
+    # The one Gemini family that can stop reasoning, and the only row here with an `off` spelling.
+    (
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-2.5-flash",
+        "chat",
+        "reasoning_effort",
+        "all",
+        ("none", "low", "low", "medium", "high", "high", "high"),
+    ),
+    # GLM-5.3 is forced thinking, so it must not reach the `glm-5` family rule and be offered a
+    # disable it does not honour.
+    ("https://api.z.ai/api/paas/v4", "glm-5.3", "chat", "mandatory_thinking", "current_turn", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
     # An uncatalogued gateway serving a catalogued model gets the model's own knowledge: the same
     # thinking format, replay rule, and effort scale it would get from the model's own vendor. Only
     # endpoint policy is missing, because only the endpoint is unknown.

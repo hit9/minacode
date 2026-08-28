@@ -742,7 +742,8 @@ def test_openai_responses_reasoning_off_is_not_silently_replaced_by_the_model_de
         ("https://api.openai.com/v1", "gpt-5.5", "max", "xhigh"),
         ("https://api.openai.com/v1", "gpt-5.5-pro", "low", "medium"),
         ("https://api.openai.com/v1", "gpt-5.7", "max", "max"),
-        ("https://opencode.ai/zen/v1", "grok-4.5", "max", "max"),
+        # Grok 4.5 documents low/medium/high, so a stored `max` lands on the top level it has.
+        ("https://opencode.ai/zen/v1", "grok-4.5", "max", "high"),
         ("https://models.example/v1", "future-reasoner", "max", "max"),
     ),
 )

@@ -74,6 +74,7 @@ class ModelTrait(ModelMatch):
     chat_reasoning_history: str = ""
     reasoning_effort_levels: tuple[str, ...] = ()
     reasoning_effort_off: str = ""
+    mandatory_reasoning: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,6 +125,10 @@ class CompatibilityProfile:
 
     def trait(self, model: str) -> ModelTrait | None:
         return next((trait for trait in self.model_traits if trait.matches(model)), None)
+
+    def reasoning_is_mandatory(self, model: str) -> bool:
+        trait = self.trait(model)
+        return bool(trait and trait.mandatory_reasoning)
 
     @staticmethod
     def rule_value(rules: tuple[ModelRule, ...], model: str) -> str | None:
@@ -296,6 +301,7 @@ def _model_traits(data: ProviderData, traits: tuple[ModelTraitData, ...] = MODEL
             chat_reasoning_history=trait.get("chat_reasoning_history", ""),
             reasoning_effort_levels=trait.get("reasoning_effort_levels", ()),
             reasoning_effort_off=trait.get("reasoning_effort_off", ""),
+            mandatory_reasoning=trait.get("mandatory_reasoning", False),
         )
         for trait in traits
     )

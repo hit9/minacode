@@ -42,6 +42,16 @@
   one and says so once (`Reasoning medium is not offered by deepseek-v4-flash, using high`).
   `/config` lists the levels as `provider.supported_reasoning`.
 
+- Grok and Gemini now resolve like every other known family, on any endpoint that serves them:
+  `grok-4.6` offers low/medium/high/xhigh and `grok-4.5` low/medium/high (an `xhigh` request is
+  served as `high` there, so it is not a level); Gemini's OpenAI-compatible layer takes
+  minimal/low/medium/high and never `xhigh`, with `minimal` left out where it maps to the same
+  thinking level as `low` (3.1 Pro, and 2.5, where both are a 1,024-token budget).
+
+- `off` is no longer offered for a model that documents it always reasons — Grok, Kimi K3, and
+  GLM-5.3. Gemini 2.5 keeps it, since it documents `none`. GLM-5.3 also stops being treated as an
+  ordinary GLM-5: it was matching the family rule and being sent a disable it does not honour.
+
 - DeepSeek's effort levels are `low`, `high` and `max`. `medium` and `xhigh` are accepted for
   backward compatibility and both resolve to `high` server-side, so they were two menu entries
   that did the same thing as a third.
