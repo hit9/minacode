@@ -177,7 +177,10 @@ def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     # itself, since text appearing under a list of choices otherwise reads as being about the
     # choice rather than about the list.
     why, evidence = provider.effort_scale_source(model)
-    footer = "\n".join(line for line in ("Why these levels", why, evidence) if line)
+    # Fragments rather than a plain preview string, to take the dim style every other secondary
+    # line in a modal uses. The preview default is green italic, which reads as content; this is
+    # a note about the screen, like the key hints above it.
+    footer: StyleAndTextTuples = [("class:choice.disabled", "  │ " + line + "\n") for line in ("Why these levels", why, evidence) if line]
     return select_choice(loop, "Reasoning effort", choices, labels=labels, current=current, preview_fn=(lambda _choice: footer) if why else None)
 
 

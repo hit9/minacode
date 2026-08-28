@@ -255,7 +255,8 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
     shown = {}
 
     def choose(_loop, title, choices, labels, current, _disabled, preview_fn=None):
-        shown.update(choices=choices, labels=labels, footer=preview_fn and preview_fn(choices[0]))
+        shown.update(choices=choices, labels=labels, footer=preview_fn and "".join(text for _style, text in preview_fn(choices[0])))
+        shown["footer_styles"] = {style for style, _text in preview_fn(choices[0])} if preview_fn else set()
         return "high"
 
     monkeypatch.setattr(modals_mod, "choice_application", choose)
@@ -266,7 +267,14 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
     assert shown["choices"] == ("off", "low", "medium", "high", "xhigh")
     assert shown["labels"]["off"] == "off - disable reasoning"
     # A shortened list has to account for itself where it is shown, or it just looks broken.
-    assert shown["footer"] == "Why these levels\nthis generation documents low through xhigh\nhttps://developers.openai.com/api/docs/models/gpt-5.5"
+    assert shown["footer"] == (
+        "  │ Why these levels\n"
+        "  │ this generation documents low through xhigh\n"
+        "  │ https://developers.openai.com/api/docs/models/gpt-5.5\n"
+    )
+    # The dim style every other secondary line in a modal uses, not the preview default, which is
+    # green italic and reads as content rather than as a note about the screen.
+    assert shown["footer_styles"] == {"class:choice.disabled"}
 
 def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
     import minacode.cli.modals as modals_mod
@@ -279,7 +287,8 @@ def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeyp
     shown = {}
 
     def choose(_loop, title, choices, labels, current, _disabled, preview_fn=None):
-        shown.update(choices=choices, labels=labels, footer=preview_fn and preview_fn(choices[0]))
+        shown.update(choices=choices, labels=labels, footer=preview_fn and "".join(text for _style, text in preview_fn(choices[0])))
+        shown["footer_styles"] = {style for style, _text in preview_fn(choices[0])} if preview_fn else set()
         return "ultra"
 
     monkeypatch.setattr(modals_mod, "choice_application", choose)
@@ -287,7 +296,7 @@ def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeyp
     assert reason(command_loop, "") == "Set provider.reasoning = ultra"
     assert shown["choices"] == ("off", "low", "high", "ultra")
     # A config declaration is its own account of itself; there is no page to cite for it.
-    assert shown["footer"] == "Why these levels\ndeclared for this model in your config"
+    assert shown["footer"] == "  │ Why these levels\n  │ declared for this model in your config\n"
 
 def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     from prompt_toolkit.document import Document
