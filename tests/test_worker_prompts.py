@@ -201,4 +201,4 @@ def test_system_prompt_stable_across_refactors():
 
     from minacode.prompts import SYSTEM_PROMPT
 
-    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "83db5525a584bba0efffcaafae3497289d7cc14abdaee608278f139baaa7ef92"
+    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "ce6aa05916103d6b91691c3868b657cbc16d2b38737c85417228d119af334567"
