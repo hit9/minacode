@@ -7,6 +7,7 @@ would notice a rule that quietly stopped matching. This matrix is the net: one r
 host/model pair, every effort spelled out, so a reorganization has to state which rows it changes.
 """
 
+import re
 from dataclasses import replace
 
 import pytest
@@ -179,6 +180,12 @@ def test_anything_that_narrows_a_menu_cites_a_page_for_it():
         assert entry.get("evidence", "").startswith("https://"), selector
         # One line, and short enough to sit under a modal list on an ordinary terminal.
         assert "\n" not in why and len(why) <= 80, selector
+        # It says what the endpoint does, not which levels survived: a restated list is a second
+        # copy of the field beside it and drifts from it. Only the enumerated form is caught here
+        # — naming levels to say how one is served ("serves anything but high as max") is the
+        # point of the line, and no check can tell that from a list except by its shape.
+        level = "|".join(EFFORTS)
+        assert not re.search(rf"\b(?:{level})/(?:{level})\b", why), selector
 
 def test_every_catalogued_host_appears_in_the_matrix():
     """A new host must state what its models resolve to, or the net has a hole the size of it."""

@@ -269,7 +269,7 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
     # A shortened list has to account for itself where it is shown, or it just looks broken.
     assert shown["footer"] == (
         "  │ Why these levels\n"
-        "  │ this generation documents low through xhigh\n"
+        "  │ this generation dropped minimal, and max is not a spelling here\n"
         "  │ https://developers.openai.com/api/docs/models/gpt-5.5\n"
     )
     # The dim style every other secondary line in a modal uses, not the preview default, which is

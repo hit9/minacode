@@ -65,6 +65,11 @@ class ModelTraitData(TypedDict, total=False):
     # Shown under `/reason` whenever the offered levels are narrower than the default, so the
     # answer to "why only these three?" is where the question is asked rather than in this file.
     # Required of anything that narrows a menu -- see tests/test_provider_catalog_matrix.py.
+    #
+    # State what the endpoint does, never which levels are left: "serves medium as high", not
+    # "documents low/high/max". The behaviour is the reason a level was dropped and stays true
+    # however the list is spelled, while a restated list is a second copy of the field above it,
+    # free to drift from it and certain to eventually.
     why: str
     evidence: str
     # This family always reasons. `off` is then not a choice and is left out of what `/reason`
@@ -157,7 +162,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high", "xhigh", "max"),
         "reasoning_effort_off": "none",
-        "why": "gpt-5.6 documents low through max, without minimal",
+        "why": "minimal is not a spelling on gpt-5.6",
         "evidence": "https://developers.openai.com/api/docs/models/gpt-5.5",
     },
     {
@@ -165,7 +170,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("medium", "high", "xhigh"),
         "reasoning_effort_off": "medium",
-        "why": "the Pro models start at medium and stop at xhigh",
+        "why": "the Pro models reject anything below medium, and have no max",
         "evidence": "https://developers.openai.com/api/docs/models/gpt-5.4-pro",
     },
     {
@@ -173,7 +178,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high", "xhigh"),
         "reasoning_effort_off": "low",
-        "why": "the Codex models document low through xhigh",
+        "why": "the Codex models have neither minimal nor max",
         "evidence": "https://developers.openai.com/api/docs/models/gpt-5.3-codex",
     },
     {
@@ -181,7 +186,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high", "xhigh"),
         "reasoning_effort_off": "none",
-        "why": "this generation documents low through xhigh",
+        "why": "this generation dropped minimal, and max is not a spelling here",
         "evidence": "https://developers.openai.com/api/docs/models/gpt-5.5",
     },
     {
@@ -189,7 +194,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high"),
         "reasoning_effort_off": "none",
-        "why": "gpt-5.1 documents low, medium and high only",
+        "why": "gpt-5.1 predates xhigh and max, and has no minimal",
         "evidence": "https://developers.openai.com/api/docs/models/gpt-5.1",
     },
     {
@@ -205,14 +210,14 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "pattern": r"gpt-5(?:-|$)",
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("minimal", "low", "medium", "high"),
-        "why": "gpt-5 documents minimal through high",
+        "why": "gpt-5 predates xhigh and max",
         "evidence": "https://developers.openai.com/api/docs/models/gpt-5",
     },
     {
         "pattern": r"o[1-4](?:-|$)",
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high"),
-        "why": "the o-series documents low, medium and high",
+        "why": "the o-series predates minimal, xhigh and max",
         "evidence": "https://developers.openai.com/api/docs/guides/reasoning",
     },
     # DeepSeek V4 uses thinking.type and documents low/high/max. `medium` and `xhigh` are accepted
@@ -226,7 +231,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "thinking",
         "chat_reasoning_history": "tool_calls",
         "reasoning_effort_levels": ("high", "max"),
-        "why": "DeepSeek V4 Pro serves low as high, leaving high and max",
+        "why": "DeepSeek V4 Pro serves a low request as high",
         "evidence": "https://api-docs.deepseek.com/guides/thinking_mode/",
     },
     {
@@ -234,7 +239,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "thinking",
         "chat_reasoning_history": "tool_calls",
         "reasoning_effort_levels": ("low", "high", "max"),
-        "why": "DeepSeek documents low/high/max; medium and xhigh are served as high",
+        "why": "DeepSeek serves medium and xhigh as high",
         "evidence": "https://api-docs.deepseek.com/guides/thinking_mode/",
     },
     # K3 uses normalized effort, K2.5/K2.6 use thinking.type, and K2.7 is always-thinking. K3 and
@@ -249,7 +254,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "reasoning_effort_levels": ("low", "high", "max"),
         "reasoning_effort_off": "low",
         "mandatory_reasoning": True,
-        "why": "K3 documents low/high/max and always thinks",
+        "why": "K3 has no medium or xhigh, and cannot stop thinking",
         "evidence": "https://platform.kimi.com/docs/guide/use-thinking-models",
     },
     {"prefixes": ("kimi-k2.5", "kimi-k2.6"), "chat_reasoning": "thinking_toggle"},
@@ -263,7 +268,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning_history": "all",
         "reasoning_effort_levels": ("low", "high", "max"),
         "reasoning_effort_off": "none",
-        "why": "Kimi Code documents low/high/max for K3",
+        "why": "Kimi Code's K3 has no medium or xhigh",
         "evidence": "https://www.kimi.com/code/docs/kimi-code/models.html",
     },
     {"prefixes": ("kimi-for-coding",), "chat_reasoning": "mandatory_thinking", "chat_reasoning_history": "all"},
@@ -281,7 +286,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "thinking_effort",
         "reasoning_effort_levels": ("low", "high", "max"),
         "mandatory_reasoning": True,
-        "why": "GLM-5.3 takes low/high/max and cannot stop thinking",
+        "why": "GLM-5.3 has no medium or xhigh, and cannot stop thinking",
         "evidence": "https://docs.z.ai/guides/overview/migrate-to-glm-new",
     },
     # GLM uses thinking.type for 4.5+ and reasoning_effort for 5.2+. GLM-5.2 documents two effort
@@ -294,7 +299,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "prefixes": ("glm-5.2",),
         "chat_reasoning": "thinking_effort",
         "reasoning_effort_levels": ("high", "max"),
-        "why": "GLM-5.2 documents two levels; anything but high is served as max",
+        "why": "GLM-5.2 serves anything but high as max",
         "evidence": "https://docs.z.ai/guides/capabilities/thinking-mode",
     },
     {"prefixes": ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5"), "chat_reasoning": "thinking_toggle"},
@@ -341,7 +346,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("minimal", "low", "medium", "high"),
         "mandatory_reasoning": True,
-        "why": "Gemini Flash takes minimal through high, rejects xhigh, and always thinks",
+        "why": "Gemini Flash rejects xhigh and max, and always thinks",
         "evidence": "https://ai.google.dev/gemini-api/docs/openai",
     },
     {
@@ -368,7 +373,7 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "xhigh"),
         "reasoning_effort_off": "none",
-        "why": "Qwen3.8-Max documents low/medium/xhigh; high and max are not spellings there",
+        "why": "Qwen3.8-Max has no minimal, and neither high nor max is a spelling",
         "evidence": "https://docs.qwencloud.com/api-reference/chat/openai-chat",
     },
 )
@@ -557,7 +562,7 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
             {
                 "levels": ("low", "high", "max"),
                 "prefixes": ("glm-5.3",),
-                "why": "GLM-5.3 keeps low/high/max on Alibaba",
+                "why": "GLM-5.3 keeps its own scale on Alibaba",
                 "evidence": "https://docs.qwencloud.com/api-reference/chat/openai-chat",
             },
             {
