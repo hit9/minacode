@@ -50,7 +50,8 @@
 
 - `off` is no longer offered for a model that documents it always reasons — Grok, Kimi K3, and
   GLM-5.3. Gemini 2.5 keeps it, since it documents `none`. GLM-5.3 also stops being treated as an
-  ordinary GLM-5: it was matching the family rule and being sent a disable it does not honour.
+  ordinary GLM-5: it was matching the family rule and being sent a disable it does not honour. It
+  offers low/high/max.
 
 - DeepSeek's effort levels are `low`, `high` and `max`. `medium` and `xhigh` are accepted for
   backward compatibility and both resolve to `high` server-side, so they were two menu entries

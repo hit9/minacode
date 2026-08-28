@@ -222,11 +222,19 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
     {"prefixes": ("kimi-for-coding",), "chat_reasoning": "mandatory_thinking", "chat_reasoning_history": "all"},
     # GLM-5.3 and GLM-5.3-Flash reason under all conditions -- the thinking-mode guide lists them
     # as forced thinking that cannot be disabled -- so they must be matched before the `glm-5`
-    # family rule below, which would otherwise offer them a disable they do not honour. The guide
-    # spells thinking as `thinking: {"type": ...}` throughout and documents no effort scale for
-    # them, so none is claimed here.
+    # family rule below, which would otherwise offer them a disable they do not honour. The
+    # migration guide records that 5.3 adds `reasoning_effort` on top of the family's thinking
+    # object, and its scale is low/high/max: z.ai does not enumerate it, but Alibaba's re-hosting
+    # of the same model documents those three, defaulting to max.
     # Evidence: https://docs.z.ai/guides/capabilities/thinking-mode
-    {"prefixes": ("glm-5.3",), "chat_reasoning": "mandatory_thinking", "mandatory_reasoning": True},
+    #           https://docs.z.ai/guides/overview/migrate-to-glm-new
+    #           https://docs.qwencloud.com/api-reference/chat/openai-chat
+    {
+        "prefixes": ("glm-5.3",),
+        "chat_reasoning": "thinking_effort",
+        "reasoning_effort_levels": ("low", "high", "max"),
+        "mandatory_reasoning": True,
+    },
     # GLM uses thinking.type for 4.5+ and reasoning_effort for 5.2+. GLM-5.2 documents two effort
     # levels and resolves anything other than "high" to max, so an unfolded "low" buys the most
     # expensive setting rather than the cheapest: its low end is high.

@@ -115,7 +115,7 @@ MATRIX = (
     ),
     # GLM-5.3 is forced thinking, so it must not reach the `glm-5` family rule and be offered a
     # disable it does not honour.
-    ("https://api.z.ai/api/paas/v4", "glm-5.3", "chat", "mandatory_thinking", "current_turn", (None, "minimal", "low", "medium", "high", "xhigh", "max")),
+    ("https://api.z.ai/api/paas/v4", "glm-5.3", "chat", "thinking_effort", "current_turn", (None, "low", "low", "high", "high", "max", "max")),
     # An uncatalogued gateway serving a catalogued model gets the model's own knowledge: the same
     # thinking format, replay rule, and effort scale it would get from the model's own vendor. Only
     # endpoint policy is missing, because only the endpoint is unknown.
