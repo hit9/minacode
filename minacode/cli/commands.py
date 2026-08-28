@@ -388,6 +388,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.strict_tools: {provider.strict_tools} (active {resolved.strict_tools_active})",
             f"provider.extra_body: {json.dumps(provider.extra_body, ensure_ascii=False, sort_keys=True) if provider.extra_body else '(off)'}",
             f"provider.headers: {', '.join(f'{name}: {value}' for name, value in sorted(provider.headers.items())) or '(none)'}",
+            f"provider.omit_body: {', '.join(provider.omit_body) or '(none)'}",
             f"provider.builtin_tools: {configured_builtin_tools}",
             f"provider.resolved_builtin_tools: {resolved_builtin_tools}",
             f"provider.timeout: {provider.timeout}",

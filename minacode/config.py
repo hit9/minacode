@@ -149,6 +149,10 @@ class ProviderConfig:
     # `[provider.X.models]` declarations in declaration order; the first matching glob wins, the
     # way catalog rules resolve. A declaration overrides the catalog for those models.
     model_overrides: tuple[ModelOverride, ...] = ()
+    # Request-body fields this endpoint must never receive. `extra_body` adds and merges, so a
+    # gateway that answers 400 for a field minacode sends could only be worked around by editing
+    # the client. Removal is the missing half, and it is the last step before the request.
+    omit_body: tuple[str, ...] = ()
     builtin_tools: tuple[Json, ...] = ()
     # Per-provider compaction overrides ([provider.X.compaction] model/reasoning/api), folded on
     # top of the global [compaction] section by compaction_provider_config: the per-provider value
@@ -201,6 +205,7 @@ class ProviderConfig:
             extra_body=Config.table(data, "extra_body"),
             headers=Config.header_table(data, "headers"),
             model_overrides=model_overrides,
+            omit_body=cls.clean_omit_body(Config.str_tuple(data, "omit_body")),
             builtin_tools=Config.table_tuple(data, "builtin_tools"),
             compaction_model=Config.str(compaction_root, "model", ""),
             compaction_reasoning=compaction_reasoning,
@@ -222,6 +227,31 @@ class ProviderConfig:
                 raise ConfigError(f"provider.models.{pattern}.reasoning must not contain empty levels")
             overrides.append(ModelOverride(match=pattern.lower(), reasoning_levels=levels))
         return tuple(overrides)
+
+    # The fields that carry the request itself. Dropping one does not adjust a request, it empties
+    # it, and the provider's error for the result would point anywhere but at this setting.
+    OMIT_BODY_PROTECTED: ClassVar[tuple[str, ...]] = ("model", "messages", "input")
+
+    @classmethod
+    def clean_omit_body(cls, names: tuple[str, ...]) -> tuple[str, ...]:
+        for name in names:
+            if name in cls.OMIT_BODY_PROTECTED:
+                raise ConfigError("provider.omit_body cannot drop " + ", ".join(cls.OMIT_BODY_PROTECTED))
+        return names
+
+    def omit_from_body(self, params: Json) -> Json:
+        """Drop this entry's `omit_body` fields from a built request, in place.
+
+        A name is matched at the top level and inside `extra_body`, because a provider's 400 names
+        the field, not the place minacode happened to put it. An `extra_body` emptied this way is
+        removed too, so the SDK is not handed a stray empty object."""
+        for name in self.omit_body:
+            params.pop(name, None)
+            if isinstance(extra := params.get("extra_body"), dict):
+                extra.pop(name, None)
+        if isinstance(extra := params.get("extra_body"), dict) and not extra:
+            params.pop("extra_body")
+        return params
 
     def declared_levels(self, model: str = "") -> tuple[str, ...]:
         """The effort scale declared for this model, or none when no glob matches it."""
@@ -593,6 +623,8 @@ model = ""
 # response_timeout = 600       # total generation time; 0 disables
 # available_models = ["gpt-5", "gpt-5-mini"]
 # headers = { x-cmd-zdr = "1" }  # extra HTTP headers for this entry; the key above still sets auth
+# omit_body = ["reasoning_effort"]   # request fields this endpoint rejects; extra_body is the
+                                     # other half, for fields it needs added
 
 # [provider.default.models]    # what a model accepts, when the built-in guess is wrong
 # "gpt-5.6*" = { reasoning = ["low", "medium", "high", "ultra"] }   # weakest first

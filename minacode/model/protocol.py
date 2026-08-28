@@ -83,6 +83,7 @@ class ChatWire:
             derive_cache_key=self._client.prompt_cache_key,
             apply_provider_params=self._client.apply_provider_params,
         )
+        provider.omit_from_body(params)
         client = self._client.client(provider=provider)
         if stream:
             message, usage, finish_reason = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
@@ -197,6 +198,7 @@ class ResponsesWire:
             params["temperature"] = provider.temperature
         if provider.extra_body and (extra_body := responses_module.responses_extra_body(provider.extra_body, params)):
             params["extra_body"] = extra_body
+        provider.omit_from_body(params)
         client = self._client.client(provider=provider)
         if stream:
             result = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
@@ -270,7 +272,7 @@ class AnthropicWire:
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
         messages = Text.value(messages)
-        params = self.params(messages, tools, provider)
+        params = provider.omit_from_body(self.params(messages, tools, provider))
         client = self._client.anthropic_client(provider=provider)
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         if stream:

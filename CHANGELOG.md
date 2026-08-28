@@ -12,6 +12,12 @@
   places it, so `["low", "medium", "high", "ultra"]` sends `ultra` for `max`, and `/reason ultra`
   picks it directly. `/config` lists the declared levels.
 
+- `omit_body = ["reasoning_effort"]` leaves named fields out of the request. `extra_body` could
+  only add and merge, so an endpoint that answers 400 for a field minacode sends had no
+  configuration answer at all. A name is dropped wherever it sits in the built request, on all
+  three wires, as the last step before sending; the fields that carry the request itself (`model`,
+  `messages`, `input`) are refused. `/config` lists what is omitted.
+
 - A provider entry can send extra HTTP headers with `headers = { x-cmd-zdr = "1" }`. `extra_body`
   reaches the request body only, so a provider feature documented as a header had no expression at
   all — Command Code's zero-retention routing, a gateway's tenant or routing key. The entry's

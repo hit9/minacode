@@ -62,6 +62,7 @@ Most users can leave these unset.
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
 | `strict_tools` | `false` | Request strict function schemas where supported; toggle with `/strict` |
 | `headers` | `{}` | Extra HTTP headers sent with every request to this entry; see below |
+| `omit_body` | `[]` | Request fields this endpoint rejects; see below |
 | `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body. Fields inside an object minacode also manages are merged rather than replacing it, so `extra_body.reasoning.context` reaches a Responses host without dropping the resolved effort |
 | `builtin_tools` | `[]` | Tools the provider runs itself, passed through verbatim; see below |
 | `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
@@ -82,6 +83,18 @@ headers = { x-cmd-zdr = "1" }   # Command Code: route only to zero-retention ups
 Values are strings or plain integers. `key` still supplies authentication, so a header is only
 needed for what the provider documents separately — zero-retention routing, a gateway's tenant or
 routing key. `/config` lists the headers in effect.
+
+### Fields an endpoint rejects
+
+Some endpoints answer `400` for a field minacode sends. Name it in `omit_body` and it is left out:
+
+```toml
+[provider.gw]
+omit_body = ["reasoning_effort", "stream_options"]
+```
+
+`extra_body` is the other half — it adds fields, `omit_body` removes them. A name is dropped
+wherever it sits in the request. `/config` lists what is being omitted.
 
 Streaming is enabled by default for all three protocols. If a compatible endpoint does not
 support it, set `stream = false` in that provider block, or use `/set provider.stream off` for
