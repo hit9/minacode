@@ -1,4 +1,4 @@
-"""A small terminal coding agent."""
+"""A terminal coding agent."""
 
 from minacode.base import __version__
 

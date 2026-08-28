@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A coding agent I use, maintain, and customize, shipped as a small, focused Python package.
+  A terminal coding agent I use, maintain, and customize, shipped as a self-contained Python package.
 </p>
 
 ## Safety
@@ -16,9 +16,9 @@
 
 minacode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
 
-It works on real repositories, including its own: I use minacode to build and maintain minacode. Everything ships in a small, focused Python package, so I can change the behavior directly whenever I want the workflow to work differently.
+It works on real repositories, including its own: I use minacode to build and maintain minacode. Everything ships in one self-contained Python package, so I can change the behavior directly whenever I want the workflow to work differently.
 
-minacode is the former nanocode. It started as a single-file agent small enough to be called *nano*, but has since grown beyond a single file, so it now goes by minacode.
+minacode is the former nanocode. It started as a single-file agent small enough to be called *nano*; it is no longer small, or a single file, so it now goes by minacode.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/hit9/minacode/master/snapshots/minacode2.gif" alt="minacode resuming a saved session" width="600">

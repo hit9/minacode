@@ -1,13 +1,14 @@
 # minacode
 
-A small terminal coding agent
+A terminal coding agent
 
 minacode works in your terminal: you describe a task, and it reads code, edits files, runs
 commands, and reports back. It keeps <span class="marker">stable prompt prefixes</span> so
 supported providers can reuse work, maintains a searchable code index, runs background jobs,
 tracks its own working notes, and <span class="marker">resumes where you left off</span>.
 
-minacode is the former nanocode, renamed once it outgrew the single file that made it *nano*.
+minacode is the former nanocode, renamed once it outgrew both the single file and the small size
+that made it *nano*.
 
 ```{figure} ../snapshots/minacode1.gif
 :alt: minacode editing code and running tools in one interactive session

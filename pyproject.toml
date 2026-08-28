@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "minacode"
 version = "0.34.2"
-description = "A small terminal coding agent written in Python"
+description = "A terminal coding agent written in Python"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-3-Clause"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "hit9", email = "hit9@icloud.com" },
 ]
-keywords = ["ai", "coding-assistant", "cli", "terminal"]
+keywords = ["ai", "coding-agent", "cli", "terminal"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
