@@ -255,13 +255,18 @@ class ChoiceViewState:
         suffix = (" /" + self.query) if self.query else ""
         if self.query and not self.searching:
             suffix += " (filtered)"
-        parts: StyleAndTextTuples = [
-            # The modal opens inline under whatever was printed last, and a title butted straight
-            # against it reads as another line of that output rather than as a new thing asking.
-            # The second break separates the header from the rows, so the title reads as a title
-            # instead of as the first item of the list under it.
-            ("", "\n"),
-            ("class:choice.title", title + suffix + "\n"),
+        # The modal opens inline under whatever was printed last, and a title butted straight
+        # against it reads as another line of that output rather than as a new thing asking. The
+        # break after the header separates it from the rows, so the title reads as a title instead
+        # of as the first item of the list under it. The title takes the same two-column indent as
+        # everything else in the modal and everything a command prints; it was the one line at
+        # column zero.
+        #
+        # A caller that draws its own header passes no title and gets no leading break, keeping
+        # this line for the search suffix alone.
+        parts: StyleAndTextTuples = [("", "\n")] if title else []
+        parts += [
+            ("class:choice.title", ("  " + title if title else "") + suffix + "\n"),
             ("class:choice.disabled", "  j/k move, / search, Esc/q back/cancel\n"),
             ("", "\n"),
         ]
