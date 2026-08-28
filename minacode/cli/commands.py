@@ -173,9 +173,11 @@ def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     labels[current] = labels.get(current, current) + " (current)"
     # A shortened list raises the question the same screen should answer, so the reason it is
     # short is shown under it with the page it came from. The same footer under every row: it is
-    # about the list, not about whichever level the cursor happens to be on.
+    # about the list, not about whichever level the cursor happens to be on. It opens by naming
+    # itself, since text appearing under a list of choices otherwise reads as being about the
+    # choice rather than about the list.
     why, evidence = provider.effort_scale_source(model)
-    footer = "\n".join(line for line in (why, evidence) if line)
+    footer = "\n".join(line for line in ("Why these levels", why, evidence) if line)
     return select_choice(loop, "Reasoning effort", choices, labels=labels, current=current, preview_fn=(lambda _choice: footer) if why else None)
 
 

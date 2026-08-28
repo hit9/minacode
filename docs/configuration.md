@@ -121,8 +121,10 @@ Reasoning effort
    2. low
    3. high
    4. max
-  DeepSeek documents low/high/max; medium and xhigh are served as high
-  https://api-docs.deepseek.com/guides/thinking_mode/
+  ──────────────────────────────────
+  │ Why these levels
+  │ DeepSeek documents low/high/max; medium and xhigh are served as high
+  │ https://api-docs.deepseek.com/guides/thinking_mode/
 ```
 
 Switching model or provider can leave an effort the new model has no level for. minacode moves it

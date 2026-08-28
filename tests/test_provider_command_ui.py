@@ -266,7 +266,7 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
     assert shown["choices"] == ("off", "low", "medium", "high", "xhigh")
     assert shown["labels"]["off"] == "off - disable reasoning"
     # A shortened list has to account for itself where it is shown, or it just looks broken.
-    assert shown["footer"] == "this generation documents low through xhigh\nhttps://developers.openai.com/api/docs/models/gpt-5.5"
+    assert shown["footer"] == "Why these levels\nthis generation documents low through xhigh\nhttps://developers.openai.com/api/docs/models/gpt-5.5"
 
 def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
     import minacode.cli.modals as modals_mod
@@ -287,7 +287,7 @@ def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeyp
     assert reason(command_loop, "") == "Set provider.reasoning = ultra"
     assert shown["choices"] == ("off", "low", "high", "ultra")
     # A config declaration is its own account of itself; there is no page to cite for it.
-    assert shown["footer"] == "declared for this model in your config"
+    assert shown["footer"] == "Why these levels\ndeclared for this model in your config"
 
 def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     from prompt_toolkit.document import Document
