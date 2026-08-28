@@ -234,6 +234,10 @@ generic standards path.
 - `providers/catalog.py` declares overlays/capabilities with primary evidence beside each exception;
   `providers/compat.py` owns generic matching and fallback. Neither wraps SDKs nor allowlists valid
   models.
+- A chosen effort is the effort sent. `/reason` offers only the levels the active model documents,
+  so nothing has to be rewritten between the screen and the wire; an effort left off scale by a
+  model or provider switch is moved to the nearest level at that moment and reported, never per
+  request.
 - Catalog knowledge is split by what a fact is about. How a model takes reasoning belongs to the
   model and is matched on the model name on every host, including hosts the catalog has never
   seen; what an endpoint does — wire, caching, strict schemas, provider-side tools, and a fallback

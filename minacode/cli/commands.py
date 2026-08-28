@@ -43,7 +43,6 @@ from minacode.cli.modals import (
 from minacode.cli.update import UpdateChecker
 from minacode.config import (
     PROVIDER_API_CHOICES,
-    REASONING_CHOICES,
     Config,
     ProviderConfig,
     RuntimeSettings,
@@ -161,23 +160,18 @@ def mcp_command(loop: CommandLoop, args: str) -> str | None:
     raise AssertionError("unreachable MCP subcommand")
 
 
-def effort_sent_for(provider: ProviderConfig, value: str) -> str:
-    """The effort the provider would receive for one choice, catalog fold and declarations applied."""
-    return replace(provider, reasoning=value).resolve().reasoning_effort or "(none)"
+def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
+    """Offer the efforts `model` accepts — the entry's own model when none is named.
 
-
-def select_reasoning(loop: CommandLoop) -> str | object | None:
+    The list is the model's scale, not minacode's: a level this model has no spelling for is not
+    a choice, so nothing has to be rewritten between picking it and sending it. `model` is passed
+    when the effort is being chosen for a model the entry has not switched to yet."""
     provider = loop.session.config.provider
     current = provider.reasoning
-    # A level this model declares belongs in the list: it is offered nowhere else, and the point of
-    # declaring it was to be able to pick it.
-    declared = tuple(level for level in provider.declared_levels() if level not in REASONING_CHOICES)
-    # Every row names what it sends, including the rows that send themselves. Marking only the
-    # folded ones would leave the reader deciding whether an unmarked row is unfolded or unchecked.
-    labels = {level: f"{level} → {effort_sent_for(provider, level)}" for level in (*REASONING_CHOICES[1:], *declared)}
-    labels["off"] = "off - disable reasoning"
+    choices = provider.reasoning_choices(model)
+    labels = {"off": "off - disable reasoning"}
     labels[current] = labels.get(current, current) + " (current)"
-    return select_choice(loop, "Reasoning effort", (*REASONING_CHOICES, *declared), labels=labels, current=current)
+    return select_choice(loop, "Reasoning effort", choices, labels=labels, current=current)
 
 
 def select_api(loop: CommandLoop, model: str) -> str | object | None:
@@ -384,7 +378,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
             f"provider.reasoning: {provider.reasoning}",
             f"provider.resolved_reasoning_effort: {resolved.reasoning_effort or '(off)'}",
-            f"provider.declared_reasoning: {', '.join(provider.declared_levels()) or '(none)'}",
+            f"provider.supported_reasoning: {', '.join(provider.reasoning_choices())}",
             f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
             f"provider.chat_reasoning: {provider.chat_reasoning}",
             f"provider.resolved_chat_reasoning_history: {resolved.chat_reasoning_history}",
@@ -739,12 +733,27 @@ def record_provider_override(session: Session, field: str, value: str) -> None:
     session.provider_overrides.setdefault("providers", {}).setdefault(session.config.active_provider, {})[field] = value
 
 
+def realign_reasoning(loop: CommandLoop, model: str = "") -> str:
+    """Move the stored effort onto `model`'s scale, and say so when it moves.
+
+    The alternative to saying it is a request that silently sends something other than the effort
+    on screen, which is what this replaced. It happens where the scale changes underneath a stored
+    choice — switching entry or model — never per request."""
+    provider = loop.session.config.provider
+    aligned = provider.normalized_reasoning(model)
+    if aligned == provider.reasoning:
+        return ""
+    previous, provider.reasoning = provider.reasoning, aligned
+    record_provider_override(loop.session, "reasoning", aligned)
+    return f"Reasoning {previous} is not offered by {model or provider.model}, using {aligned}"
+
+
 def set_provider(loop: CommandLoop, name: str) -> str:
     if name not in loop.session.config.providers:
         return "Unknown provider: " + name
     loop.session.config.active_provider = name
     record_provider_override(loop.session, "active_provider", name)
-    return "Set provider = " + name
+    return "\n".join(line for line in ("Set provider = " + name, realign_reasoning(loop)) if line)
 
 
 def model(loop: CommandLoop, args: str) -> str:
@@ -819,7 +828,9 @@ def set_model(loop: CommandLoop, model: str, *, back_to_model: bool = False) -> 
         api = select_api(loop, model)
         if api is SELECTION_BACK:
             return SELECTION_BACK if back_to_model else "No change"
-        reasoning = select_reasoning(loop)
+        # The model being switched to, not the one still configured: its scale is what the new
+        # effort has to come from.
+        reasoning = select_reasoning(loop, model)
         if reasoning is not SELECTION_BACK:
             break
     provider = loop.session.config.provider
@@ -832,29 +843,26 @@ def set_model(loop: CommandLoop, model: str, *, back_to_model: bool = False) -> 
         provider.reasoning = reasoning
         record_provider_override(loop.session, "reasoning", reasoning)
         lines.append("Set provider.reasoning = " + reasoning)
+    elif realigned := realign_reasoning(loop):
+        lines.append(realigned)
     return "\n".join(lines)
 
 
 def set_reasoning(loop: CommandLoop, value: str) -> str:
-    """Apply an effort and report what the provider will actually receive.
-
-    Always both values, even when they match. The sent one can differ — a model documented without
-    this level, or a scale the entry declares — and a fold nobody can see leaves the user unable to
-    tell why a request behaved as it did; showing the pair only on a mismatch answers that question
-    for one session and raises it for every other."""
     provider = loop.session.config.provider
     provider.reasoning = value
     record_provider_override(loop.session, "reasoning", value)
-    return f"Set provider.reasoning = {value} → {effort_sent_for(provider, value)}"
+    return "Set provider.reasoning = " + value
 
 
 def reason(loop: CommandLoop, args: str) -> str:
     value = args.strip()
     if value:
-        # A level declared by `[provider.X.models]` is as valid as a built-in one; anything else
-        # is a typo rather than a value worth forwarding.
-        if value not in REASONING_CHOICES and value not in loop.session.config.provider.declared_levels():
-            return "Usage: /reason " + "|".join(REASONING_CHOICES)
+        # Typed efforts are held to the same list the picker offers, so `/reason` and the picker
+        # cannot disagree about what this model takes.
+        choices = loop.session.config.provider.reasoning_choices()
+        if value not in choices:
+            return "Usage: /reason " + "|".join(choices)
         return set_reasoning(loop, value)
     choice = select_reasoning(loop)
     return set_reasoning(loop, choice) if isinstance(choice, str) else "No change"

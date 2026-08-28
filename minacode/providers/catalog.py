@@ -177,15 +177,16 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
     # Bare gpt-5 has no documented "off" spelling; only the 5.x generations define one.
     {"pattern": r"gpt-5(?:-|$)", "chat_reasoning": "reasoning_effort", "reasoning_effort_levels": ("minimal", "low", "medium", "high")},
     {"pattern": r"o[1-4](?:-|$)", "chat_reasoning": "reasoning_effort", "reasoning_effort_levels": ("low", "medium", "high")},
-    # DeepSeek V4 uses thinking.type and accepts low/high/max plus xhigh as a model-specific
-    # compatibility level. The host folds medium/high/xhigh to high server-side, so only low and
-    # max are distinct efforts; xhigh is kept in the level list because the endpoint accepts it.
+    # DeepSeek V4 uses thinking.type and documents low/high/max. `medium` and `xhigh` are accepted
+    # for backward compatibility and both resolve to high server-side, so they are not levels: a
+    # list is what `/reason` offers, and offering a level that behaves exactly like its neighbour
+    # is a choice that cannot be acted on.
     # Evidence: https://api-docs.deepseek.com/guides/thinking_mode/
     {
         "prefixes": ("deepseek-v4-",),
         "chat_reasoning": "thinking",
         "chat_reasoning_history": "tool_calls",
-        "reasoning_effort_levels": ("low", "high", "xhigh", "max"),
+        "reasoning_effort_levels": ("low", "high", "max"),
     },
     # K3 uses normalized effort, K2.5/K2.6 use thinking.type, and K2.7 is always-thinking. K3 and
     # K2.7 preserve thinking across turns; K3 cannot disable thinking on the open platform.

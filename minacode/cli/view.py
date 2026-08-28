@@ -54,6 +54,8 @@ class CommandCompleter(Completer):
         providers: Callable[[], tuple[str, ...]] = tuple,
         models: Callable[[], tuple[str, ...]] = tuple,
         worker_models: Callable[[], tuple[str, ...]] = tuple,
+        # The active model's own scale, so completion offers exactly what `/reason` accepts.
+        reasoning_choices: Callable[[], tuple[str, ...]] = lambda: REASONING_CHOICES,
         mcp_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_connected_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
@@ -64,6 +66,7 @@ class CommandCompleter(Completer):
         self.providers = providers
         self.models = models
         self.worker_models = worker_models
+        self.reasoning_choices = reasoning_choices
         self.mcp_servers = mcp_servers
         self.mcp_connected_servers = mcp_connected_servers
         self.mcp_tools = mcp_tools
@@ -104,8 +107,8 @@ class CommandCompleter(Completer):
         for command, values in (
             ("/model ", self.models),
             ("/provider ", self.providers),
-            ("/reason ", lambda: REASONING_CHOICES),
-            ("/effort ", lambda: REASONING_CHOICES),
+            ("/reason ", self.reasoning_choices),
+            ("/effort ", self.reasoning_choices),
             ("/api ", lambda: PROVIDER_API_CHOICES),
             ("/strict ", lambda: ("on", "off")),
             ("/compact ", lambda: ("log",)),

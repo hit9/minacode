@@ -49,7 +49,7 @@ protocol, and the effort.
 |---|---|---|
 | `/provider [NAME]` | The active provider entry | Any [configured provider](configuration.md#providers) |
 | `/model [MODEL]` | The model for that entry | Configured and discovered models |
-| `/reason [EFFORT]` | Reasoning effort — `/effort` is the same command | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `/reason [EFFORT]` | Reasoning effort — `/effort` is the same command | the levels the active model offers, plus `off` |
 | `/api [API]` | The protocol used to reach the model | `auto`, `chat`, `responses`, `anthropic` |
 
 Effort is mapped to the nearest level a known model family accepts; unrecognized models keep what

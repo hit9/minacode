@@ -17,18 +17,23 @@ def entry(**overrides) -> ProviderConfig:
     return ProviderConfig.from_dict({**data, **overrides})
 
 
-@pytest.mark.parametrize(
-    ("chosen", "sent"),
-    (("minimal", "low"), ("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "ultra"), ("max", "ultra")),
-)
-def test_a_declared_scale_replaces_the_catalog_guess_for_matching_models(chosen, sent):
-    """Declaration order places a level minacode cannot name: `ultra` sits above `high`, so the two
-    efforts above `high` land on it rather than folding back down to a level minacode knows."""
-    assert replace(entry(), reasoning=chosen).resolve().reasoning_effort == sent
+def test_a_declared_scale_is_what_the_model_offers():
+    """The declaration replaces the catalog's answer for matching models, and it is a menu rather
+    than a fold target: `/reason` offers exactly these, so each one reaches the wire as written."""
+    assert entry().reasoning_choices() == ("off", "low", "medium", "high", "ultra")
+
+    for level in ("low", "medium", "high", "ultra"):
+        assert replace(entry(), reasoning=level).resolve().reasoning_effort == level
 
 def test_a_declared_level_is_sent_as_written():
     assert entry(reasoning="ultra").resolve().reasoning_effort == "ultra"
     assert entry(reasoning="ultra").reasoning_effort() == "ultra"
+
+@pytest.mark.parametrize(("stored", "aligned"), (("minimal", "low"), ("xhigh", "high"), ("max", "high")))
+def test_an_effort_off_the_declared_scale_is_moved_onto_it(stored, aligned):
+    """Only reachable by carrying an effort over from another model — the picker cannot produce
+    one. It lands on the nearest level the declaration names that minacode also knows."""
+    assert replace(entry(), reasoning=stored).normalized_reasoning() == aligned
 
 def test_declarations_apply_only_to_models_their_glob_matches():
     """An entry switched to another model with /model keeps the catalog's own answer."""
@@ -46,12 +51,15 @@ def test_the_first_matching_glob_wins_like_a_catalog_rule():
     )
     assert provider.declared_levels() == ("low",)
 
-def test_a_scale_of_names_minacode_knows_none_of_still_orders_by_declaration():
+def test_a_scale_of_names_minacode_knows_none_of_is_offered_as_written():
+    """Nothing has to rank `cheap` against `deep`: they are the menu, and one of them is chosen."""
     provider = ProviderConfig.from_dict({"url": "https://gw.example/v1", "model": "m", "models": {"m": {"reasoning": ["cheap", "normal", "deep"]}}})
 
-    assert replace(provider, reasoning="minimal").resolve().reasoning_effort == "cheap"
-    assert replace(provider, reasoning="medium").resolve().reasoning_effort == "normal"
-    assert replace(provider, reasoning="max").resolve().reasoning_effort == "deep"
+    assert provider.reasoning_choices() == ("off", "cheap", "normal", "deep")
+    assert replace(provider, reasoning="deep").resolve().reasoning_effort == "deep"
+    # An effort carried over from another model has no comparable rank on this scale, so it lands
+    # in the middle rather than on a guessed one.
+    assert replace(provider, reasoning="max").normalized_reasoning() == "normal"
 
 def test_only_a_declared_level_widens_what_reasoning_accepts():
     """`ultra` is a valid effort because a model declares it; an undeclared word stays a typo."""
@@ -72,3 +80,26 @@ def test_declarations_follow_the_entry_into_its_copies():
     requests they make without being configured a second time."""
     worker = replace(entry(reasoning="ultra"), model="gpt-5.6-mini")
     assert worker.resolve().reasoning_effort == "ultra"
+
+def test_a_catalogued_model_offers_the_levels_it_documents():
+    """The scale minacode ships is the endpoint's own: DeepSeek documents low/high/max, and the
+    compatibility spellings it also accepts (medium, xhigh) both resolve to high server-side, so
+    offering them would be offering two choices that do the same thing."""
+    deepseek = ProviderConfig(url="https://api.deepseek.com", key="k", model="deepseek-v4-flash")
+
+    assert deepseek.reasoning_choices() == ("off", "low", "high", "max")
+
+def test_a_model_the_catalog_says_nothing_about_keeps_the_full_scale():
+    """Unknown means unconstrained: an endpoint minacode has no evidence for must not have its
+    choices narrowed on a guess."""
+    unknown = ProviderConfig(url="https://gw.example/v1", key="k", model="custom-model")
+
+    assert unknown.reasoning_choices() == ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+def test_switching_to_a_model_without_the_stored_level_moves_it_onto_that_model_s_scale():
+    stored = ProviderConfig(url="https://api.openai.com/v1", key="k", model="gpt-5", reasoning="minimal")
+    assert stored.reasoning_choices() == ("off", "minimal", "low", "medium", "high")
+    assert stored.resolve().reasoning_effort == "minimal"
+
+    on_deepseek = replace(stored, url="https://api.deepseek.com", model="deepseek-v4-flash")
+    assert on_deepseek.normalized_reasoning() == "low"

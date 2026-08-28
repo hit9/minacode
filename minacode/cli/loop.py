@@ -220,6 +220,7 @@ Full documentation: https://minacode.readthedocs.io
         self.input_completer = CommandCompleter(
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
+            reasoning_choices=lambda: self.session.config.provider.reasoning_choices(),
             worker_models=lambda: tuple(
                 dict.fromkeys(
                     (*self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider].available_models, "default")

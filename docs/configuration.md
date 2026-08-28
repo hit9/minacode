@@ -105,15 +105,23 @@ timer active indefinitely, so `response_timeout` separately limits the complete 
 ten minutes by default. Reaching the total limit cancels the request without automatic retries;
 set it to `0` only when deliberately allowing unbounded generations.
 
-For provider/model combinations with documented reasoning constraints, minacode maps the selected
-effort to the nearest accepted value. Unknown OpenAI-compatible endpoints and model names stay on
-the generic path rather than an allowlist; set `api` and `chat_reasoning` explicitly if automatic
-selection is wrong. `/config` shows the resolved reasoning effort, while `/status` shows the active
-model and cache usage reported by the provider.
+`/reason` offers the levels the active model documents, and sends the one you pick. DeepSeek
+models offer `off, low, high, max`; a model minacode has no evidence about keeps the full scale
+(`minimal, low, medium, high, xhigh, max`). Unknown OpenAI-compatible endpoints and model names
+stay on the generic path rather than an allowlist; set `api` and `chat_reasoning` explicitly if
+automatic selection is wrong. `/config` lists the levels in `provider.supported_reasoning`, while
+`/status` shows the active model and cache usage reported by the provider.
+
+Switching model or provider can leave an effort the new model has no level for. minacode moves it
+to the nearest one and says so once:
+
+```
+Reasoning medium is not offered by deepseek-v4-flash, using high
+```
 
 ### Effort levels a model accepts
 
-When that mapping is wrong for your model, say what the model accepts. Write the levels weakest
+When minacode's list is wrong for your model, say what the model accepts. Write the levels weakest
 first, under a model name or a glob:
 
 ```toml
@@ -121,12 +129,8 @@ first, under a model name or a glob:
 "gpt-5.6*" = { reasoning = ["low", "medium", "high", "ultra"] }
 ```
 
-Your levels replace minacode's guess for models the glob matches. They can include names minacode
-does not know — `ultra` above — and the order is what places them, so `/reason max` sends `ultra`.
-Pick one directly with `/reason ultra`.
-
-`/reason` always shows both values — the level you picked and the one the provider receives
-(`Set provider.reasoning = max → ultra`). Its picker labels each level the same way.
+Those levels become what `/reason` offers for models the glob matches, replacing minacode's own.
+They can include names minacode does not know — `ultra` above — since they are sent as written.
 
 ## Provider-side tools
 

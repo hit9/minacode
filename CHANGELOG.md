@@ -7,10 +7,9 @@
 - A provider entry can state what a model accepts, for when the built-in guess is wrong:
   `[provider.X.models]` maps a model name or glob to an ordered `reasoning` list, weakest first.
   Effort support belongs to the model rather than the endpoint, so this is where it is declared;
-  the levels replace the catalog's for matching models and follow the entry into worker and
-  compaction requests. A declared level may be one minacode has never heard of — declaration order
-  places it, so `["low", "medium", "high", "ultra"]` sends `ultra` for `max`, and `/reason ultra`
-  picks it directly. `/config` lists the declared levels.
+  the levels become what `/reason` offers for matching models and follow the entry into worker and
+  compaction requests. A declared level may be one minacode has never heard of — `["low", "high",
+  "ultra"]` puts `ultra` in the picker and sends it as written.
 
 - `omit_body = ["reasoning_effort"]` leaves named fields out of the request. `extra_body` could
   only add and merge, so an endpoint that answers 400 for a field minacode sends had no
@@ -35,10 +34,17 @@
   Endpoint facts (wire, caching, strict schemas, provider-side tools) still come from the host, and
   a gateway that re-encodes reasoning into its own format — OpenRouter — keeps its own spelling.
 
-- `/reason` now names the effort the provider will actually receive — `Set provider.reasoning =
-  max → xhigh` — instead of folding silently, and its picker labels every level with what that
-  level sends. Both values show even when they match, so an unmarked line never leaves you
-  deciding whether the effort went out unfolded or simply unreported.
+- `/reason` now offers the levels the active model documents, and sends the one you pick. It used
+  to offer all seven and quietly rewrite the request when the model had no such level — picking
+  `max` on a DeepSeek model sent `high`, with nothing saying so. DeepSeek models now offer
+  `off, low, high, max`; a model minacode has no evidence about keeps the full scale. Switching
+  model or provider can leave an effort the new model has no level for: it moves to the nearest
+  one and says so once (`Reasoning medium is not offered by deepseek-v4-flash, using high`).
+  `/config` lists the levels as `provider.supported_reasoning`.
+
+- DeepSeek's effort levels are `low`, `high` and `max`. `medium` and `xhigh` are accepted for
+  backward compatibility and both resolve to `high` server-side, so they were two menu entries
+  that did the same thing as a third.
 
 ## 0.34.2 - 2026-08-26
 

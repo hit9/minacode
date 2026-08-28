@@ -252,47 +252,21 @@ def nearest_reasoning_effort(effort: str, supported: tuple[str, ...]) -> str:
     return min(candidates, key=lambda level: (abs(ranks[level] - target), -ranks[level]))
 
 
-def declared_effort_ranks(levels: tuple[str, ...]) -> list[float]:
-    """Place a configured effort scale on minacode's own, so a level it cannot name still has an
-    order.
+def nearest_supported_effort(effort: str, levels: tuple[str, ...]) -> str:
+    """Move an effort onto a model's own scale, so a stored choice is never one it cannot take.
 
-    A declared name minacode knows anchors to its own rank; the rest take their neighbours' ranks
-    spread over the declaration order. `["low", "medium", "high", "ultra"]` therefore puts `ultra`
-    above `high` without minacode recognizing the word, which is the whole point of letting a
-    config declare the scale. A declaration with no recognizable name at all is spread evenly."""
+    This runs when the scale changes under a stored effort — a `/model` switch, a config written
+    against a different model — and not on the way to the provider. What is offered is what a model
+    accepts, so a chosen effort is already on the scale and reaches the wire as written; a request
+    that quietly sent something other than the level on screen was the thing worth removing.
 
-    ranks = {level: rank for rank, level in enumerate(REASONING_LEVELS)}
-    anchors = [(position, ranks[name]) for position, name in enumerate(levels) if name in ranks]
-    span = len(REASONING_LEVELS) - 1
-    if not anchors:
-        return [position * span / max(1, len(levels) - 1) for position in range(len(levels))]
-    placed: list[float] = []
-    for position in range(len(levels)):
-        before = [anchor for anchor in anchors if anchor[0] <= position]
-        after = [anchor for anchor in anchors if anchor[0] >= position]
-        if before and after and before[-1][0] != after[0][0]:
-            (low_position, low_rank), (high_position, high_rank) = before[-1], after[0]
-            placed.append(low_rank + (high_rank - low_rank) * (position - low_position) / (high_position - low_position))
-        elif before:
-            placed.append(before[-1][1] + (position - before[-1][0]))
-        else:
-            placed.append(after[0][1] - (after[0][0] - position))
-    return placed
-
-
-def fold_declared_effort(effort: str, levels: tuple[str, ...]) -> str:
-    """Fold a normalized effort onto the scale a `[provider.X.models]` entry declares.
-
-    An effort the declaration lists is sent as written, so a configured level minacode has never
-    heard of is reachable; anything else lands on the nearest declared level, higher on a tie."""
+    A scale of names minacode does not recognize has no comparable order, so an effort off it lands
+    on the middle entry rather than on a guessed rank."""
 
     if not levels or effort in levels:
         return effort
-    ranks = {level: rank for rank, level in enumerate(REASONING_LEVELS)}
-    if (target := ranks.get(effort)) is None:
-        return effort
-    placed = declared_effort_ranks(levels)
-    return levels[min(range(len(levels)), key=lambda index: (abs(placed[index] - target), -placed[index]))]
+    nearest = nearest_reasoning_effort(effort, levels)
+    return nearest if nearest in levels else levels[len(levels) // 2]
 
 
 def _model_rules(*groups: tuple[ModelRuleData, ...]) -> tuple[ModelRule, ...]:

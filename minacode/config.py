@@ -19,8 +19,8 @@ from minacode.providers.compat import (
     CompatibilityProfile,
     ResolvedProvider,
     compatibility_for_host,
-    fold_declared_effort,
     is_text_only_model,
+    nearest_supported_effort,
 )
 
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
@@ -258,6 +258,29 @@ class ProviderConfig:
         model = model or self.model
         return next((override.reasoning_levels for override in self.model_overrides if override.matches(model)), ())
 
+    def supported_efforts(self, model: str = "") -> tuple[str, ...]:
+        """The effort levels this model accepts — what `/reason` offers, and all it offers.
+
+        A configured declaration wins, then the catalog, and a model neither knows anything about
+        keeps minacode's full scale: unknown means unconstrained, not empty. Offering exactly this
+        is what removed the request-time fold — a level that cannot be picked never has to be
+        rewritten on the way out."""
+        model = (model or self.model).lower()
+        if declared := self.declared_levels(model):
+            return declared
+        host = (urlparse(self.url.rstrip("/")).hostname or "").lower()
+        return compatibility_for_host(host, self.COMPATIBILITY).supported_efforts(model) or REASONING_LEVELS
+
+    def reasoning_choices(self, model: str = "") -> tuple[str, ...]:
+        """Everything `/reason` may offer for this model, `off` included."""
+        return ("off", *self.supported_efforts(model))
+
+    def normalized_reasoning(self, model: str = "") -> str:
+        """This entry's effort, moved onto `model`'s scale if it is not already on it."""
+        if self.reasoning == "off":
+            return self.reasoning
+        return nearest_supported_effort(self.reasoning_effort(), self.supported_efforts(model))
+
     def missing_fields(self) -> list[str]:
         """The required fields this entry leaves empty. An entry missing any of them cannot serve a
         request, whichever role it is filling — the active provider, or the one `[compaction]`
@@ -295,11 +318,11 @@ class ProviderConfig:
             if api == "responses":
                 reasoning_effort = profile.reasoning_off_value(model, responses=True) or reasoning_effort
         else:
-            effort = self.reasoning_effort()
-            # A declaration is the user telling minacode what this model actually accepts, so it
-            # replaces the catalog's guess rather than being folded on top of it.
-            declared = self.declared_levels(model)
-            reasoning_effort = fold_declared_effort(effort, declared) if declared else profile.reasoning_effort_value(model, effort)
+            # Sent as chosen. `/reason` only offers what this model accepts and a model switch
+            # moves a stored effort onto the new scale, so by the time a request is built the
+            # effort is already one this model takes -- the last-resort move here is for an entry
+            # constructed directly, never for a session that has been through either path.
+            reasoning_effort = nearest_supported_effort(self.reasoning_effort(), self.supported_efforts(model))
 
         suppress_temperature = profile.suppress_temperature or any(model.startswith(prefix) for prefix in profile.suppress_temperature_models)
         if not suppress_temperature:

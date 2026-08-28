@@ -83,7 +83,7 @@ def test_runtime_provider_switches_are_recorded_for_resume(tmp_path):
     assert set_model(command_loop, "model-b") == "Set provider.model = model-b"
     assert session.provider_overrides["providers"]["other"]["model"] == "model-b"
 
-    assert reason(command_loop, "high") == "Set provider.reasoning = high → high"
+    assert reason(command_loop, "high") == "Set provider.reasoning = high"
     assert session.provider_overrides["providers"]["other"]["reasoning"] == "high"
 
     assert api(command_loop, "responses") == "Set provider.api = responses (wire: responses)"
@@ -126,7 +126,7 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     command_loop = loop(tmp_path)
 
     assert reason(command_loop, "invalid").startswith("Usage: /reason ")
-    assert reason(command_loop, "max") == "Set provider.reasoning = max → max"
+    assert reason(command_loop, "max") == "Set provider.reasoning = max"
     assert command_loop.session.config.provider.reasoning == "max"
     assert strict(command_loop, "on") == "Usage: /strict"
     assert set_value(command_loop, "") == "Usage: /set KEY VALUE"
@@ -143,28 +143,18 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert stream_values == ["on", "off"]
     assert set_value(command_loop, "provider.image_input off") == "Unknown config key: provider.image_input"
 
-def test_reason_reports_the_effort_the_provider_will_actually_receive(tmp_path):
-    """A fold is invisible otherwise: the user picks max, the provider is sent xhigh, and nothing
-    in the session says so. Both values show even when they match — an unmarked line would leave
-    the reader unable to tell an unfolded effort from an unreported one."""
+def test_reason_only_accepts_efforts_the_active_model_takes(tmp_path):
+    """What is offered is what the model accepts, so the chosen effort is the sent effort."""
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
     provider.url = "https://api.openai.com/v1"
     provider.model = "gpt-5.5"
 
-    assert reason(command_loop, "max") == "Set provider.reasoning = max → xhigh"
-    assert reason(command_loop, "high") == "Set provider.reasoning = high → high"
-
-def test_reason_leaves_the_entry_it_reports_on_unchanged(tmp_path):
-    """The preview resolves copies: a chosen effort must not leak the other rows' values into the
-    live entry."""
-    command_loop = loop(tmp_path)
-    command_loop.session.config.provider.url = "https://api.openai.com/v1"
-    command_loop.session.config.provider.model = "gpt-5.5"
-
-    reason(command_loop, "max")
-
-    assert command_loop.session.config.provider.reasoning == "max"
+    assert reason(command_loop, "xhigh") == "Set provider.reasoning = xhigh"
+    assert command_loop.session.config.provider.resolve().reasoning_effort == "xhigh"
+    # gpt-5.5 has no `max`, so it is not offered and cannot be set: the effort on screen is the
+    # effort sent, with nothing rewritten in between.
+    assert reason(command_loop, "max").startswith("Usage: /reason ")
 
 def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
     command_loop = loop(tmp_path)
@@ -172,8 +162,11 @@ def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
         {"url": "https://gw.example/v1", "model": "custom-1", "models": {"custom-*": {"reasoning": ["low", "high", "ultra"]}}}
     )
 
-    assert reason(command_loop, "ultra") == "Set provider.reasoning = ultra → ultra"
+    assert reason(command_loop, "ultra") == "Set provider.reasoning = ultra"
+    assert command_loop.session.config.provider.resolve().reasoning_effort == "ultra"
     assert reason(command_loop, "elsewhere").startswith("Usage: /reason ")
+    # A level minacode knows but this model does not is refused like any other unavailable one.
+    assert reason(command_loop, "medium").startswith("Usage: /reason ")
 
 def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):
     command_loop = loop(tmp_path)
@@ -250,9 +243,8 @@ def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_
     assert shown["labels"]["auto"] == "auto - infer from the endpoint URL and model (responses)"
     assert shown["labels"]["chat"] == "chat (current)"
 
-def test_reasoning_picker_names_what_each_row_sends(tmp_path, monkeypatch):
-    """The picker is where an effort is chosen, so it is where the fold has to be readable — a
-    level whose row reads `max → xhigh` needs no second command to explain it."""
+def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch):
+    """The picker is the model's scale, not minacode's."""
     import minacode.cli.modals as modals_mod
 
     command_loop = loop(tmp_path)
@@ -268,9 +260,10 @@ def test_reasoning_picker_names_what_each_row_sends(tmp_path, monkeypatch):
 
     monkeypatch.setattr(modals_mod, "choice_application", choose)
 
-    assert reason(command_loop, "") == "Set provider.reasoning = high → high"
-    assert shown["labels"]["max"] == "max → xhigh"
-    assert shown["labels"]["low"] == "low → low"
+    assert reason(command_loop, "") == "Set provider.reasoning = high"
+    # gpt-5.5 documents low/medium/high/xhigh. `minimal` and `max` are not choices here, so no row
+    # can be picked that the request would then have to rewrite.
+    assert shown["choices"] == ("off", "low", "medium", "high", "xhigh")
     assert shown["labels"]["off"] == "off - disable reasoning"
 
 def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
@@ -289,9 +282,8 @@ def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeyp
 
     monkeypatch.setattr(modals_mod, "choice_application", choose)
 
-    assert reason(command_loop, "") == "Set provider.reasoning = ultra → ultra"
-    assert shown["choices"][-1] == "ultra"
-    assert shown["labels"]["max"] == "max → ultra"
+    assert reason(command_loop, "") == "Set provider.reasoning = ultra"
+    assert shown["choices"] == ("off", "low", "high", "ultra")
 
 def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     from prompt_toolkit.document import Document
@@ -617,3 +609,26 @@ def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
     assert state.view.tab == expected_tab
     assert state.mode is DiffViewState.Mode.LIST
     assert state.file == 0
+
+def test_switching_provider_says_when_it_had_to_move_the_effort(tmp_path):
+    """The one moment an effort changes without being chosen. Saying it is the price of never
+    rewriting one silently on the way to the provider."""
+    command_loop = loop(tmp_path)
+    session = command_loop.session
+    # `medium` is the default effort and DeepSeek has no such level, so an entry can arrive at its
+    # own model already holding one it cannot use.
+    session.config.providers["deep"] = ProviderConfig(url="https://api.deepseek.com", key="k", model="deepseek-v4-flash", reasoning="medium")
+
+    result = provider(command_loop, "deep")
+
+    assert result == "Set provider = deep\nReasoning medium is not offered by deepseek-v4-flash, using high"
+    assert session.config.provider.reasoning == "high"
+    assert session.provider_overrides["providers"]["deep"]["reasoning"] == "high"
+
+def test_switching_provider_stays_quiet_when_the_effort_still_fits(tmp_path):
+    command_loop = loop(tmp_path)
+    session = command_loop.session
+    session.config.providers["deep"] = ProviderConfig(url="https://api.deepseek.com", key="k", model="deepseek-v4-flash", reasoning="high")
+
+    assert provider(command_loop, "deep") == "Set provider = deep"
+    assert session.config.provider.reasoning == "high"
