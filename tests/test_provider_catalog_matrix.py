@@ -53,8 +53,25 @@ MATRIX = (
         "current_turn",
         ("none", "low", "low", "medium", "xhigh", "xhigh", "xhigh"),
     ),
-    # Alibaba re-hosts DeepSeek and GLM but narrows their effort scale to high/max, so the host's
-    # own rule takes precedence over the model's trait — the one case the precedence exists for.
+    # Two endpoints that re-host other vendors' models and give them a scale of their own, so the
+    # host's rule outranks the model's trait — what that precedence exists for. Volcengine hands
+    # every model the same four levels; Alibaba narrows DeepSeek and GLM to high/max.
+    (
+        "https://ark.cn-beijing.volces.com/api/v3",
+        "deepseek-v4-flash-ga-260731",
+        "chat",
+        "thinking",
+        "tool_calls",
+        (None, "minimal", "low", "medium", "high", "high", "high"),
+    ),
+    (
+        "https://ark.cn-beijing.volces.com/api/v3",
+        "glm-5-2-260617",
+        "chat",
+        "thinking_toggle",
+        "all",
+        (None, "minimal", "low", "medium", "high", "high", "high"),
+    ),
     (
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "deepseek-v4-flash",

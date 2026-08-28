@@ -220,6 +220,15 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
     # list is what `/reason` offers, and offering a level that behaves exactly like its neighbour
     # is a choice that cannot be acted on.
     # Evidence: https://api-docs.deepseek.com/guides/thinking_mode/
+    # Pro serves a `low` request as `high`, which leaves it two levels rather than Flash's three.
+    {
+        "prefixes": ("deepseek-v4-pro",),
+        "chat_reasoning": "thinking",
+        "chat_reasoning_history": "tool_calls",
+        "reasoning_effort_levels": ("high", "max"),
+        "why": "DeepSeek V4 Pro serves low as high, leaving high and max",
+        "evidence": "https://api-docs.deepseek.com/guides/thinking_mode/",
+    },
     {
         "prefixes": ("deepseek-v4-",),
         "chat_reasoning": "thinking",
@@ -610,6 +619,21 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "chat_reasoning_history": "current_turn",
         "prompt_cache_key": False,
         "builtin_tools_by_wire": {"chat": ({"type": "web_search", "web_search": {}},)},
+    },
+    # Why: Ark gives every model it hosts one effort scale of its own rather than each model's, so
+    # the levels a model takes here are the endpoint's fact and outrank the model's -- DeepSeek V4
+    # and GLM both arrive with three or two levels of their own and are served with these four.
+    # Evidence: https://www.volcengine.com/docs/82379/1330310
+    "volcengine": {
+        "hosts": ("volces.com",),
+        "reasoning_effort_level_rules": (
+            {
+                "levels": ("minimal", "low", "medium", "high"),
+                "pattern": r".*",
+                "why": "Volcengine Ark gives every model it hosts these four levels",
+                "evidence": "https://www.volcengine.com/docs/82379/1330310",
+            },
+        ),
     },
     # Why: Anthropic server tools (web_search_20250305) are Messages tool definitions; only the
     # tested web search version is offered so far. OpenCode Zen documents endpoint routing only,

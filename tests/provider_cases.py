@@ -89,6 +89,18 @@ PROVIDER_CONTRACTS = (
         absent_body_keys=("prompt_cache_key", "temperature"),
     ),
     ProviderContract(
+        # Ark's own scale replaces the model's: DeepSeek V4 has no `medium` of its own, and gets
+        # one here because the endpoint documents four levels for everything it serves.
+        id="volcengine-chat",
+        provider="volcengine",
+        url="https://ark.cn-beijing.volces.com/api/v3",
+        model="deepseek-v4-flash-ga-260731",
+        reasoning="medium",
+        expected_api="chat",
+        expected_path="/api/v3/chat/completions",
+        expected_body={"reasoning_effort": "medium", "thinking": {"type": "enabled"}},
+    ),
+    ProviderContract(
         id="qwen-chat",
         provider="qwen",
         url="https://dashscope.aliyuncs.com/compatible-mode/v1",

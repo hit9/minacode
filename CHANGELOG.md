@@ -58,6 +58,13 @@
   ordinary GLM-5: it was matching the family rule and being sent a disable it does not honour. It
   offers low/high/max.
 
+- Models served through Volcengine Ark offer `minimal`, `low`, `medium` and `high` — the scale the
+  endpoint gives everything it hosts, in place of each model's own. A DeepSeek V4 model there was
+  being offered its vendor's `max`, which Ark does not take.
+
+- DeepSeek V4 Pro offers `high` and `max`: it serves a `low` request as `high`, so `low` was a
+  third menu entry that behaved like the second. Flash keeps all three.
+
 - DeepSeek and GLM models served through Alibaba's endpoint offer `high` and `max` only, which is
   what that endpoint distinguishes: it serves `low` and `medium` as `high`. Their own scales still
   apply everywhere else, GLM-5.3 keeping low/high/max there too.
