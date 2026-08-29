@@ -83,6 +83,18 @@
   backward compatibility and both resolve to `high` server-side, so they were two menu entries
   that did the same thing as a third.
 
+### Fixed
+
+- Synced catalogs now distinguish image-capable (`auto`) models from text-only models and apply
+  provider-local image rules with the same precedence as every other compatibility setting.
+
+- `/catalog sync` reports a same-version content conflict as such and prints network failures with
+  one error prefix. If a newly activated catalog no longer contains an explicitly configured
+  reasoning dialect, the next request reports a configuration error instead of a raw `KeyError`.
+
+- Responses requests keep configured `extra_body` extensions when a catalog recipe also writes
+  under `extra_body`; catalog-managed fields still take precedence on direct conflicts.
+
 ## 0.34.2 - 2026-08-26
 
 ### Fixed

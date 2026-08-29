@@ -2,13 +2,15 @@ import json
 import os
 from pathlib import Path
 from typing import ClassVar
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
-from minacode.config import Config
+from minacode.base import ConfigError
+from minacode.config import Config, ProviderConfig
 from minacode.providers.catalog import CatalogCodec, decode_bundled
-from minacode.providers.schema import CatalogFormatError, CatalogSyncError
+from minacode.providers.compat import ProviderPolicy
+from minacode.providers.schema import CatalogFormatError, CatalogSyncError, CatalogVersionConflict
 from minacode.providers.sync import CATALOG_URL, CatalogRepository, CatalogRuntime
 
 CATALOG_PATH = Path(__file__).parents[1] / "minacode" / "providers" / "catalog.json"
@@ -109,6 +111,72 @@ def test_codec_requires_knowledge_provenance(remove):
         CatalogCodec().decode(catalog_payload(data), "cached")
 
 
+def test_codec_rejects_policy_references_to_unknown_reasoning_dialects():
+    data = catalog_data()
+    rule = next(rule for rule in data["model_rules"] if "reasoning.dialect" in rule["set"])
+    rule["set"]["reasoning.dialect"] = "removed-by-new-catalog"
+
+    with pytest.raises(CatalogFormatError, match="unknown dialect"):
+        CatalogCodec().decode(catalog_payload(data), "cached")
+
+
+def test_codec_requires_every_recipe_case_to_have_a_result():
+    data = catalog_data()
+    value = data["request_recipes"]["messages.manual-opus-45"]["steps"][0]["set"][2]["value"]
+    value["case"][0].pop("then")
+
+    with pytest.raises(CatalogFormatError, match="need when and then"):
+        CatalogCodec().decode(catalog_payload(data), "cached")
+
+
+def test_image_auto_is_not_text_only():
+    data = catalog_data()
+    rule = next(rule for rule in data["model_rules"] if rule["id"] == "model.text-only-00")
+    rule["set"]["image.input"] = "auto"
+    policy = ProviderPolicy(CatalogCodec().decode(catalog_payload(data), "cached"))
+
+    assert policy.text_only(ProviderConfig(model="deepseek-chat")) is False
+
+
+def test_provider_image_rules_and_ignore_mode_take_part_in_resolution():
+    data = catalog_data()
+    provider = next(provider for provider in data["providers"] if provider["id"] == "provider.openai")
+    provider["model_rules"] = [
+        {
+            "id": "provider.openai.image-test",
+            "match": {"prefixes": ["provider-text-model"]},
+            "set": {"image.input": "text_only"},
+            "why": "Exercises provider-local image policy.",
+            "evidence": ["https://example.test/provider-image-policy"],
+        }
+    ]
+    policy = ProviderPolicy(CatalogCodec().decode(catalog_payload(data), "cached"))
+    assert policy.text_only(ProviderConfig(url="https://api.openai.com/v1", model="provider-text-model")) is True
+
+    provider["model_rule_modes"] = {"image": "ignore"}
+    provider["defaults"]["image.input"] = "auto"
+    policy = ProviderPolicy(CatalogCodec().decode(catalog_payload(data), "cached"))
+    assert policy.text_only(ProviderConfig(url="https://api.openai.com/v1", model="deepseek-chat")) is False
+
+
+def test_stale_explicit_dialect_is_a_config_error_not_a_key_error():
+    policy = ProviderPolicy(decode_bundled())
+    config = ProviderConfig(model="future-model", chat_reasoning="removed-by-new-catalog")
+
+    with pytest.raises(ConfigError, match="is not supported by catalog"):
+        policy.resolve(config)
+
+
+def test_provider_default_reasoning_levels_keep_their_provenance():
+    policy = ProviderPolicy(decode_bundled())
+    config = ProviderConfig(url="https://api.deepseek.com/v1", model="future-model")
+
+    why, evidence = policy.effort_source(config)
+
+    assert why
+    assert evidence.startswith("https://")
+
+
 def test_repository_reports_an_invalid_cached_copy(tmp_path):
     repository = CatalogRepository(str(tmp_path))
     os.makedirs(repository.catalog_dir)
@@ -148,10 +216,24 @@ def test_fetch_rejects_same_version_with_different_content(tmp_path, monkeypatch
     repository = CatalogRepository(str(tmp_path))
     monkeypatch.setattr("minacode.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
 
-    with pytest.raises(CatalogSyncError, match="same version"):
+    with pytest.raises(CatalogVersionConflict, match="same version"):
         repository.fetch()
 
     assert not os.path.exists(repository.cache_path)
+
+
+def test_fetch_wraps_transport_failures_without_a_ui_prefix(tmp_path, monkeypatch):
+    repository = CatalogRepository(str(tmp_path))
+
+    def unavailable(*_args, **_kwargs):
+        raise URLError("offline")
+
+    monkeypatch.setattr("minacode.providers.sync.urlopen", unavailable)
+
+    with pytest.raises(CatalogSyncError) as raised:
+        repository.fetch()
+
+    assert str(raised.value) == "<urlopen error offline>"
 
 
 def test_fetch_treats_http_304_as_current(tmp_path, monkeypatch):

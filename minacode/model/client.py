@@ -42,10 +42,8 @@ from minacode.model import resilience, responses
 from minacode.model.protocol import AnthropicWire, ChatWire, ResponsesWire, WireProtocol
 from minacode.prompts import COMPACTION_REQUEST_EVENT
 from minacode.providers.compat import (
-    ProviderPolicy,
     ResolvedProvider,
     builtin_tools_issue,
-    bundled_policy,
 )
 
 if TYPE_CHECKING:
@@ -155,19 +153,13 @@ class ModelClient:
             "anthropic": AnthropicWire(self),
         }
 
-    def policy(self) -> ProviderPolicy:
-        """The active catalog policy, or the bundled one before a session is bootstrapped."""
-
-        catalog = self.session.catalog
-        return catalog.policy if catalog is not None else bundled_policy()
-
     def resolved(self, provider: ProviderConfig) -> ResolvedProvider:
-        return self.policy().resolve(provider)
+        return self.session.policy.resolve(provider)
 
     def apply_request(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider, *, wire: str) -> Json:
         """Run the resolved request recipe over a body this client assembled."""
 
-        return self.policy().apply_request(params, provider, resolved, wire=wire)
+        return self.session.policy.apply_request(params, provider, resolved, wire=wire)
 
     def cancel(self) -> None:
         self.cancel_requested.set()

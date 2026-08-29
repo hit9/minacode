@@ -190,11 +190,13 @@ class ResponsesWire:
         # that defines an explicit "off" spelling still gets it when reasoning is off.
         if resolved.responses_reasoning and provider.reasoning == "off" and resolved.reasoning_effort is None:
             raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
+        # Fold user extensions first. A catalog recipe may then add managed extra_body paths
+        # without a later assignment replacing them, matching the Chat wire's precedence.
+        if provider.extra_body and (extra_body := responses_module.responses_extra_body(provider.extra_body, params)):
+            params["extra_body"] = extra_body
         self._client.apply_request(params, provider, resolved, wire="responses")
         if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
-        if provider.extra_body and (extra_body := responses_module.responses_extra_body(provider.extra_body, params)):
-            params["extra_body"] = extra_body
         provider.omit_from_body(params)
         client = self._client.client(provider=provider)
         if stream:

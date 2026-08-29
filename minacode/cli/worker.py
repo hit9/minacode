@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from minacode.base import SELECTION_BACK, SESSION_EVENT_KEY
 from minacode.cli import commands
 from minacode.cli.modals import select_choice
-from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES
+from minacode.config import PROVIDER_API_CHOICES
 from minacode.tools.delegate import DelegateTool, refresh_worker_entry
 
 if TYPE_CHECKING:
@@ -243,8 +243,7 @@ class WorkerFlow:
         return "Set worker.reasoning = " + value
 
     def _reasoning_choices(self) -> tuple[str, ...]:
-        catalog = self.loop.session.catalog
-        return ("off", *(catalog.policy.effort_order if catalog is not None else REASONING_CHOICES[1:]))
+        return ("off", *self.loop.session.policy.effort_order)
 
     def _worker_api_picker(self) -> str:
         """Standalone /worker api picker: one selection, no cascade."""

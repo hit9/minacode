@@ -14,7 +14,6 @@ from minacode.cli.modals import tool_output_viewer
 from minacode.cli.worker import WorkerFlow, worker_command
 from minacode.config import (
     PROVIDER_API_CHOICES,
-    REASONING_CHOICES,
     Config,
     ProviderConfig,
 )
@@ -193,7 +192,7 @@ def test_worker_reason_picker_covers_efforts_and_default(tmp_path, monkeypatch):
     picks = iter(["low"])
 
     def select(_loop, title, choices, **kwargs):
-        assert set(choices) == set(REASONING_CHOICES) | {"default"}
+        assert set(choices) == {"off", *command_loop.session.policy.effort_order, "default"}
         assert kwargs["labels"] == {"default": "default - inherit the provider entry's reasoning", "high": "high (current)"}
         return next(picks)
 

@@ -18,10 +18,15 @@ from minacode.image import (
     ImageInputs,
 )
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION
-from minacode.providers.compat import is_text_only_model
+from minacode.providers.compat import bundled_policy
 from minacode.session import Session
 
 VISION_TEXT = "vision observation text"
+
+
+def is_text_only_model(model: str) -> bool:
+    """Test the bundled generic catalog without restoring a production-only wrapper."""
+    return bundled_policy().text_only(ProviderConfig(model=model), model)
 
 
 def image_file(path, *, color=(12, 34, 56)):

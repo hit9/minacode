@@ -9,7 +9,6 @@ import re
 from typing import Any, ClassVar
 
 from minacode.base import ApprovalView, Json, ToolArgs, ToolError
-from minacode.providers.compat import bundled_policy
 from minacode.session import Session, TurnDiff
 
 
@@ -75,8 +74,7 @@ class Tool:
             SkillTool,
         )
 
-        policy = session.catalog.policy if session.catalog is not None else bundled_policy()
-        strict = policy.resolve(session.config.provider).strict_tools_active
+        strict = session.policy.resolve(session.config.provider).strict_tools_active
         # Optional tool families stay out of the model prefix until they have usable session state.
         has_skills = bool(session.skills and session.skills.skills)
         has_mcp = bool(session.mcp and (session.mcp.tools or session.mcp.resources))

@@ -49,7 +49,7 @@ from minacode.config import (
     compaction_provider_config,
 )
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED
-from minacode.providers.compat import ProviderPolicy, builtin_tools_issue, bundled_policy
+from minacode.providers.compat import builtin_tools_issue
 from minacode.providers.schema import CatalogSyncError
 from minacode.providers.sync import CATALOG_URL
 from minacode.render import markdown_table, progress_bar
@@ -95,16 +95,9 @@ SET_VALUES: dict[str, tuple[str, ...]] = {
 # fmt: on
 
 
-def _policy(session: Session) -> ProviderPolicy:
-    """The active catalog policy, or the bundled one before a session is bootstrapped."""
-
-    catalog = session.catalog
-    return catalog.policy if catalog is not None else bundled_policy()
-
-
 def _status_model_line(session: Session, config: Config) -> str:
     active = config.provider
-    return f"`{config.active_provider}/{active.model or '(empty)'}`; `{_policy(session).resolve(active).api}`; `{active.reasoning}`"
+    return f"`{config.active_provider}/{active.model or '(empty)'}`; `{session.policy.resolve(active).api}`; `{active.reasoning}`"
 
 
 def _status_context_line(tokens: int, budget: int, percent: int) -> str:
@@ -177,7 +170,7 @@ def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     when the effort is being chosen for a model the entry has not switched to yet."""
     provider = loop.session.config.provider
     current = provider.reasoning
-    policy = _policy(loop.session)
+    policy = loop.session.policy
     choices = policy.reasoning_choices(provider, model)
     labels = {"off": "off - disable reasoning"}
     labels[current] = labels.get(current, current) + " (current)"
@@ -186,7 +179,7 @@ def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     # about the list, not about whichever level the cursor happens to be on. It opens by naming
     # itself, since text appearing under a list of choices otherwise reads as being about the
     # choice rather than about the list.
-    why, evidence = _policy(loop.session).effort_source(provider, model)
+    why, evidence = loop.session.policy.effort_source(provider, model)
     # Fragments rather than a plain preview string, to take the dim style every other secondary
     # line in a modal uses. The preview default is green italic, which reads as content; this is
     # a note about the screen, like the key hints above it.
@@ -199,7 +192,7 @@ def select_api(loop: CommandLoop, model: str) -> str | object | None:
     # a /models listing does not say which. Confirm the wire alongside the model that needs it.
     provider = loop.session.config.provider
     current = provider.api
-    inferred = _policy(loop.session).resolve(replace(provider, api="auto", model=model)).api
+    inferred = loop.session.policy.resolve(replace(provider, api="auto", model=model)).api
     labels = {"auto": f"auto - infer from the endpoint URL and model ({inferred})"}
     labels[current] = labels.get(current, current) + " (current)"
     return select_choice(loop, "Request API", PROVIDER_API_CHOICES, labels=labels, current=current)
@@ -413,7 +406,7 @@ def diff_command(loop: CommandLoop, args: str) -> str | None:
 
 def config(loop: CommandLoop, args: str) -> str:
     provider = loop.session.config.provider
-    resolved = _policy(loop.session).resolve(provider)
+    resolved = loop.session.policy.resolve(provider)
     compaction_effective = compaction_provider_config(loop.session.config)
     configured_builtin_tools = ", ".join(str(entry.get("type") or "?") for entry in provider.builtin_tools) or "(off)"
     builtin_issue = builtin_tools_issue(resolved, provider.builtin_tools)
@@ -439,7 +432,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
             f"provider.reasoning: {provider.reasoning}",
             f"provider.resolved_reasoning_effort: {resolved.reasoning_effort or '(off)'}",
-            f"provider.supported_reasoning: {', '.join(_policy(loop.session).reasoning_choices(provider))}",
+            f"provider.supported_reasoning: {', '.join(loop.session.policy.reasoning_choices(provider))}",
             f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
             f"provider.chat_reasoning: {provider.chat_reasoning}",
             f"provider.resolved_chat_reasoning_history: {resolved.chat_reasoning_history}",
@@ -801,7 +794,7 @@ def realign_reasoning(loop: CommandLoop, model: str = "") -> str:
     on screen, which is what this replaced. It happens where the scale changes underneath a stored
     choice — switching entry or model — never per request."""
     provider = loop.session.config.provider
-    aligned = _policy(loop.session).normalized_reasoning(provider, model)
+    aligned = loop.session.policy.normalized_reasoning(provider, model)
     if aligned == provider.reasoning:
         return ""
     previous, provider.reasoning = provider.reasoning, aligned
@@ -869,7 +862,7 @@ def remote_models(loop: CommandLoop, provider: ProviderConfig) -> tuple[str, ...
 
         page = OpenAI(
             api_key=provider.key,
-            base_url=_policy(loop.session).resolve(provider).base_url,
+            base_url=loop.session.policy.resolve(provider).base_url,
             timeout=min(provider.timeout, 10),
             max_retries=0,
             default_headers={"User-Agent": HTTP_USER_AGENT},
@@ -921,7 +914,7 @@ def reason(loop: CommandLoop, args: str) -> str:
     if value:
         # Typed efforts are held to the same list the picker offers, so `/reason` and the picker
         # cannot disagree about what this model takes.
-        choices = _policy(loop.session).reasoning_choices(loop.session.config.provider)
+        choices = loop.session.policy.reasoning_choices(loop.session.config.provider)
         if value not in choices:
             return "Usage: /reason " + "|".join(choices)
         return set_reasoning(loop, value)
@@ -945,7 +938,7 @@ def set_api(loop: CommandLoop, value: str) -> str:
     provider.api = value
     record_provider_override(loop.session, "api", value)
     # "auto" is the usual choice, so name the wire it resolved to rather than echoing the setting back.
-    resolved = _policy(loop.session).resolve(provider)
+    resolved = loop.session.policy.resolve(provider)
     result = f"Set provider.api = {value} (wire: {resolved.api})"
     issue = builtin_tools_issue(resolved, provider.builtin_tools)
     if issue is not None:
@@ -968,7 +961,7 @@ def strict(loop: CommandLoop, args: str) -> str:
     provider.strict_tools = not provider.strict_tools
     state = "on" if provider.strict_tools else "off"
     if provider.strict_tools:
-        resolved = _policy(loop.session).resolve(provider)
+        resolved = loop.session.policy.resolve(provider)
         if not resolved.strict_tools_active:
             return f"strict_tools: {state} (inactive: {resolved.host or 'this provider'} does not support strict tool calling)"
     return f"strict_tools: {state}"

@@ -25,11 +25,9 @@ from minacode.cli.hints import Context as HintContext
 from minacode.cli.hints import HintPicker
 from minacode.cli.runtime import RESUME_STATUS_LABEL
 from minacode.cli.worker import WORKER_SUBCOMMANDS
-from minacode.config import (
-    PROVIDER_API_CHOICES,
-    REASONING_CHOICES,
-)
+from minacode.config import PROVIDER_API_CHOICES
 from minacode.mentions import MentionSpan, active_mention, encode_file_mention
+from minacode.providers.compat import bundled_policy
 from minacode.render import LiveSpark, Theme, UiPrinter
 from minacode.session import QueuedInput
 from minacode.tui import TuiApp
@@ -55,9 +53,9 @@ class CommandCompleter(Completer):
         models: Callable[[], tuple[str, ...]] = tuple,
         worker_models: Callable[[], tuple[str, ...]] = tuple,
         # The active model's own scale, so completion offers exactly what `/reason` accepts.
-        reasoning_choices: Callable[[], tuple[str, ...]] = lambda: REASONING_CHOICES,
+        reasoning_choices: Callable[[], tuple[str, ...]] = lambda: ("off", *bundled_policy().effort_order),
         # Workers can target another provider/model, so offer the catalog-wide vocabulary here.
-        worker_reasoning_choices: Callable[[], tuple[str, ...]] = lambda: REASONING_CHOICES,
+        worker_reasoning_choices: Callable[[], tuple[str, ...]] = lambda: ("off", *bundled_policy().effort_order),
         mcp_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_connected_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),

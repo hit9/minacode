@@ -19,9 +19,10 @@ from minacode.base import (
     ToolArgs,
     UpdateStatus,
 )
-from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
+from minacode.config import PROVIDER_API_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
 from minacode.image import ImageInputs, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
+from minacode.providers.compat import ProviderPolicy, bundled_policy
 from minacode.providers.sync import CatalogRuntime
 from minacode.session.codec import TRANSCRIPT_SYNC_VERSION, SessionSnapshotCodec
 from minacode.session.diffs import net_diff_sections
@@ -334,6 +335,12 @@ class Session:
         self.worker_tool_enabled = bool(self.config.worker_provider)
         self.apply_provider_overrides()
 
+    @property
+    def policy(self) -> ProviderPolicy:
+        """The selected catalog policy, with a lazy bundled fallback for bare test/library sessions."""
+
+        return self.catalog.policy if self.catalog is not None else bundled_policy()
+
     def apply_provider_overrides(self) -> None:
         """Best-effort restore of the runtime /provider /model /reason /api switches saved with this
         session. Stale values are skipped, never fatal: a provider entry may have been removed or a
@@ -341,7 +348,7 @@ class Session:
         a model that no longer exists surfaces on the first request exactly as it would have live."""
         overrides = self.provider_overrides
         providers = self.config.providers
-        reasoning_choices = ("off", *(self.catalog.policy.effort_order if self.catalog is not None else REASONING_CHOICES[1:]))
+        reasoning_choices = ("off", *self.policy.effort_order)
         for name, fields in (overrides.get("providers") or {}).items():
             entry = providers.get(name)
             if entry is None or not isinstance(fields, dict):

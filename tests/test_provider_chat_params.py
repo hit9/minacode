@@ -8,7 +8,6 @@ from minacode.base import (
     ConfigError,
 )
 from minacode.config import (
-    CHAT_REASONING_CHOICES,
     Config,
     ProviderConfig,
     RuntimeSettings,
@@ -16,6 +15,7 @@ from minacode.config import (
 from minacode.context import ContextManager
 from minacode.model import ModelClient
 from minacode.providers.catalog import decode_bundled
+from minacode.providers.compat import bundled_policy
 
 
 def test_runtime_settings_reads_theme_from_config():
@@ -94,7 +94,8 @@ def test_every_resolvable_chat_reasoning_mode_is_configurable_by_hand():
         resolvable |= dialects([provider.defaults])
         resolvable |= dialects(rule.set for rule in provider.model_rules)
 
-    assert resolvable <= set(CHAT_REASONING_CHOICES), sorted(resolvable - set(CHAT_REASONING_CHOICES))
+    configurable = {"auto", *bundled_policy().reasoning_dialects}
+    assert resolvable <= configurable, sorted(resolvable - configurable)
     for mode in resolvable:
         assert ProviderConfig.from_dict({"chat_reasoning": mode}).chat_reasoning == mode
 

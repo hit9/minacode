@@ -148,7 +148,7 @@ class CatalogRepository:
         except CatalogSyncError:
             raise
         except (OSError, URLError, HTTPError, ValueError, CatalogError) as error:
-            raise CatalogSyncError(f"catalog sync failed: {error}") from error
+            raise CatalogSyncError(str(error)) from error
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:

@@ -39,7 +39,6 @@ from minacode.providers.schema import (
     RecipeAction,
     RecipeCondition,
     RecipeStep,
-    RecipeValue,
     RequestRecipe,
     Selector,
     VersionSelector,
@@ -215,7 +214,7 @@ class CatalogCodec:
             raise CatalogFormatError("catalog.model_rules must be a list")
         seen_rules: set[str] = set()
         for rule in model_rules:
-            self._validate_rule(rule, seen_rules, "catalog.model_rules", allow_empty_selector=False)
+            self._validate_rule(rule, seen_rules, "catalog.model_rules")
 
         providers = raw.get("providers")
         if not isinstance(providers, list):
@@ -251,7 +250,7 @@ class CatalogCodec:
             if not isinstance(provider_rules, list):
                 raise CatalogFormatError(f"{pid}.model_rules must be a list")
             for rule in provider_rules:
-                self._validate_rule(rule, seen_rules, pid + ".model_rules", allow_empty_selector=False)
+                self._validate_rule(rule, seen_rules, pid + ".model_rules")
             tools = provider.get("builtin_tools_by_wire")
             if tools is not None:
                 if not isinstance(tools, dict):
@@ -264,26 +263,22 @@ class CatalogCodec:
             if not provider.get("why") or not provider.get("evidence"):
                 raise CatalogFormatError(f"{pid} must carry why and evidence")
 
-        # All recipe references from policy rules must exist.
+        # All policy references must resolve inside this complete document.
+        dialects = cast(dict[str, object], defaults["reasoning_dialects"])
+        for dialect, recipe in dialects.items():
+            if recipe not in seen_recipes:
+                raise CatalogFormatError(f"catalog.defaults.reasoning_dialects.{dialect} references unknown recipe {recipe!r}")
         for rule in model_rules:
-            self._validate_recipe_reference(rule, seen_recipes)
+            self._validate_policy_references(cast(dict, rule["set"]), f"{rule.get('id')}.set", seen_recipes, dialects)
         for provider in providers:
             for rule in provider.get("model_rules", []):
-                self._validate_recipe_reference(rule, seen_recipes)
-            for value in (provider.get("defaults") or {}).values():
-                if isinstance(value, str) and value in seen_recipes and value != "off":
-                    continue  # a recipe reference, already covered below
-            recipe_value = (provider.get("defaults") or {}).get("reasoning.recipe")
-            if isinstance(recipe_value, str) and recipe_value not in seen_recipes:
-                raise CatalogFormatError(f"{provider.get('id')}.defaults.reasoning.recipe references unknown recipe {recipe_value!r}")
-        default_recipe = defaults.get("provider_policy", {}).get("reasoning.recipe")
+                self._validate_policy_references(cast(dict, rule["set"]), f"{rule.get('id')}.set", seen_recipes, dialects)
+            self._validate_policy_references(cast(dict, provider.get("defaults") or {}), f"{provider.get('id')}.defaults", seen_recipes, dialects)
+        default_policy = cast(dict[str, object], defaults["provider_policy"])
+        default_recipe = default_policy.get("reasoning.recipe")
         if not isinstance(default_recipe, str) or default_recipe not in seen_recipes:
             raise CatalogFormatError("catalog.defaults.provider_policy.reasoning.recipe must reference a request recipe")
-        dialects = defaults.get("reasoning_dialects")
-        if isinstance(dialects, dict):
-            for dialect, recipe in dialects.items():
-                if recipe not in seen_recipes:
-                    raise CatalogFormatError(f"catalog.defaults.reasoning_dialects.{dialect} references unknown recipe {recipe!r}")
+        self._validate_policy_references(default_policy, "catalog.defaults.provider_policy", seen_recipes, dialects)
 
     def _validate_defaults(self, defaults: Mapping[str, object]) -> None:
         required = {"effort_order", "thinking_budgets", "reasoning_dialects", "wire_defaults", "provider_policy"}
@@ -294,23 +289,21 @@ class CatalogCodec:
         if unknown:
             raise CatalogFormatError(f"catalog.defaults has unknown fields {sorted(unknown)}")
         effort_order = defaults.get("effort_order")
-        if effort_order is not None:
-            if not isinstance(effort_order, list) or not effort_order:
-                raise CatalogFormatError("catalog.defaults.effort_order must be a non-empty string list")
-            if len(set(effort_order)) != len(effort_order):
-                raise CatalogFormatError("catalog.defaults.effort_order must not repeat an effort")
-            for effort in effort_order:
-                if not isinstance(effort, str) or _EFFORT_RE.fullmatch(effort) is None:
-                    raise CatalogFormatError(f"catalog.defaults.effort_order has invalid effort {effort!r}")
+        if not isinstance(effort_order, list) or not effort_order:
+            raise CatalogFormatError("catalog.defaults.effort_order must be a non-empty string list")
+        if len(set(effort_order)) != len(effort_order):
+            raise CatalogFormatError("catalog.defaults.effort_order must not repeat an effort")
+        for effort in effort_order:
+            if not isinstance(effort, str) or _EFFORT_RE.fullmatch(effort) is None:
+                raise CatalogFormatError(f"catalog.defaults.effort_order has invalid effort {effort!r}")
         budgets = defaults.get("thinking_budgets")
-        if budgets is not None:
-            if not isinstance(budgets, dict):
-                raise CatalogFormatError("catalog.defaults.thinking_budgets must be an object")
-            for effort, budget in budgets.items():
-                if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
-                    raise CatalogFormatError(f"catalog.defaults.thinking_budgets.{effort} must be a positive integer")
-                if effort_order and effort not in effort_order:
-                    raise CatalogFormatError(f"catalog.defaults.thinking_budgets.{effort} is not in effort_order")
+        if not isinstance(budgets, dict):
+            raise CatalogFormatError("catalog.defaults.thinking_budgets must be an object")
+        for effort, budget in budgets.items():
+            if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+                raise CatalogFormatError(f"catalog.defaults.thinking_budgets.{effort} must be a positive integer")
+            if effort not in effort_order:
+                raise CatalogFormatError(f"catalog.defaults.thinking_budgets.{effort} is not in effort_order")
         dialects = defaults.get("reasoning_dialects")
         if not isinstance(dialects, dict) or not dialects:
             raise CatalogFormatError("catalog.defaults.reasoning_dialects must be a non-empty dialect-to-recipe object")
@@ -407,14 +400,14 @@ class CatalogCodec:
         seen.add(rid)
         return rid
 
-    def _validate_rule(self, rule: Mapping[str, object], seen: set[str], where: str, *, allow_empty_selector: bool) -> None:
+    def _validate_rule(self, rule: Mapping[str, object], seen: set[str], where: str) -> None:
         if not isinstance(rule, dict) or "set" not in rule or not isinstance(rule["set"], dict) or not rule["set"]:
             raise CatalogFormatError(f"{where} rules need a non-empty set object")
         rid = self._require_unique_id(rule, seen, where)
         selector = rule.get("match")
         if selector is not None and not isinstance(selector, dict):
             raise CatalogFormatError(f"{where}.{rid}.match must be an object")
-        if (selector is None or not selector) and not allow_empty_selector:
+        if selector is None or not selector:
             raise CatalogFormatError(f"{where}.{rid} needs a non-empty selector")
         self._validate_selector(cast(dict, selector) if selector else None, f"{where}.{rid}.match")
         self._validate_policy_values(f"{where}.{rid}.set", cast(dict, rule["set"]))
@@ -466,11 +459,26 @@ class CatalogCodec:
                 ):
                     raise CatalogFormatError(f"{where}.version.{bound} must be a [major, minor] integer pair")
 
-    def _validate_recipe_reference(self, rule: Mapping[str, object], seen_recipes: set[str]) -> None:
-        set_values = rule.get("set")
-        recipe = set_values.get("reasoning.recipe") if isinstance(set_values, dict) else None
+    def _validate_policy_references(
+        self,
+        values: Mapping[str, object],
+        where: str,
+        seen_recipes: set[str],
+        dialects: Mapping[str, object],
+    ) -> None:
+        """Validate each reference without forcing recipe/dialect pairs to be identical.
+
+        A dialect names a user-selectable Chat spelling; a recipe is the executable body policy.
+        Messages models intentionally use a Messages recipe with dialect ``off``, so equality
+        would reject valid cross-wire policy instead of establishing an invariant.
+        """
+
+        recipe = values.get("reasoning.recipe")
         if isinstance(recipe, str) and recipe not in seen_recipes:
-            raise CatalogFormatError(f"{rule.get('id')}.set.reasoning.recipe references unknown recipe {recipe!r}")
+            raise CatalogFormatError(f"{where}.reasoning.recipe references unknown recipe {recipe!r}")
+        dialect = values.get("reasoning.dialect")
+        if isinstance(dialect, str) and dialect not in dialects:
+            raise CatalogFormatError(f"{where}.reasoning.dialect references unknown dialect {dialect!r}")
 
     def _validate_builtin_entries(self, where: str, entries: object) -> None:
         if not isinstance(entries, list) or not entries:
@@ -551,15 +559,15 @@ class CatalogCodec:
                 if not isinstance(cases, list) or not cases:
                     raise CatalogFormatError(f"request_recipes.{rid}.steps[{index}] case must be a non-empty list")
                 for case in cases:
-                    if not isinstance(case, dict) or "when" not in case:
-                        raise CatalogFormatError(f"request_recipes.{rid}.steps[{index}] case entries need when")
+                    if not isinstance(case, dict) or "when" not in case or "then" not in case:
+                        raise CatalogFormatError(f"request_recipes.{rid}.steps[{index}] case entries need when and then")
                 if "else" not in value:
                     raise CatalogFormatError(f"request_recipes.{rid}.steps[{index}] case needs an else")
                 for case in cases:
                     self._validate_recipe_step_condition(rid, index, cast(dict, case["when"]))
                 self._validate_recipe_value(rid, index, value["else"])
                 for case in cases:
-                    self._validate_recipe_value(rid, index, case.get("then"))
+                    self._validate_recipe_value(rid, index, case["then"])
                 return
             if set(value) == {"lookup"}:
                 table = value["lookup"]
@@ -700,44 +708,16 @@ class CatalogCodec:
     def _compile_step(self, step: RawRecipeStep) -> RecipeStep:
         when_raw = step.get("when")
         return RecipeStep(
-            when=self._compile_condition(cast(Mapping[str, object], when_raw)) if when_raw else None,
+            when=RecipeCondition.from_raw(cast(Mapping[str, object], when_raw)) if when_raw else None,
             set=tuple(self._compile_action(action) for action in step.get("set") or ()),
             remove=tuple(tuple(str(part) for part in path) for path in step.get("remove") or ()),
         )
 
-    def _compile_condition(self, when: Mapping[str, object]) -> RecipeCondition:
-        eq: dict[str, object] = {}
-        contains: dict[str, tuple[object, ...]] = {}
-        present: dict[str, bool] = {}
-        for key, condition in when.items():
-            if isinstance(condition, dict):
-                if "in" in condition:
-                    contains[key] = tuple(condition["in"])
-                if "present" in condition:
-                    present[key] = bool(condition["present"])
-                if "eq" in condition:
-                    eq[key] = condition["eq"]
-            else:
-                eq[key] = condition
-        return RecipeCondition(eq=eq, contains=contains, present=present)
-
     def _compile_action(self, action: RawRecipeAction) -> RecipeAction:
         return RecipeAction(
             path=tuple(str(part) for part in action["path"]),
-            value=self._compile_value(action["value"]),
+            value=_freeze(action["value"]),
         )
-
-    def _compile_value(self, value: object) -> RecipeValue:
-        if isinstance(value, dict):
-            if set(value) == {"source"} and isinstance(value["source"], str):
-                return RecipeValue("source", value["source"])
-            if "case" in value:
-                return RecipeValue("case", _freeze(value))
-            if set(value) == {"lookup"}:
-                return RecipeValue("lookup", _freeze(value["lookup"]))
-            if set(value) == {"bounded_budget"}:
-                return RecipeValue("bounded_budget", _freeze(value["bounded_budget"]))
-        return RecipeValue("literal", _freeze(value))
 
 
 def decode_bundled() -> CatalogSnapshot:

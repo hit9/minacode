@@ -19,36 +19,18 @@ from functools import lru_cache
 from typing import Literal, Protocol, cast
 from urllib.parse import urlparse
 
+from minacode.base import ConfigError
+
 from .catalog import decode_bundled
 from .schema import (
     CatalogSnapshot,
     PolicyRule,
     ProviderRule,
     RecipeCondition,
-    RecipeValue,
     RequestRecipe,
 )
 
 Json = dict[str, object]
-
-
-def _raw_condition(when: Mapping[str, object]) -> RecipeCondition:
-    """Compile a raw ``when`` mapping (step or case) into the schema's condition form."""
-
-    eq: dict[str, object] = {}
-    contains: dict[str, tuple[object, ...]] = {}
-    present: dict[str, bool] = {}
-    for key, condition in when.items():
-        if isinstance(condition, Mapping):
-            if "in" in condition:
-                contains[key] = tuple(condition["in"])
-            if "present" in condition:
-                present[key] = bool(condition["present"])
-            if "eq" in condition:
-                eq[key] = condition["eq"]
-        else:
-            eq[key] = condition
-    return RecipeCondition(eq=eq, contains=contains, present=present)
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +250,8 @@ class CompatibilityResolver:
                 return rule.why, rule.evidence
             if not provider.ignores(path.split(".", 1)[0]) and (rule := self._first_setting_rule(self.snapshot.model_rules, model, path)) is not None:
                 return rule.why, rule.evidence
+            if path in provider.defaults:
+                return provider.why, provider.evidence
         else:
             if (rule := self._first_setting_rule(self.snapshot.model_rules, model, path)) is not None:
                 return rule.why, rule.evidence
@@ -275,7 +259,7 @@ class CompatibilityResolver:
 
     # -- text-only model evidence (global, vendor-aware) --------------------
 
-    def text_only(self, model: str) -> bool:
+    def text_only(self, provider: ProviderRule | None, model: str) -> bool:
         """Whether a configured model ID resolves to documented static text-only evidence.
 
         The full ID is matched first; a canonical ``vendor/model`` gateway form (OpenRouter/OpenCode)
@@ -283,8 +267,7 @@ class CompatibilityResolver:
         slugs, so a custom alias or an unknown host stays unknown and is probed on the main model.
         """
 
-        rule = self._first_setting_rule(self.snapshot.model_rules, model, "image.input")
-        return bool(rule and rule.set.get("image.input"))
+        return self.field_value(provider, model, "image.input") == "text_only"
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +342,7 @@ class RequestRuleEngine:
             return None
         minimum = int(raw.get("minimum") or 0)
         headroom = int(raw.get("headroom") or 0)
-        value = table.get(str(context.resolved_effort or "")) or table.get("medium")
+        value = table.get(str(context.resolved_effort or ""))
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
         value = int(value)
@@ -377,7 +360,7 @@ class RequestRuleEngine:
             if not isinstance(case, Mapping):
                 continue
             condition = case.get("when")
-            if isinstance(condition, Mapping) and _raw_condition(condition).matches(context):
+            if isinstance(condition, Mapping) and RecipeCondition.from_raw(condition).matches(context):
                 return self._eval_value(case.get("then"), context)
         return self._eval_value(raw.get("else"), context)
 
@@ -395,19 +378,6 @@ class RequestRuleEngine:
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
             return [self._eval_value(item, context) for item in value]
         return value
-
-    def evaluate(self, value: RecipeValue, context: RequestPolicyContext) -> object:
-        """Evaluate a compiled recipe value; nested special leaves inside literals resolve too."""
-
-        if value.kind == "source":
-            return context.get(str(value.raw))
-        if value.kind == "lookup":
-            return self._lookup(value.raw, context)
-        if value.kind == "bounded_budget":
-            return self._bounded_budget(value.raw, context)
-        if value.kind == "case":
-            return self._eval_case(value.raw, context)
-        return self._eval_value(value.raw, context)
 
     # -- actions ------------------------------------------------------------
 
@@ -448,7 +418,7 @@ class RequestRuleEngine:
             if step.when is not None and not step.when.matches(context):
                 continue
             for action in step.set:
-                self._set(params, action.path, self.evaluate(action.value, context))
+                self._set(params, action.path, self._eval_value(action.value, context))
             for path in step.remove:
                 self._remove(params, path)
         return params
@@ -546,12 +516,12 @@ class ProviderPolicy:
         return (why, evidence[0] if evidence else "")
 
     def reasoning_effort_value(self, config: PolicyConfig) -> str:
-        """The stored effort if it is a known normalized level or user-declared, else ``medium``."""
+        """The stored effort if known or user-declared, else the catalog scale's midpoint."""
 
         reasoning = str(getattr(config, "reasoning", "off"))
         if reasoning in self._effort_order or reasoning in config.declared_levels():
             return reasoning
-        return "medium"
+        return self._effort_order[len(self._effort_order) // 2]
 
     def normalized_reasoning(self, config: PolicyConfig, model: str = "") -> str:
         """This entry's effort, moved onto ``model``'s choices if it is not already among them."""
@@ -562,7 +532,8 @@ class ProviderPolicy:
         return nearest_supported_effort(self.reasoning_effort_value(config), self.supported_efforts(config, model), self._effort_order)
 
     def text_only(self, config: PolicyConfig | None, model: str = "") -> bool:
-        return self._resolver.text_only((model or str(getattr(config, "model", ""))).lower())
+        model = (model or str(getattr(config, "model", ""))).lower()
+        return self._resolver.text_only(self._provider_for(config), model)
 
     # -- resolve ------------------------------------------------------------
 
@@ -592,7 +563,10 @@ class ProviderPolicy:
         # A configured wire dialect is an explicit override. The mapping to a request recipe is
         # catalog data, so adding a dialect does not require a Python release.
         if explicit_dialect != "auto":
-            reasoning_recipe = self.snapshot.defaults.reasoning_dialects[explicit_dialect]
+            mapped_recipe = self.snapshot.defaults.reasoning_dialects.get(explicit_dialect)
+            if mapped_recipe is None:
+                raise ConfigError(f"provider.chat_reasoning `{explicit_dialect}` is not supported by catalog {self.snapshot.version}")
+            reasoning_recipe = mapped_recipe
         responses_models = self._resolver.field_value(provider, model, "responses.reasoning_models")
         responses_reasoning = not isinstance(responses_models, (list, tuple)) or any(model.startswith(str(prefix)) for prefix in responses_models)
 
@@ -648,7 +622,7 @@ class ProviderPolicy:
             strict_tools_active=strict_tools_active,
             builtin_tools_by_wire=provider.builtin_tools_by_wire if provider is not None else None,
             json_response_format=bool(self._resolver.field_value(provider, model, "json.response_format")),
-            text_only=self._resolver.text_only(model),
+            text_only=self._resolver.text_only(provider, model),
             reasoning_recipe=reasoning_recipe,
             reasoning_mandatory=self.reasoning_mandatory(config, model),
             output_max_tokens=output_max_tokens,
@@ -704,9 +678,3 @@ def bundled_policy() -> ProviderPolicy:
     """
 
     return ProviderPolicy(decode_bundled())
-
-
-def is_text_only_model(model: str) -> bool:
-    """Catalog-side text-only evidence for the bundled snapshot (tests and tooling)."""
-
-    return bundled_policy().text_only(None, model)

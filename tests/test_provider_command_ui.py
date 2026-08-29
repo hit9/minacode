@@ -31,9 +31,9 @@ from minacode.cli.commands import (
 from minacode.cli.modals import choice_application, diff_viewer, select_choice
 from minacode.config import (
     PROVIDER_API_CHOICES,
-    REASONING_CHOICES,
     ProviderConfig,
 )
+from minacode.providers.schema import CatalogSyncError
 from minacode.providers.sync import CatalogRuntime
 from minacode.tui import TUI_MODAL_PENDING, DiffViewState, TabbedViewState, TuiApp
 
@@ -49,6 +49,18 @@ def test_catalog_command_reports_the_selected_snapshot_and_is_not_queue_safe(tmp
     assert "| schema |" in status
     assert "| scope |" in status
     assert catalog_command(command_loop, "unknown") == "Usage: /catalog [status|sync]"
+
+
+def test_catalog_command_adds_the_sync_error_prefix_once(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
+
+    def fail():
+        raise CatalogSyncError("offline")
+
+    monkeypatch.setattr(command_loop.session.catalog, "sync_now", fail)
+
+    assert catalog_command(command_loop, "sync") == "catalog sync failed: offline"
     assert "/catalog" not in QUEUE_SAFE_COMMANDS
 
 
@@ -429,7 +441,7 @@ def test_effort_is_an_alias_for_reason(tmp_path):
     from prompt_toolkit.document import Document
 
     texts = [c.text for c in CommandCompleter().get_completions(Document("/effort "), None)]
-    assert set(texts) == set(REASONING_CHOICES)
+    assert set(texts) == {"off", *command_loop.session.policy.effort_order}
 
 def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)

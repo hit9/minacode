@@ -40,16 +40,16 @@ class CatalogFormatError(CatalogError):
     """The JSON document is malformed: types, dates, regex, references, or a semantic invariant."""
 
 
-class CatalogVersionConflict(CatalogError):
-    """Two documents share a version but differ in canonical content."""
-
-
 class CatalogSourceError(CatalogError):
     """The bundled or cached source could not be read."""
 
 
 class CatalogSyncError(CatalogError):
     """A remote sync failed: timeout, HTTP, oversize, ETag, or the atomic write."""
+
+
+class CatalogVersionConflict(CatalogSyncError):
+    """Two remote/current documents share a version but differ in canonical content."""
 
 
 # ---------------------------------------------------------------------------
@@ -107,17 +107,13 @@ class RawModelIdForm(TypedDict):
     notes: NotRequired[list[str]]
 
 
-class RawRecipeCondition(TypedDict):
-    pass
-
-
 class RawRecipeAction(TypedDict):
     path: list[str]
     value: object
 
 
 class RawRecipeStep(TypedDict, total=False):
-    when: NotRequired[RawRecipeCondition]
+    when: NotRequired[dict[str, object]]
     set: NotRequired[list[RawRecipeAction]]
     remove: NotRequired[list[list[str]]]
 
@@ -129,12 +125,12 @@ class RawRequestRecipe(TypedDict):
     description: NotRequired[str]
 
 
-class RawDefaults(TypedDict, total=False):
-    effort_order: NotRequired[list[str]]
-    thinking_budgets: NotRequired[dict[str, int]]
-    reasoning_dialects: NotRequired[dict[str, str]]
-    wire_defaults: NotRequired[dict[str, Json]]
-    provider_policy: NotRequired[dict[str, object]]
+class RawDefaults(TypedDict):
+    effort_order: list[str]
+    thinking_budgets: dict[str, int]
+    reasoning_dialects: dict[str, str]
+    wire_defaults: dict[str, Json]
+    provider_policy: dict[str, object]
 
 
 class RawCatalog(TypedDict):
@@ -212,10 +208,6 @@ class Selector:
             return False
         return self.version is None or self.version.matches(lowered)
 
-    @property
-    def empty(self) -> bool:
-        return not (self.prefixes or self.pattern or self.tokens_any or self.tokens_all or self.version)
-
 
 @dataclass(frozen=True)
 class PolicyRule:
@@ -228,10 +220,6 @@ class PolicyRule:
     evidence: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
-    @property
-    def namespaces(self) -> frozenset[str]:
-        return frozenset(path.split(".", 1)[0] for path in self.set)
-
 
 @dataclass(frozen=True)
 class ModelIdForm:
@@ -243,22 +231,31 @@ class ModelIdForm:
 
 
 @dataclass(frozen=True)
-class RecipeValue:
-    """A recipe value: a JSON literal, a ``source`` reference, a ``case``, a table
-    ``lookup``, or a ``bounded_budget`` integer. ``None`` means a plain literal whose
-    nested dicts may still carry ``source``/``case``/``lookup``/``bounded_budget`` leaves."""
-
-    kind: Literal["literal", "source", "case", "lookup", "bounded_budget"]
-    raw: object
-
-
-@dataclass(frozen=True)
 class RecipeCondition:
     """Compiled ``when``: a mapping of context key to an eq value, ``in`` list, or ``present`` flag."""
 
     eq: Mapping[str, object]
     contains: Mapping[str, tuple[object, ...]]
     present: Mapping[str, bool]
+
+    @classmethod
+    def from_raw(cls, when: Mapping[str, object]) -> RecipeCondition:
+        """Freeze a validated raw condition for top-level steps and nested ``case`` arms."""
+
+        eq: dict[str, object] = {}
+        contains: dict[str, tuple[object, ...]] = {}
+        present: dict[str, bool] = {}
+        for key, condition in when.items():
+            if isinstance(condition, Mapping):
+                if "in" in condition:
+                    contains[key] = tuple(condition["in"])
+                if "present" in condition:
+                    present[key] = bool(condition["present"])
+                if "eq" in condition:
+                    eq[key] = condition["eq"]
+            else:
+                eq[key] = condition
+        return cls(eq=eq, contains=contains, present=present)
 
     def matches(self, context: RecipeContext) -> bool:
         for key, expected in self.eq.items():
@@ -276,7 +273,7 @@ class RecipeCondition:
 @dataclass(frozen=True)
 class RecipeAction:
     path: tuple[str, ...]
-    value: RecipeValue
+    value: object
 
 
 @dataclass(frozen=True)

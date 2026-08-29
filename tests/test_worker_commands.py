@@ -138,9 +138,6 @@ def test_worker_provider_off_selects_literal_off_entry(tmp_path):
 
 def test_worker_model_and_reason_overrides(tmp_path):
     from minacode.cli import CommandLoop
-    from minacode.config import (
-        REASONING_CHOICES,
-    )
     from minacode.engine import Agent
 
     parent = session(tmp_path)
@@ -161,7 +158,8 @@ def test_worker_model_and_reason_overrides(tmp_path):
     assert worker_command(loop, "reason default") == "worker reasoning: (inherit)"
     assert parent.config.worker_reasoning == ""
 
-    assert worker_command(loop, "reason turbo") == "Usage: /worker reason " + "|".join(REASONING_CHOICES)
+    choices = ("off", *parent.policy.effort_order)
+    assert worker_command(loop, "reason turbo") == "Usage: /worker reason " + "|".join(choices)
     assert worker_command(loop, "provider a b") == "Usage: /worker provider [NAME]"
     assert worker_command(loop, "model a b") == "Usage: /worker model [MODEL]"
     assert worker_command(loop, "reason a b") == "Usage: /worker reason [EFFORT]"

@@ -19,10 +19,6 @@ if TYPE_CHECKING:
 
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
-# Standalone callers use the bundled policy. Session startup injects the selected (bundled or
-# cached) policy into parsing, so a higher-version catalog can extend these vocabularies.
-REASONING_CHOICES = ("off", *bundled_policy().effort_order)
-CHAT_REASONING_CHOICES = ("auto", *bundled_policy().reasoning_dialects)
 
 
 # Output room kept out of the input budget for one request's answer. It is a planning reserve, not a
@@ -359,12 +355,7 @@ class Config:
         # When the data dir is still the new default but does not exist yet and the legacy
         # ~/.nanocode dir does, keep using the legacy dir so existing sessions, skills, and
         # cache are found without a migration step.
-        if (
-            self.data_dir == "~/.minacode"
-            and not os.path.exists(os.path.expanduser(self.data_dir))
-            and os.path.exists(os.path.expanduser(self.LEGACY_DATA_DIR))
-        ):
-            self.data_dir = self.LEGACY_DATA_DIR
+        self.data_dir = self._resolve_data_dir(self.data_dir)
 
     @property
     def provider(self) -> ProviderConfig:
@@ -428,7 +419,12 @@ class Config:
     def data_dir_from(cls, data: Json) -> str:
         """Resolve the catalog/session directory before provider config is parsed."""
 
-        value = cls.str(cls.table(data, "paths"), "data_dir", "~/.minacode")
+        return cls._resolve_data_dir(cls.str(cls.table(data, "paths"), "data_dir", "~/.minacode"))
+
+    @classmethod
+    def _resolve_data_dir(cls, value: str) -> str:
+        """Apply the legacy directory fallback identically before and after full parsing."""
+
         if value == "~/.minacode" and not os.path.exists(os.path.expanduser(value)) and os.path.exists(os.path.expanduser(cls.LEGACY_DATA_DIR)):
             return cls.LEGACY_DATA_DIR
         return value

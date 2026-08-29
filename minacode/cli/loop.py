@@ -221,8 +221,8 @@ Full documentation: https://minacode.readthedocs.io
         self.input_completer = CommandCompleter(
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
-            reasoning_choices=lambda: self.session.catalog.policy.reasoning_choices(self.session.config.provider) if self.session.catalog else ("off",),
-            worker_reasoning_choices=lambda: ("off", *self.session.catalog.policy.effort_order) if self.session.catalog else ("off",),
+            reasoning_choices=lambda: self.session.policy.reasoning_choices(self.session.config.provider),
+            worker_reasoning_choices=lambda: ("off", *self.session.policy.effort_order),
             worker_models=lambda: tuple(
                 dict.fromkeys(
                     (*self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider].available_models, "default")

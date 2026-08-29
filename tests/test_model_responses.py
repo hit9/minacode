@@ -1003,6 +1003,35 @@ def test_configured_reasoning_fields_merge_into_the_managed_object(tmp_path, mon
     assert body["safety_identifier"] == "u1"
 
 
+def test_catalog_extra_body_paths_do_not_replace_user_extensions(tmp_path, monkeypatch):
+    """The Responses adapter must expose user extra_body before the catalog recipe runs."""
+    s = _session(
+        tmp_path,
+        api="responses",
+        model="gpt-4.1",
+        stream=False,
+        extra_body={"user_extension": "kept"},
+    )
+    model = ModelClient(s)
+    factory = _MockClientFactory(
+        [(200, {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-4.1", "output": []})]
+    )
+    monkeypatch.setattr(model, "client", factory)
+
+    def apply_catalog_recipe(params, _provider, _resolved, *, wire):
+        assert wire == "responses"
+        params.setdefault("extra_body", {})["catalog_extension"] = "kept"
+        return params
+
+    monkeypatch.setattr(model, "apply_request", apply_catalog_recipe)
+
+    model.wire(s.config.provider).request([{"role": "user", "content": "hi"}], None)
+
+    body = json.loads(factory.calls[0].content)
+    assert body["user_extension"] == "kept"
+    assert body["catalog_extension"] == "kept"
+
+
 def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monkeypatch):
     """Nothing to fold into on a non-reasoning model: the configured object passes through whole."""
     s = _session(
