@@ -75,8 +75,11 @@ def test_cli_runs_session_and_closes_resources(monkeypatch):
 def test_cli_loads_resumed_session_with_runtime_overrides(monkeypatch):
     loaded = {}
     session = SimpleNamespace(settings=SimpleNamespace(theme="auto"), mcp=None)
+    catalog = SimpleNamespace(policy="selected-policy")
     monkeypatch.setattr(cli.ConfigFile, "load", lambda path: {"runtime": {"theme": "dark"}})
-    monkeypatch.setattr(cli.Config, "from_dict", lambda data: ("config", data))
+    monkeypatch.setattr(cli.Config, "data_dir_from", lambda data: "data-dir")
+    monkeypatch.setattr(cli, "CatalogRuntime", lambda data_dir: catalog)
+    monkeypatch.setattr(cli.Config, "from_dict", lambda data, **kwargs: ("config", data, kwargs))
     monkeypatch.setattr(cli.RuntimeSettings, "from_dict", lambda data, **kwargs: ("settings", data, kwargs))
 
     def load_snapshot(uid, **kwargs):
@@ -93,9 +96,10 @@ def test_cli_loads_resumed_session_with_runtime_overrides(monkeypatch):
     assert cli.main(["--resume", "saved", "--config", "custom.toml", "--yolo", "--theme", "light"]) == 0
     assert loaded == {
         "uid": "saved",
-        "config": ("config", {"runtime": {"theme": "dark"}}),
+        "config": ("config", {"runtime": {"theme": "dark"}}, {"policy": "selected-policy"}),
         "settings": ("settings", {"runtime": {"theme": "dark"}}, {"yolo": True, "theme": "light"}),
         "cwd": "/workspace",
+        "catalog": catalog,
     }
 
 

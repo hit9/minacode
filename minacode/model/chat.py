@@ -231,9 +231,7 @@ def reassemble_stream(
     if reasoning:
         message["reasoning"] = "".join(reasoning)
     if reasoning_details:
-        # OpenRouter defines the complete sequence as the ordered concatenation of each
-        # delta's reasoning_details array; replay it unchanged on the assistant message.
-        # Evidence: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+        # This optional compatible-wire field is an ordered delta sequence; replay it unchanged.
         message["reasoning_details"] = reasoning_details
     if tool_calls:
         message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]

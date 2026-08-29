@@ -109,6 +109,7 @@ minacode/providers/
   "schema_version": 1,
   "version": 2026082801,
   "updated_at": "2026-08-28",
+  "maintenance_scope": "well_known_and_necessary_specializations_only",
   "defaults": {},
   "model_id_forms": [],
   "request_recipes": {},
@@ -121,6 +122,9 @@ minacode/providers/
 - `version`：快照发布版本，正整数，是来源选择的唯一排序依据。建议采用
   `YYYYMMDDNN`，例如当日第一次发布为 `2026082801`。同一 version 的内容必须不可变。
 - `updated_at`：UTC 日期，严格 `YYYY-MM-DD`；用于展示和审计，不参与胜负判断。
+- `maintenance_scope`：固定为 `well_known_and_necessary_specializations_only`。catalog 只维护
+  well-known 且确有必要偏离 generic protocol 的 provider/model 事实；未知对象走 generic
+  fallback，不能为了“覆盖更多”收录无行为差异的枚举数据。
 - `defaults`：generic provider/model 默认策略、normalized effort 顺序、budget tables 和 wire
   默认值。它使每份快照自洽，不依赖 Python 中的第二份默认数据。
 - `model_id_forms`：例如受 allowlist 约束的 `vendor/model` 规范化方式；vendor 列表也在此。
@@ -317,6 +321,7 @@ class RawCatalog(TypedDict):
     schema_version: int
     version: int
     updated_at: str
+    maintenance_scope: str
     defaults: RawDefaults
     model_id_forms: list[RawModelIdForm]
     request_recipes: dict[str, RawRequestRecipe]
@@ -329,6 +334,7 @@ class CatalogSnapshot:
     schema_version: int
     version: int
     updated_at: date
+    maintenance_scope: str
     defaults: CatalogDefaults
     model_id_forms: tuple[ModelIdForm, ...]
     request_recipes: Mapping[str, RequestRecipe]
@@ -369,22 +375,22 @@ class CatalogRuntime:
 职责说明：
 
 - `CatalogCodec` 只做 decode、schema/semantic validation、regex 预编译和不可变建模，不做 IO。
-- `CatalogRepository` 拥有 package/cache/metadata 路径、GitHub fetch、72 小时 freshness、锁和原子
-  写入。
+- `CatalogRepository` 拥有 package/cache/metadata 路径、GitHub fetch、锁和原子写入。
 - `ProviderPolicy` 是业务层唯一入口，内部组合 `CompatibilityResolver` 与
   `RequestRuleEngine`，不暴露数据布局。
-- `CatalogRuntime` 持有当前不可变 policy，并在安全命令边界做原子引用替换；它不是全局变量，
-  由 Session 持有。
+- `CatalogRuntime` 持有当前不可变 policy、72 小时调度状态，并在安全命令边界做原子引用替换；
+  它不是全局变量，由顶层 Session 持有，同一会话的 delegate worker 共享它。
 
 `ProviderConfig` 回归为纯用户配置 value object，移除 `COMPATIBILITY` class variable 和
 `resolve()` 中的 catalog 查询。现有调用迁移为 `session.catalog.policy.resolve(provider)`；CLI、
 image route、tool schema 和 ModelClient 共享 Session 中的同一快照。
 
-配置加载改为两阶段：`Config.from_dict()` 先完成语法解析并得到 `data_dir`，随后加载
-`CatalogRuntime`，再由 `ProviderPolicy.validate_config()` 校验 reasoning effort、model override
-等 catalog-dependent 值。第二阶段仍在 Session 启动前 fail fast。这样 `config.py` 无需保留一份
-与 JSON 重复的 effort order，同时不会把拼写错误静默传给 provider。wire protocol 的固定枚举仍
-由 Python adapter 定义，因为它表示客户端实现了哪些协议，不是可远端更新的 provider 知识。
+配置加载先从原始 TOML 只解析 `data_dir`，据此选择 `CatalogRuntime`，再把获胜 policy 注入
+`Config.from_dict()`，一次完成 provider、worker 和 compaction 的 catalog-dependent 值校验。
+整个过程仍在 Session 启动前 fail fast。这样 `config.py` 无需保留一份与 JSON 重复的 effort
+order，也不会出现“缓存 catalog 已获胜，但配置仍按 bundled vocabulary 拒绝”的分裂。wire
+protocol 的固定枚举仍由 Python adapter 定义，因为它表示客户端实现了哪些协议，不是可远端
+更新的 provider 知识。
 
 所有嵌套 dataclass 字段也必须不可变：数组编译为 tuple/set 编译为 frozenset，mapping 使用只读
 view，避免手动同步或测试代码原地修改 active snapshot。
@@ -401,10 +407,14 @@ retry/resend 复用同一个对象，不能在一次 request 中途重新读取 
 - 状态：`<data_dir>/catalog/sync.json`。
 - 锁：`<data_dir>/catalog/catalog.lock`。
 - GitHub：
-  `https://raw.githubusercontent.com/hit9/minacode/main/minacode/providers/catalog.json`。
+  `https://raw.githubusercontent.com/hit9/minacode/master/minacode/providers/catalog.json`。
 
 `pyproject.toml` 的 package data 必须包含 `providers/catalog.json`，并在 wheel 验证中确认文件
 实际存在。
+
+本地开发不提供 `MINACODE_CATALOG_PATH` 或任意文件路径覆盖。调试 catalog 时直接修改包内完整
+JSON，同时提高数字 `version` 并更新 `updated_at`；版本选择规则会让它胜过较旧缓存。若缓存版本
+已经更高，继续提高包内版本或清理该开发数据目录，不能引入第三种来源绕过发布语义。
 
 ### 7.2 启动选择
 
@@ -556,12 +566,12 @@ merge。切换完成后，JSON 是唯一知识源。
   literal 只允许出现在 `catalog.json`；协议 adapter 必需的 wire 名单独 allowlist。
 
 行为变更完成时按项目流程运行 targeted tests、`uv run pytest`、ruff check/format check 和
-pyright；本方案阶段不新增或执行实现测试。
+pyright。
 
 ## 12. 验收标准
 
-- `minacode/providers/catalog.json` 是唯一 provider/model 兼容性知识源，含数字 `version` 和
-  `updated_at`。
+- `minacode/providers/catalog.json` 是唯一 provider/model 兼容性知识源，含数字 `version`、
+  `updated_at` 和窄化的 `maintenance_scope`。
 - 包内和 GitHub/cache 均为完整快照；只选择有效候选中的最大 version，不 merge。
 - 离线首次启动可用；cached/remote 损坏不会覆盖 bundled/active。
 - 自动同步至多每 72 小时一次；`/catalog sync` 可强制同步并明确报告是否激活。
@@ -580,7 +590,7 @@ pyright；本方案阶段不新增或执行实现测试。
 3. 不得修改已经发布过的同 version 内容。
 4. 为新增或改变的事实写 `why`、官方 `evidence` 和必要 `notes`。
 5. 运行 schema、behavior matrix、packaging 和 static audit。
-6. 正常提交到 `main`；GitHub raw 文件随后成为远端快照，下一次包发布又把同一快照带入
+6. 正常提交到 `master`；GitHub raw 文件随后成为远端快照，下一次包发布又把同一快照带入
    bundled source。
 
 schema 或 recipe operation 的扩展必须先随 Python 代码发布。旧客户端遇到不支持的

@@ -24,11 +24,17 @@
   the entry into worker and compaction requests, and are listed by `/config`. Values are strings or
   plain integers; `key` still supplies authentication.
 
-- `/catalog` shows which compatibility catalog this session resolves against: its version, whether
-  it is the bundled copy or a synced one, and the last sync result. `/catalog sync` checks for a
-  newer catalog immediately instead of waiting for the daily background refresh.
+- Provider and model compatibility knowledge now ships as one complete, versioned JSON catalog.
+  At startup minacode validates the bundled and previously synced copies and uses the whole copy
+  with the higher numeric version; it never merges partial records. GitHub is checked at most once
+  every 72 hours, while `/catalog sync` checks immediately. `/catalog` reports the active version,
+  publication date, maintenance scope, source, bundled/cached versions, and the latest sync result.
 
 ### Changed
+
+- Kimi K3 and K2.7 Code are no longer routed as text-only. Their documented endpoints accept
+  image input, so attachments now stay on the selected model instead of being diverted to the
+  image fallback. Kimi K2 remains text-only.
 
 - A well-known model now behaves the same wherever it is served. How a model takes reasoning — the
   thinking format, the replay rule, the effort scale — is a fact about the model, so it is matched

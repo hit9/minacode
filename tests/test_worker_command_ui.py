@@ -29,6 +29,7 @@ def test_worker_command_completion(tmp_path):
     command_loop.session.config.worker_provider = "alt"
     completer = CommandCompleter(
         providers=lambda: tuple(sorted(command_loop.session.config.providers)),
+        worker_reasoning_choices=lambda: ("off", "cheap", "deep"),
         worker_models=lambda: tuple(
             dict.fromkeys(
                 (
@@ -51,7 +52,7 @@ def test_worker_command_completion(tmp_path):
     assert set(model_texts) == {"w-a", "w-b", "default"}
 
     reason_texts = [c.text for c in completer.get_completions(Document("/worker reason "), None)]
-    assert set(reason_texts) == set(REASONING_CHOICES) | {"default"}
+    assert set(reason_texts) == {"off", "cheap", "deep", "default"}
 
     api_texts = [c.text for c in completer.get_completions(Document("/worker api "), None)]
     assert set(api_texts) == set(PROVIDER_API_CHOICES) | {"default"}

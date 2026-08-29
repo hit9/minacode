@@ -13,10 +13,10 @@ whitelisted recipe interpreter.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 from urllib.parse import urlparse
 
 from .catalog import decode_bundled
@@ -39,7 +39,7 @@ def _raw_condition(when: Mapping[str, object]) -> RecipeCondition:
     contains: dict[str, tuple[object, ...]] = {}
     present: dict[str, bool] = {}
     for key, condition in when.items():
-        if isinstance(condition, dict):
+        if isinstance(condition, Mapping):
             if "in" in condition:
                 contains[key] = tuple(condition["in"])
             if "present" in condition:
@@ -109,7 +109,7 @@ class ResolvedProvider:
     suppress_temperature: bool
     prompt_cache_key: bool
     strict_tools_active: bool
-    builtin_tools_by_wire: Mapping[str, tuple[dict[str, object], ...]] | None = None
+    builtin_tools_by_wire: Mapping[str, tuple[Mapping[str, object], ...]] | None = None
     # Defaulted, and last: an unknown or hand-built provider must land on "no constrained
     # decoding" rather than fail to construct.
     json_response_format: bool = False
@@ -121,6 +121,7 @@ class ResolvedProvider:
     # turn thinking off, and drives temperature suppression on wires that pin it.
     reasoning_recipe: str = "off"
     reasoning_mandatory: bool = False
+    output_max_tokens: int = 0
     catalog_version: int = 0
 
 
@@ -185,10 +186,6 @@ def builtin_tools_issue(resolved: ResolvedProvider, entries: tuple[Mapping[str, 
 # ---------------------------------------------------------------------------
 # CompatibilityResolver: host lookup + per-field precedence
 # ---------------------------------------------------------------------------
-if TYPE_CHECKING:
-    from minacode.config import ProviderConfig
-
-
 class CompatibilityResolver:
     """Compile a snapshot into host overlays and answer per-field policy questions.
 
@@ -223,9 +220,8 @@ class CompatibilityResolver:
         """First rule in JSON order that matches the model and sets ``path``.
 
         A rule may set several fields (a trait carries recipe + dialect + levels together), while
-        an earlier rule may set an unrelated one (the claude mandatory rule sets only
-        ``reasoning.mandatory``). The winner for one path is the first matching rule that sets that
-        path, so the mandatory rule does not shadow the generation recipes that follow it.
+        an earlier rule may set an unrelated one. The winner for one path is the first matching
+        rule that sets that path, so a narrow rule does not shadow later rules for other fields.
         The full id is matched first; a canonical ``vendor/model`` gateway form is matched by its
         model part only when the vendor prefix is a canonical family slug.
         """
@@ -375,7 +371,7 @@ class RequestRuleEngine:
         if not isinstance(raw, Mapping):
             return None
         cases = raw.get("case")
-        if not isinstance(cases, list):
+        if not isinstance(cases, Sequence) or isinstance(cases, (str, bytes)):
             return None
         for case in cases:
             if not isinstance(case, Mapping):
@@ -396,7 +392,7 @@ class RequestRuleEngine:
             if "bounded_budget" in value and len(value) == 1:
                 return self._bounded_budget(value["bounded_budget"], context)
             return {key: self._eval_value(item, context) for key, item in value.items()}
-        if isinstance(value, list):
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
             return [self._eval_value(item, context) for item in value]
         return value
 
@@ -463,25 +459,6 @@ class RequestRuleEngine:
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Explicit-dialect escape hatch
-# ---------------------------------------------------------------------------
-
-# When the catalog names no recipe for a provider/model, an explicitly configured
-# `chat_reasoning` dialect picks the wire format itself, so the request-recipe data is still the
-# only description of how each format is built (see ProviderPolicy.resolve).
-_DIALECT_RECIPE_FALLBACK: dict[str, str] = {
-    "reasoning": "reasoning.object",
-    "reasoning_effort": "reasoning.effort",
-    "thinking": "thinking.with-effort",
-    "thinking_toggle": "thinking.toggle",
-    "thinking_effort": "thinking.effort",
-    "enable_thinking": "enable-thinking",
-    "mandatory_thinking": "mandatory",
-    "off": "off",
-}
-
-
 class PolicyConfig(Protocol):
     """The config surface :class:`ProviderPolicy` reads; ``ProviderConfig`` and test fakes satisfy it."""
 
@@ -516,6 +493,10 @@ class ProviderPolicy:
     def effort_order(self) -> tuple[str, ...]:
         return self._effort_order
 
+    @property
+    def reasoning_dialects(self) -> tuple[str, ...]:
+        return tuple(self.snapshot.defaults.reasoning_dialects)
+
     # -- helpers shared by config/CLI/tests ---------------------------------
 
     def _provider_for(self, config: PolicyConfig | None) -> ProviderRule | None:
@@ -547,8 +528,8 @@ class ProviderPolicy:
     def reasoning_choices(self, config: PolicyConfig, model: str = "") -> tuple[str, ...]:
         """Everything ``/reason`` may offer for this model.
 
-        ``off`` is among them unless the model documents that it always reasons -- Grok, Kimi K3,
-        GLM-5.3. Listing it there would be the menu promising something the endpoint does not do.
+        ``off`` is among them unless the catalog documents mandatory reasoning. Listing it then
+        would make the menu promise something the endpoint cannot do.
         """
 
         model = (model or str(getattr(config, "model", ""))).lower()
@@ -606,23 +587,14 @@ class ProviderPolicy:
         if chat_reasoning == "auto":
             chat_reasoning = str(self._resolver.field_value(provider, model, "reasoning.dialect") or "off")
 
+        explicit_dialect = str(getattr(config, "chat_reasoning", "auto"))
         reasoning_recipe = str(self._resolver.field_value(provider, model, "reasoning.recipe") or "off")
-        # The explicit `chat_reasoning` config is the escape hatch for gateways the catalog has no
-        # evidence about: when the catalog names no recipe, the requested dialect picks the wire
-        # format, so an unrecognized endpoint still gets the reasoning/thinking fields it takes.
-        # A catalogued recipe wins (the catalog owns a known model's format), which is why this
-        # fallback only fires on the generic "off" recipe.
+        # A configured wire dialect is an explicit override. The mapping to a request recipe is
+        # catalog data, so adding a dialect does not require a Python release.
+        if explicit_dialect != "auto":
+            reasoning_recipe = self.snapshot.defaults.reasoning_dialects[explicit_dialect]
         responses_models = self._resolver.field_value(provider, model, "responses.reasoning_models")
         responses_reasoning = not isinstance(responses_models, (list, tuple)) or any(model.startswith(str(prefix)) for prefix in responses_models)
-        if reasoning_recipe == "off":
-            explicit_dialect = str(getattr(config, "chat_reasoning", "auto"))
-            if explicit_dialect != "auto":
-                reasoning_recipe = _DIALECT_RECIPE_FALLBACK.get(explicit_dialect, "off")
-            elif api == "responses" and responses_reasoning:
-                # The generic Responses default for a model the catalog does not know: a stateless
-                # reasoning request carries the effort in the top-level `reasoning` object, matching
-                # what the Responses adapter used to add for unknown models.
-                reasoning_recipe = "reasoning.effort"
 
         if getattr(config, "reasoning", "off") == "off":
             reasoning_effort = self._resolver.field_value(provider, model, "reasoning.off")
@@ -654,6 +626,14 @@ class ProviderPolicy:
 
         history = self._resolver.field_value(provider, model, "history.reasoning")
         chat_reasoning_history = str(history or "all")
+        wire_defaults = self.snapshot.defaults.wire_defaults.get(api, {})
+        configured_max_tokens = getattr(config, "max_tokens", 0)
+        if isinstance(configured_max_tokens, bool) or not isinstance(configured_max_tokens, int):
+            configured_max_tokens = 0
+        catalog_max_tokens = wire_defaults.get("max_tokens", 0)
+        if isinstance(catalog_max_tokens, bool) or not isinstance(catalog_max_tokens, int):
+            catalog_max_tokens = 0
+        output_max_tokens = configured_max_tokens or catalog_max_tokens
 
         return ResolvedProvider(
             api=api,
@@ -671,6 +651,7 @@ class ProviderPolicy:
             text_only=self._resolver.text_only(model),
             reasoning_recipe=reasoning_recipe,
             reasoning_mandatory=self.reasoning_mandatory(config, model),
+            output_max_tokens=output_max_tokens,
             catalog_version=self.snapshot.version,
         )
 
@@ -684,11 +665,13 @@ class ProviderPolicy:
         """
 
         recipe = self.snapshot.request_recipes.get(resolved.reasoning_recipe)
-        if recipe is None:
+        # A provider can expose Responses for both reasoning and non-reasoning models. Its catalog
+        # entry decides which model families accept the reasoning object; extra_body remains the
+        # user's escape hatch and is merged by the adapter after this policy pass.
+        if recipe is None or (wire == "responses" and not resolved.responses_reasoning):
             return params
         reasoning_enabled = getattr(config, "reasoning", "off") != "off"
-        # The adapter may already have resolved the effective output cap into params (the anthropic
-        # path sets max_tokens = anthropic_output_cap() before this runs), so the budget clamp
+        # The adapter may already have resolved the effective output cap into params, so the budget clamp
         # must compare against the cap that will actually be sent, not just the raw config value.
         max_tokens = params.get("max_tokens")
         if not isinstance(max_tokens, int):
@@ -704,21 +687,6 @@ class ProviderPolicy:
             model=str(getattr(config, "model", "")).lower(),
         )
         return cast(Json, self._engine.apply(params, recipe, context))
-
-    # -- catalog-dependent config validation --------------------------------
-
-    def validate_config(self, config: PolicyConfig, provider: ProviderConfig | None = None) -> None:
-        """Second-phase config checks that need the catalog (reasoning scale, API values)."""
-
-        from minacode.config import REASONING_CHOICES, ConfigError
-
-        reasoning = getattr(config, "reasoning", "off")
-        if reasoning == "off":
-            return
-        if reasoning in self.supported_efforts(config):
-            return
-        levels = REASONING_CHOICES
-        raise ConfigError(f"reasoning must be one of {', '.join(levels)} for {getattr(config, 'model', '') or '(no model)'} on this provider")
 
 
 # ---------------------------------------------------------------------------

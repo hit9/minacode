@@ -9,39 +9,26 @@ import shutil
 import sys
 import tomllib
 from dataclasses import dataclass, field, replace
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from minacode.base import ConfigError, Json, builtin_function_names
 from minacode.providers.compat import bundled_policy
 
+if TYPE_CHECKING:
+    from minacode.providers.compat import ProviderPolicy
+
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
-# The normalized effort scale is catalog data (defaults.effort_order); the universal choice list
-# for input validation and UI defaults is compiled from the bundled snapshot so config parsing
-# needs no cache or network. The active session policy offers per-model choices at runtime.
+# Standalone callers use the bundled policy. Session startup injects the selected (bundled or
+# cached) policy into parsing, so a higher-version catalog can extend these vocabularies.
 REASONING_CHOICES = ("off", *bundled_policy().effort_order)
-CHAT_REASONING_CHOICES = (
-    "auto",
-    "off",
-    "reasoning",
-    "reasoning_effort",
-    "thinking",
-    "thinking_toggle",
-    "thinking_effort",
-    "enable_thinking",
-    "mandatory_thinking",
-)
+CHAT_REASONING_CHOICES = ("auto", *bundled_policy().reasoning_dialects)
 
 
 # Output room kept out of the input budget for one request's answer. It is a planning reserve, not a
 # wire parameter, so it stays fixed whether or not the user configured a cap (see output_token_budget).
 DEFAULT_OUTPUT_RESERVE_TOKENS = 16_384
-# Conservative `max_tokens` sent on the Anthropic wire when the user left it unset: Anthropic requires
-# the parameter, and 8K covers every current model (Claude 3.5 Haiku's ceiling is 8K). Legacy Claude 3
-# models that cap lower are retired from the API.
-ANTHROPIC_DEFAULT_MAX_TOKENS = 8_192
-# Unset: Chat and Responses omit the cap and let the provider apply its own default; the Anthropic
-# wire substitutes ANTHROPIC_DEFAULT_MAX_TOKENS because the parameter is mandatory there.
+# Zero means unconfigured. Each wire's catalog policy decides whether it needs a concrete default.
 DEFAULT_MAX_TOKENS = 0
 MIN_CONTEXT_SAFETY_TOKENS = 4_096
 
@@ -154,7 +141,10 @@ class ProviderConfig:
     compaction_api: str = ""
 
     @classmethod
-    def from_dict(cls, data: Json) -> ProviderConfig:
+    def from_dict(cls, data: Json, *, policy: ProviderPolicy | None = None) -> ProviderConfig:
+        policy = policy or bundled_policy()
+        reasoning_choices = ("off", *policy.effort_order)
+        chat_reasoning_choices = ("auto", *policy.reasoning_dialects)
         api = Config.str(data, "api", "auto")
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
         reasoning = Config.str(data, "reasoning", "medium")
@@ -166,15 +156,15 @@ class ProviderConfig:
         declared = {level for override in model_overrides for level in override.reasoning_levels}
         for key, value, choices in (
             ("api", api, PROVIDER_API_CHOICES),
-            ("reasoning", reasoning, (*REASONING_CHOICES, *sorted(declared))),
-            ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES),
+            ("reasoning", reasoning, (*reasoning_choices, *sorted(declared))),
+            ("chat_reasoning", chat_reasoning, chat_reasoning_choices),
         ):
             if value not in choices:
                 raise ConfigError("provider." + key + " must be one of " + ", ".join(choices))
         compaction_root = Config.table(data, "compaction")
         compaction_reasoning = Config.str(compaction_root, "reasoning", "")
-        if compaction_reasoning and compaction_reasoning not in REASONING_CHOICES:
-            raise ConfigError("provider.compaction.reasoning must be one of " + ", ".join(REASONING_CHOICES))
+        if compaction_reasoning and compaction_reasoning not in reasoning_choices:
+            raise ConfigError("provider.compaction.reasoning must be one of " + ", ".join(reasoning_choices))
         compaction_api = Config.str(compaction_root, "api", "")
         if compaction_api and compaction_api not in PROVIDER_API_CHOICES:
             raise ConfigError("provider.compaction.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
@@ -269,11 +259,6 @@ class ProviderConfig:
         default. Resolved per call, never cached, so `/provider` moves the budget with the entry —
         and so a worker on a small model stops borrowing the parent model's window."""
         return self.max_context_tokens or fallback
-
-    def anthropic_output_cap(self) -> int:
-        """The `max_tokens` sent on the Anthropic wire: the configured cap, or a conservative default
-        (Anthropic requires the parameter, unlike Chat and Responses)."""
-        return self.max_tokens or ANTHROPIC_DEFAULT_MAX_TOKENS
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:
@@ -386,12 +371,16 @@ class Config:
         return self.providers[self.active_provider]
 
     @classmethod
-    def from_dict(cls, data: Json) -> Config:
+    def from_dict(cls, data: Json, *, policy: ProviderPolicy | None = None) -> Config:
+        policy = policy or bundled_policy()
+        reasoning_choices = ("off", *policy.effort_order)
         provider_root = cls.table(data, "provider")
         active = cls.str(provider_root, "active", "default")
-        providers = {name: ProviderConfig.from_dict(value) for name, value in provider_root.items() if name != "active" and isinstance(value, dict)}
+        providers = {
+            name: ProviderConfig.from_dict(value, policy=policy) for name, value in provider_root.items() if name != "active" and isinstance(value, dict)
+        }
         if not providers:
-            providers = {active: ProviderConfig.from_dict(provider_root)}
+            providers = {active: ProviderConfig.from_dict(provider_root, policy=policy)}
         if active not in providers:
             raise ConfigError(f"provider.active `{active}` does not exist")
         paths = cls.table(data, "paths")
@@ -400,8 +389,8 @@ class Config:
         if worker_provider and worker_provider not in providers:
             raise ConfigError(f"worker.provider `{worker_provider}` does not exist")
         worker_reasoning = cls.str(worker_root, "reasoning", "")
-        if worker_reasoning and worker_reasoning not in REASONING_CHOICES:
-            raise ConfigError("worker.reasoning must be one of " + ", ".join(REASONING_CHOICES))
+        if worker_reasoning and worker_reasoning not in reasoning_choices:
+            raise ConfigError("worker.reasoning must be one of " + ", ".join(reasoning_choices))
         worker_api = cls.str(worker_root, "api", "")
         if worker_api and worker_api not in PROVIDER_API_CHOICES:
             raise ConfigError("worker.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
@@ -410,8 +399,8 @@ class Config:
         if compaction_provider and compaction_provider not in providers:
             raise ConfigError(f"compaction.provider `{compaction_provider}` does not exist")
         compaction_reasoning = cls.str(compaction_root, "reasoning", "")
-        if compaction_reasoning and compaction_reasoning not in REASONING_CHOICES:
-            raise ConfigError("compaction.reasoning must be one of " + ", ".join(REASONING_CHOICES))
+        if compaction_reasoning and compaction_reasoning not in reasoning_choices:
+            raise ConfigError("compaction.reasoning must be one of " + ", ".join(reasoning_choices))
         compaction_api = cls.str(compaction_root, "api", "")
         if compaction_api and compaction_api not in PROVIDER_API_CHOICES:
             raise ConfigError("compaction.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
@@ -434,6 +423,15 @@ class Config:
             compaction_api=compaction_api,
             vision_provider=vision_provider,
         )
+
+    @classmethod
+    def data_dir_from(cls, data: Json) -> str:
+        """Resolve the catalog/session directory before provider config is parsed."""
+
+        value = cls.str(cls.table(data, "paths"), "data_dir", "~/.minacode")
+        if value == "~/.minacode" and not os.path.exists(os.path.expanduser(value)) and os.path.exists(os.path.expanduser(cls.LEGACY_DATA_DIR)):
+            return cls.LEGACY_DATA_DIR
+        return value
 
     @staticmethod
     def table(data: Json, key: str) -> Json:
@@ -548,8 +546,8 @@ model = ""
                                # Set it per entry when models differ: 1048576 for a 1M-window model,
                                # 131072 for a 128K one. Fewer compactions on the big one, no overflow
                                # on the small one.
-# max_tokens = 0               # output cap per request, reasoning included; 0 leaves it to the provider
-                               # (Anthropic sends a conservative 8K). 16K is still reserved from the
+# max_tokens = 0               # output cap per request, reasoning included; 0 uses the wire's catalog policy.
+                               # 16K is still reserved from the
                                # input budget, trading against runtime.max_context_tokens one for one
 # timeout = 120                # transport inactivity
 # response_timeout = 600       # total generation time; 0 disables

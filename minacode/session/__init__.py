@@ -341,12 +341,13 @@ class Session:
         a model that no longer exists surfaces on the first request exactly as it would have live."""
         overrides = self.provider_overrides
         providers = self.config.providers
+        reasoning_choices = ("off", *(self.catalog.policy.effort_order if self.catalog is not None else REASONING_CHOICES[1:]))
         for name, fields in (overrides.get("providers") or {}).items():
             entry = providers.get(name)
             if entry is None or not isinstance(fields, dict):
                 continue
             reasoning = fields.get("reasoning")
-            if reasoning and reasoning not in REASONING_CHOICES:
+            if reasoning and reasoning not in reasoning_choices:
                 reasoning = None
             api = fields.get("api")
             if api and api not in PROVIDER_API_CHOICES:
@@ -379,7 +380,12 @@ class Session:
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False, theme: str = "") -> Session:
         data = ConfigFile.load(path)
-        session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, theme=theme))
+        catalog = CatalogRuntime(Config.data_dir_from(data))
+        session = cls(
+            config=Config.from_dict(data, policy=catalog.policy),
+            settings=RuntimeSettings.from_dict(data, yolo=yolo, theme=theme),
+            catalog=catalog,
+        )
         bootstrap_features(session)
         return session
 
@@ -566,8 +572,16 @@ class Session:
             return SessionSnapshotStore(self).save()
 
     @classmethod
-    def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> Session:
+    def load_snapshot(
+        cls,
+        uid: str,
+        config: Config | None = None,
+        settings: RuntimeSettings | None = None,
+        cwd: str = "",
+        catalog: CatalogRuntime | None = None,
+    ) -> Session:
         session = SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=cwd)
+        session.catalog = catalog
         bootstrap_features(session)
         return session
 

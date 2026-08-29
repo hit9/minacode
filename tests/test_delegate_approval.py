@@ -24,6 +24,18 @@ def test_delegate_send_is_confirmed_even_under_yolo(tmp_path):
 
     assert EditTool(s, ["a.py", []]).always_confirms() is False
 
+
+def test_spawned_worker_reuses_the_parent_catalog(tmp_path):
+    from minacode.providers.sync import CatalogRuntime
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    parent.catalog = CatalogRuntime(parent.config.data_dir)
+
+    worker = DelegateTool(parent, [{"action": "status"}])._spawn_worker(parent)
+
+    assert worker.catalog is parent.catalog
+
 def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
     from minacode.base import ToolCall
     from minacode.context import ContextManager

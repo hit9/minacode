@@ -23,6 +23,7 @@ from typing import Literal, NotRequired, Protocol, TypedDict
 
 Json = dict[str, object]
 CatalogSource = Literal["bundled", "cached"]
+CATALOG_MAINTENANCE_SCOPE = "well_known_and_necessary_specializations_only"
 
 
 class RecipeContext(Protocol):
@@ -131,6 +132,8 @@ class RawRequestRecipe(TypedDict):
 class RawDefaults(TypedDict, total=False):
     effort_order: NotRequired[list[str]]
     thinking_budgets: NotRequired[dict[str, int]]
+    reasoning_dialects: NotRequired[dict[str, str]]
+    wire_defaults: NotRequired[dict[str, Json]]
     provider_policy: NotRequired[dict[str, object]]
 
 
@@ -138,6 +141,7 @@ class RawCatalog(TypedDict):
     schema_version: int
     version: int
     updated_at: str
+    maintenance_scope: str
     defaults: RawDefaults
     model_id_forms: list[RawModelIdForm]
     request_recipes: dict[str, RawRequestRecipe]
@@ -293,6 +297,8 @@ class RequestRecipe:
 class CatalogDefaults:
     effort_order: tuple[str, ...]
     thinking_budgets: Mapping[str, int]
+    reasoning_dialects: Mapping[str, str]
+    wire_defaults: Mapping[str, Mapping[str, object]]
     provider_policy: Mapping[str, object]
 
 
@@ -305,7 +311,7 @@ class ProviderRule:
     model_rule_modes: Mapping[str, str]
     defaults: Mapping[str, object]
     model_rules: tuple[PolicyRule, ...]
-    builtin_tools_by_wire: Mapping[str, tuple[Json, ...]] | None
+    builtin_tools_by_wire: Mapping[str, tuple[Mapping[str, object], ...]] | None
     why: str = ""
     evidence: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
@@ -321,6 +327,7 @@ class CatalogSnapshot:
     schema_version: int
     version: int
     updated_at: date
+    maintenance_scope: str
     defaults: CatalogDefaults
     model_id_forms: tuple[ModelIdForm, ...]
     request_recipes: Mapping[str, RequestRecipe]
@@ -328,7 +335,3 @@ class CatalogSnapshot:
     providers: tuple[ProviderRule, ...]
     source: CatalogSource
     content_hash: str
-
-    @property
-    def is_supported(self) -> bool:
-        return self.schema_version == 1

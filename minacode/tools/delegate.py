@@ -438,6 +438,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                 uid=uid,
                 skills=parent.skills,  # shared objects, never re-discovered
                 mcp=parent.mcp,
+                catalog=parent.catalog,
             )
         # load only honors the snapshot's keys, so these return to their defaults; re-set them
         # after load or construction, never before. skills/mcp are shared objects from the parent
@@ -448,6 +449,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         worker.listed = False
         worker.skills = parent.skills
         worker.mcp = parent.mcp
+        worker.catalog = parent.catalog
         return worker
 
     def _reset(self) -> str:

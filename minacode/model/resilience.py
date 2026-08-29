@@ -23,21 +23,15 @@ _STATUS_CODE_RE: re.Pattern = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*
 
 # 429 carries two opposite meanings and cannot be retried uniformly: transient rate limiting
 # (retry after backoff is right) and permanent quota/billing failures (retrying just makes the
-# user wait through the backoff for an error that will never clear). Providers express the
-# permanent class as 429 with account/billing wording in the error body, e.g.:
-#   - OpenAI: code "insufficient_quota", "You exceeded your current quota, please check your
-#     plan and billing details."
-#   - Aliyun/DashScope (OpenAI-compatible): "insufficient_quota" / "Throttling.AllocationQuota",
-#     "CommodityNotPurchased", "PrepaidBillOverdue" / "PostpaidBillOverdue"
-#   - Kimi/Moonshot: type "exceeded_current_quota_error", "check your account balance"
-#   - z.ai/bigmodel: codes "1113" (Insufficient balance... recharge), "1309" (...package has
-#     expired... renewing the subscription), "1314" (...enterprise package has expired...)
+# user wait through the backoff for an error that will never clear). Compatible endpoints express
+# the permanent class as 429 plus account/billing wording in the error body. The marker set below
+# deliberately captures shared meanings rather than branching on a provider name or error code.
 # This is a fail-open heuristic: unknown wording retries as before, preferring to miss a
 # permanent error over misclassifying a transient rate limit as a billing failure.
 #
 # The markers are phrases, not words, because the vocabulary overlaps: a transient limit is
 # commonly phrased with the same nouns the permanent class uses. "Quota exceeded for quota
-# metric ... per minute" (Google/Vertex) and "Throttling.RateQuota" (DashScope) are per-minute
+# metric ... per minute" and similarly named rate-quota errors are per-minute
 # limits that clear on their own, so a bare "quota" marker would fail them at once — the exact
 # outcome this rule exists to prevent. Same for bare "expired" and "credit", which appear in
 # transient infrastructure errors that have nothing to do with an account.

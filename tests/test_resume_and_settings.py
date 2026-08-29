@@ -9,7 +9,6 @@ from minacode.base import (
     ConfigError,
 )
 from minacode.config import (
-    ANTHROPIC_DEFAULT_MAX_TOKENS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_OUTPUT_RESERVE_TOKENS,
     Config,
@@ -17,6 +16,7 @@ from minacode.config import (
     ProviderConfig,
     RuntimeSettings,
 )
+from minacode.providers.compat import bundled_policy
 from minacode.session import Session
 
 
@@ -28,12 +28,12 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
     selected = []
 
     monkeypatch.setattr(ConfigFile, "load", lambda _path: {})
-    monkeypatch.setattr(Config, "from_dict", classmethod(lambda _cls, _data: config))
+    monkeypatch.setattr(Config, "from_dict", classmethod(lambda _cls, _data, **_kwargs: config))
     monkeypatch.setattr(RuntimeSettings, "from_dict", classmethod(lambda _cls, _data, **_kwargs: settings))
     monkeypatch.setattr(
         Session,
         "load_snapshot",
-        classmethod(lambda _cls, uid, config=None, settings=None, cwd="": selected.append((uid, config, settings, cwd)) or resumed),
+        classmethod(lambda _cls, uid, config=None, settings=None, cwd="", catalog=None: selected.append((uid, config, settings, cwd)) or resumed),
     )
 
     class Loop:
@@ -60,12 +60,12 @@ def test_resume_request_starts_the_next_run_on_the_chosen_session(tmp_path, monk
     loaded = []
 
     monkeypatch.setattr(ConfigFile, "load", lambda _path: {})
-    monkeypatch.setattr(Config, "from_dict", classmethod(lambda _cls, _data: config))
+    monkeypatch.setattr(Config, "from_dict", classmethod(lambda _cls, _data, **_kwargs: config))
     monkeypatch.setattr(RuntimeSettings, "from_dict", classmethod(lambda _cls, _data, **_kwargs: settings))
     monkeypatch.setattr(
         Session,
         "load_snapshot",
-        classmethod(lambda _cls, uid, config=None, settings=None, cwd="": loaded.append(uid) or SimpleNamespace(settings=settings, mcp=None)),
+        classmethod(lambda _cls, uid, config=None, settings=None, cwd="", catalog=None: loaded.append(uid) or SimpleNamespace(settings=settings, mcp=None)),
     )
     closed = []
     handovers = iter(["second-uid", ""])
@@ -141,9 +141,11 @@ def test_provider_max_tokens_defaults_to_zero_and_reserve_stays_bounded():
     # stays fixed, so compaction planning does not depend on how the provider treats an absent cap.
     assert DEFAULT_MAX_TOKENS != DEFAULT_OUTPUT_RESERVE_TOKENS
     assert ProviderConfig().output_token_budget() == ProviderConfig.from_dict({"max_tokens": 0}).output_token_budget() == DEFAULT_OUTPUT_RESERVE_TOKENS
-    # Anthropic requires max_tokens, so unset falls back to a conservative cap that fits 8K models.
-    assert ProviderConfig().anthropic_output_cap() == ANTHROPIC_DEFAULT_MAX_TOKENS
-    assert ProviderConfig.from_dict({"max_tokens": 2_048}).anthropic_output_cap() == 2_048
+    # A wire that requires a concrete cap gets its default from the catalog; explicit config wins.
+    policy = bundled_policy()
+    expected = policy.snapshot.defaults.wire_defaults["anthropic"]["max_tokens"]
+    assert policy.resolve(ProviderConfig(api="anthropic")).output_max_tokens == expected
+    assert policy.resolve(ProviderConfig(api="anthropic", max_tokens=2_048)).output_max_tokens == 2_048
 
 def test_provider_stream_defaults_on_and_can_be_disabled():
     assert ProviderConfig().stream is True

@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -19,10 +20,10 @@ from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from minacode.base import HTTP_USER_AGENT, MinacodeError, Text
+from minacode.base import HTTP_USER_AGENT, Text
 from minacode.providers.catalog import CatalogCodec, decode_bundled
 from minacode.providers.compat import ProviderPolicy
-from minacode.providers.schema import CatalogError, CatalogSnapshot, CatalogSyncError
+from minacode.providers.schema import CatalogError, CatalogSnapshot, CatalogSourceError, CatalogSyncError, CatalogVersionConflict
 
 # The published copy of the bundled catalog; the remote is the single sync target.
 CATALOG_URL = "https://raw.githubusercontent.com/hit9/minacode/master/minacode/providers/catalog.json"
@@ -58,22 +59,30 @@ class CatalogRepository:
         self.catalog_dir = os.path.join(self.data_dir, CATALOG_DIR)
         self.cache_path = os.path.join(self.catalog_dir, CATALOG_CACHE_FILE)
         self.etag_path = os.path.join(self.catalog_dir, CATALOG_ETAG_FILE)
+        self.state_path = os.path.join(self.catalog_dir, CATALOG_STATE_FILE)
         self._codec = CatalogCodec()
 
     def bundled(self) -> CatalogSnapshot:
         try:
             return decode_bundled()
-        except CatalogError as error:
-            raise MinacodeError(f"bundled provider catalog is corrupt: {error}") from error
+        except (OSError, CatalogError) as error:
+            raise CatalogSourceError(f"bundled provider catalog is corrupt: {error}") from error
 
     def cached(self) -> CatalogSnapshot | None:
         """The cached document, or ``None`` when absent or invalid (a corrupt cache is ignored)."""
 
+        return self._cached()[0]
+
+    def _cached(self) -> tuple[CatalogSnapshot | None, str]:
+        """The cached snapshot and a diagnostic when a present copy is unreadable."""
+
         try:
             with open(self.cache_path, "rb") as file:
-                return self._codec.decode(file.read(), "cached")
-        except (OSError, CatalogError, ValueError):
-            return None
+                return self._codec.decode(file.read(), "cached"), ""
+        except FileNotFoundError:
+            return None, ""
+        except (OSError, CatalogError, ValueError) as error:
+            return None, f"cached catalog ignored: invalid ({Text.clean(str(error))})"
 
     def select(self) -> tuple[CatalogSnapshot, str, str]:
         """(snapshot, source, note) for the highest-version whole document.
@@ -84,9 +93,9 @@ class CatalogRepository:
         """
 
         bundled = self.bundled()
-        cached = self.cached()
+        cached, cached_note = self._cached()
         if cached is None:
-            return bundled, "bundled", ""
+            return bundled, "bundled", cached_note
         if cached.version > bundled.version:
             return cached, "cached", ""
         if cached.version == bundled.version:
@@ -105,26 +114,39 @@ class CatalogRepository:
         failure never leaves a half file.
         """
 
-        request = Request(
-            CATALOG_URL,
-            headers={"User-Agent": HTTP_USER_AGENT, "Accept": "application/json"},
-        )
-        if self.cached() is not None:
-            with contextlib.suppress(OSError):
-                with open(self.etag_path, encoding="utf-8") as file:
-                    etag = file.read().strip()
-                if etag:
-                    request.add_header("If-None-Match", etag)
         try:
-            with self._locked(), urlopen(request, timeout=REMOTE_TIMEOUT) as response:
-                if getattr(response, "status", 200) == 304:
-                    return self.select()[0]
-                payload = response.read(MAX_REMOTE_BYTES + 1)
-                if len(payload) > MAX_REMOTE_BYTES:
-                    raise CatalogSyncError(f"remote catalog exceeds {MAX_REMOTE_BYTES} bytes")
-                snapshot = self._codec.decode(payload, "cached")
-                self._write_cache_monotonic(payload, response.headers.get("ETag", ""), snapshot)
-                return snapshot
+            with self._locked():
+                request = Request(CATALOG_URL, headers={"User-Agent": HTTP_USER_AGENT, "Accept": "application/json"})
+                if self.cached() is not None:
+                    with contextlib.suppress(OSError):
+                        with open(self.etag_path, encoding="utf-8") as file:
+                            etag = file.read().strip()
+                        if etag:
+                            request.add_header("If-None-Match", etag)
+                try:
+                    response_context = urlopen(request, timeout=REMOTE_TIMEOUT)
+                except HTTPError as error:
+                    if error.code == 304:
+                        return self.select()[0]
+                    raise
+                with response_context as response:
+                    if getattr(response, "status", 200) == 304:
+                        return self.select()[0]
+                    payload = response.read(MAX_REMOTE_BYTES + 1)
+                    if len(payload) > MAX_REMOTE_BYTES:
+                        raise CatalogSyncError(f"remote catalog exceeds {MAX_REMOTE_BYTES} bytes")
+                    snapshot = self._codec.decode(payload, "cached")
+                    current = self.select()[0]
+                    if snapshot.version < current.version:
+                        return current
+                    if snapshot.version == current.version:
+                        if snapshot.content_hash != current.content_hash:
+                            raise CatalogVersionConflict(f"remote catalog has the same version {snapshot.version} but different content")
+                        return current
+                    self._write_cache(payload, response.headers.get("ETag", ""))
+                    return snapshot
+        except CatalogSyncError:
+            raise
         except (OSError, URLError, HTTPError, ValueError, CatalogError) as error:
             raise CatalogSyncError(f"catalog sync failed: {error}") from error
 
@@ -139,53 +161,67 @@ class CatalogRepository:
             return
         os.makedirs(self.catalog_dir, exist_ok=True)
         lock_path = os.path.join(self.catalog_dir, CATALOG_LOCK_FILE)
-        try:
-            with open(lock_path, "w") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(lock, fcntl.LOCK_UN)
-        finally:
-            # The lock file is transient; remove it so a session data dir stays clean.
-            with contextlib.suppress(OSError):
-                os.unlink(lock_path)
-
-    def _write_cache_monotonic(self, payload: bytes, etag: str, snapshot: CatalogSnapshot) -> None:
-        """Write the fetched document only when it is strictly newer than the current cache."""
-
-        current = self.cached()
-        if current is not None and snapshot.version <= current.version:
-            return
-        self._write_cache(payload, etag)
+        with open(lock_path, "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _write_cache(self, payload: bytes, etag: str) -> None:
         os.makedirs(self.catalog_dir, exist_ok=True)
-        tmp = self.cache_path + ".tmp"
-        with open(tmp, "wb") as file:
-            file.write(payload)
-        os.replace(tmp, self.cache_path)
+        self._atomic_write(self.cache_path, payload)
         if etag:
-            with open(self.etag_path, "w", encoding="utf-8") as file:
-                file.write(etag)
+            self._atomic_write(self.etag_path, etag.encode())
+        else:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(self.etag_path)
+
+    def load_sync_state(self) -> dict[str, object]:
+        """Return persisted runtime status; malformed state is equivalent to no state."""
+
+        try:
+            with open(self.state_path, encoding="utf-8") as file:
+                value = json.load(file)
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_sync_state(self, state: dict[str, object]) -> None:
+        self._atomic_write(self.state_path, json.dumps(state, separators=(",", ":")).encode())
+
+    @staticmethod
+    def _atomic_write(path: str, payload: bytes) -> None:
+        directory = os.path.dirname(path)
+        os.makedirs(directory, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(descriptor, "wb") as file:
+                file.write(payload)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, path)
+            with contextlib.suppress(OSError):
+                directory_fd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary)
 
 
 class CatalogRuntime:
     """The catalog a session lives against: snapshot + compiled policy + sync state.
 
-    Not a global: each ``Session`` owns one, built from its own ``data_dir`` in
-    ``bootstrap_features``, so a worker session can point at a different data directory.
+    Not a global: each top-level ``Session`` owns one selected from its ``data_dir``. Delegate
+    workers share that exact runtime, so one conversation cannot resolve against two catalogs.
     """
 
     def __init__(self, data_dir: str):
         self.repository = CatalogRepository(data_dir)
-        try:
-            self.snapshot, self.source, self.note = self.repository.select()
-        except MinacodeError as error:
-            # Startup must never die on a corrupt install; the bundled copy is the floor.
-            self.snapshot = decode_bundled()
-            self.source = "bundled"
-            self.note = str(error)
+        self.snapshot, self.source, self.note = self.repository.select()
         self.policy = ProviderPolicy(self.snapshot)
         self.sync_state = CatalogSyncState()
         self._load_state()
@@ -194,9 +230,12 @@ class CatalogRuntime:
         if not self.sync_state.last_version:
             self.sync_state.last_version = self.snapshot.version
 
-    @property
-    def version(self) -> int:
-        return self.snapshot.version
+    def source_versions(self) -> tuple[int, int | None]:
+        """The bundled and valid cached versions for status presentation."""
+
+        bundled = self.repository.bundled().version
+        cached = self.repository.cached()
+        return bundled, cached.version if cached is not None else None
 
     def sync_now(self) -> CatalogSnapshot:
         """Fetch the remote catalog and, if newer, activate it at the command boundary.
@@ -215,6 +254,7 @@ class CatalogRuntime:
         self.sync_state.checked_at = time.time()
         self.sync_state.last_source = self.source
         self.sync_state.last_version = self.snapshot.version
+        self.sync_state.error = ""
         self._save_state()
         return self.snapshot
 
@@ -231,8 +271,11 @@ class CatalogRuntime:
                 # The automatic refresh only updates the cache; the active policy is never
                 # hot-swapped, so a long turn's requests keep one catalog version. A newer cache
                 # is picked up on the next startup (see CatalogRepository.select).
-                self.repository.fetch()
+                snapshot = self.repository.fetch()
                 state.error = ""
+                state.last_synced_at = time.time()
+                state.last_source = "cached" if snapshot.version > self.repository.bundled().version else "bundled"
+                state.last_version = snapshot.version
             except Exception as error:  # noqa: BLE001 - background sync failures must not escape the worker.
                 state.error = Text.clean(str(error))
             finally:
@@ -242,24 +285,21 @@ class CatalogRuntime:
 
         threading.Thread(target=run, daemon=True).start()
 
-    # -- persisted sync state (``<data_dir>/catalog/sync.json``) ------------------
-
-    def _state_path(self) -> str:
-        return os.path.join(self.repository.catalog_dir, CATALOG_STATE_FILE)
-
     def _load_state(self) -> None:
         """Restore the persisted gate and last result; a corrupt file counts as never checked."""
 
-        with contextlib.suppress(Exception):
-            with open(self._state_path(), encoding="utf-8") as file:
-                data = json.load(file)
-            if isinstance(data, dict):
-                state = self.sync_state
-                state.checked_at = float(data.get("checked_at") or 0)
-                state.last_synced_at = float(data.get("last_synced_at") or 0)
-                state.last_source = str(data.get("last_source") or "")
-                state.last_version = int(data.get("last_version") or 0)
-                state.error = str(data.get("error") or "")
+        data = self.repository.load_sync_state()
+        state = self.sync_state
+        checked_at = data.get("checked_at", 0)
+        last_synced_at = data.get("last_synced_at", 0)
+        last_version = data.get("last_version", 0)
+        last_source = data.get("last_source", "")
+        error = data.get("error", "")
+        state.checked_at = float(checked_at) if isinstance(checked_at, (int, float)) and not isinstance(checked_at, bool) else 0.0
+        state.last_synced_at = float(last_synced_at) if isinstance(last_synced_at, (int, float)) and not isinstance(last_synced_at, bool) else 0.0
+        state.last_source = last_source if isinstance(last_source, str) else ""
+        state.last_version = last_version if isinstance(last_version, int) and not isinstance(last_version, bool) else 0
+        state.error = error if isinstance(error, str) else ""
 
     def _save_state(self) -> None:
         """Persist the gate and last result; a write failure must not break a sync."""
@@ -273,8 +313,4 @@ class CatalogRuntime:
             "error": state.error,
         }
         with contextlib.suppress(Exception):
-            os.makedirs(self.repository.catalog_dir, exist_ok=True)
-            tmp = self._state_path() + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as file:
-                json.dump(payload, file)
-            os.replace(tmp, self._state_path())
+            self.repository.save_sync_state(payload)

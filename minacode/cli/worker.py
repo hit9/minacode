@@ -220,7 +220,7 @@ class WorkerFlow:
         """Pick a worker reasoning effort; returns (set, message). Shared by /worker reason and
         the /worker provider cascade."""
         current = self.loop.session.config.worker_reasoning
-        choices = (*REASONING_CHOICES, "default")
+        choices = (*self._reasoning_choices(), "default")
         labels = {"default": "default - inherit the provider entry's reasoning"}
         if current:
             labels[current] = current + " (current)"
@@ -231,8 +231,9 @@ class WorkerFlow:
     def _worker_set_reasoning(self, value: str) -> str:
         if value != "default":
             # "off" is a valid effort, never the clearing word; only "default" clears.
-            if value not in REASONING_CHOICES:
-                return "Usage: /worker reason " + "|".join(REASONING_CHOICES)
+            choices = self._reasoning_choices()
+            if value not in choices:
+                return "Usage: /worker reason " + "|".join(choices)
             self.loop.session.config.worker_reasoning = value
         else:
             self.loop.session.config.worker_reasoning = ""
@@ -240,6 +241,10 @@ class WorkerFlow:
         if value == "default":
             return "worker reasoning: (inherit)"
         return "Set worker.reasoning = " + value
+
+    def _reasoning_choices(self) -> tuple[str, ...]:
+        catalog = self.loop.session.catalog
+        return ("off", *(catalog.policy.effort_order if catalog is not None else REASONING_CHOICES[1:]))
 
     def _worker_api_picker(self) -> str:
         """Standalone /worker api picker: one selection, no cascade."""

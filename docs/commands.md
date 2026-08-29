@@ -32,10 +32,10 @@ description.
 **`/config`** — Shows the active configuration: provider blocks, runtime settings,
 and their resolved values.
 
-**`/catalog [sync]`** — Shows which compatibility catalog this session resolves against:
-its version, whether it is the bundled copy or a synced one, and the last sync result.
-`sync` checks for a newer catalog immediately instead of waiting for the background
-refresh.
+**`/catalog [status|sync]`** — Shows the active compatibility catalog, including its version,
+publication date, maintenance scope, source, bundled/cached versions, and the last sync result.
+`status` is an explicit alias for the default view. `sync` checks GitHub immediately instead of
+waiting for the automatic check, which runs at most once every 72 hours.
 
 ## The code index
 

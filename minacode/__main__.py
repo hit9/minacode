@@ -21,6 +21,8 @@ from minacode.config import (
     RuntimeSettings,
 )
 from minacode.engine import Agent
+from minacode.providers.schema import CatalogError
+from minacode.providers.sync import CatalogRuntime
 from minacode.render import Theme
 from minacode.session import Session
 
@@ -126,12 +128,14 @@ def main(argv: list[str] | None = None) -> int:
         while True:
             if resume:
                 data = ConfigFile.load(args.config)
-                config = Config.from_dict(data)
+                catalog = CatalogRuntime(Config.data_dir_from(data))
+                config = Config.from_dict(data, policy=catalog.policy)
                 session = Session.load_snapshot(
                     resume,
                     config=config,
                     settings=RuntimeSettings.from_dict(data, yolo=args.yolo, theme=args.theme),
                     cwd=os.getcwd(),
+                    catalog=catalog,
                 )
             else:
                 session = Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)
@@ -150,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2
-    except MinacodeError as error:
+    except (MinacodeError, CatalogError) as error:
         print("Error: " + str(error), file=sys.stderr)
         return 1
 

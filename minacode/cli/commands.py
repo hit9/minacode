@@ -319,15 +319,15 @@ def status(loop: CommandLoop, args: str) -> str:
 
 
 def catalog_command(loop: CommandLoop, args: str) -> str:
-    """Show the provider catalog this session resolves against, or force a sync with `sync`."""
+    """Show the active provider catalog, or force a remote refresh with ``sync``."""
 
     parts = args.split()
-    if len(parts) > 1:
-        return "Usage: /catalog [sync]"
+    if parts not in ([], ["status"], ["sync"]):
+        return "Usage: /catalog [status|sync]"
     catalog = loop.session.catalog
     if catalog is None:
         return "catalog: bundled (no session catalog yet)"
-    if parts:
+    if parts == ["sync"]:
         previous = catalog.snapshot.version
         try:
             snapshot = catalog.sync_now()
@@ -340,7 +340,13 @@ def catalog_command(loop: CommandLoop, args: str) -> str:
     rows = [
         ("version", str(catalog.snapshot.version)),
         ("source", "`" + catalog.source + "`"),
+        ("updated", catalog.snapshot.updated_at.isoformat()),
+        ("schema", str(catalog.snapshot.schema_version)),
+        ("scope", catalog.snapshot.maintenance_scope),
     ]
+    bundled_version, cached_version = catalog.source_versions()
+    rows.append(("bundled", str(bundled_version)))
+    rows.append(("cached", str(cached_version) if cached_version is not None else "none"))
     if catalog.note:
         rows.append(("note", catalog.note))
     if state.error:
@@ -348,7 +354,7 @@ def catalog_command(loop: CommandLoop, args: str) -> str:
     elif state.checking:
         rows.append(("sync", "checking..."))
     elif state.last_synced_at:
-        rows.append(("sync", "last " + time.strftime("%H:%M", time.localtime(state.last_synced_at))))
+        rows.append(("sync", "last " + time.strftime("%Y-%m-%d %H:%M", time.localtime(state.last_synced_at))))
     rows.append(("remote", CATALOG_URL))
     return markdown_table(["field", "value"], rows)
 

@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
-  "version": 2026082801,
-  "updated_at": "2026-08-28",
+  "version": 2026082902,
+  "updated_at": "2026-08-29",
+  "maintenance_scope": "well_known_and_necessary_specializations_only",
   "defaults": {
     "effort_order": [
       "minimal",
@@ -19,9 +20,31 @@
       "xhigh": 16384,
       "max": 32768
     },
+    "reasoning_dialects": {
+      "off": "off",
+      "reasoning": "reasoning.object",
+      "reasoning_effort": "reasoning.effort",
+      "thinking": "thinking.with-effort",
+      "thinking_toggle": "thinking.toggle",
+      "thinking_effort": "thinking.effort",
+      "enable_thinking": "enable-thinking",
+      "mandatory_thinking": "mandatory"
+    },
+    "wire_defaults": {
+      "anthropic": {
+        "max_tokens": 8192,
+        "why": "Messages requires max_tokens; 8192 is the conservative default when no cap is configured",
+        "evidence": [
+          "https://docs.anthropic.com/en/api/messages"
+        ],
+        "notes": [
+          "Chat and Responses omit an unconfigured output cap and let the endpoint choose its default."
+        ]
+      }
+    },
     "provider_policy": {
       "api": "chat",
-      "reasoning.recipe": "off",
+      "reasoning.recipe": "responses.effort",
       "reasoning.dialect": "off",
       "history.reasoning": "all",
       "cache.prompt_key": true,
@@ -56,10 +79,38 @@
   "request_recipes": {
     "off": {
       "id": "off",
+      "description": "Do not add provider-specific reasoning fields.",
       "steps": []
+    },
+    "responses.effort": {
+      "id": "responses.effort",
+      "description": "Put the resolved effort in a Responses reasoning object when one exists.",
+      "steps": [
+        {
+          "when": {
+            "wire": "responses",
+            "resolved_effort": {
+              "present": true
+            }
+          },
+          "set": [
+            {
+              "path": [
+                "reasoning"
+              ],
+              "value": {
+                "effort": {
+                  "source": "resolved_effort"
+                }
+              }
+            }
+          ]
+        }
+      ]
     },
     "reasoning.object": {
       "id": "reasoning.object",
+      "description": "Use a nested reasoning object on normalized OpenAI-compatible gateways.",
       "steps": [
         {
           "when": {
@@ -102,6 +153,7 @@
     },
     "reasoning.effort": {
       "id": "reasoning.effort",
+      "description": "Use the OpenAI-compatible reasoning_effort field, including an explicit off spelling.",
       "steps": [
         {
           "when": {
@@ -145,6 +197,7 @@
     },
     "thinking.with-effort": {
       "id": "thinking.with-effort",
+      "description": "Toggle thinking.type and send the resolved effort beside it.",
       "pins_temperature": true,
       "steps": [
         {
@@ -191,6 +244,7 @@
     },
     "thinking.toggle": {
       "id": "thinking.toggle",
+      "description": "Toggle thinking.type without an effort field.",
       "steps": [
         {
           "when": {
@@ -228,6 +282,7 @@
     },
     "thinking.effort": {
       "id": "thinking.effort",
+      "description": "Toggle thinking.type and use reasoning_effort for the thinking depth.",
       "steps": [
         {
           "when": {
@@ -273,6 +328,7 @@
     },
     "enable-thinking": {
       "id": "enable-thinking",
+      "description": "Toggle the enable_thinking boolean used by compatible gateways.",
       "pins_temperature": true,
       "steps": [
         {
@@ -316,10 +372,12 @@
     },
     "mandatory": {
       "id": "mandatory",
+      "description": "The model always reasons and needs no request-side toggle.",
       "steps": []
     },
     "messages.manual": {
       "id": "messages.manual",
+      "description": "Enable Anthropic manual thinking with a bounded token budget.",
       "steps": [
         {
           "when": {
@@ -353,6 +411,7 @@
     },
     "messages.manual-opus-45": {
       "id": "messages.manual-opus-45",
+      "description": "Combine Opus 4.5 manual thinking with its limited output effort control.",
       "steps": [
         {
           "when": {
@@ -411,6 +470,7 @@
     },
     "messages.adaptive": {
       "id": "messages.adaptive",
+      "description": "Use Anthropic adaptive thinking and the model's resolved output effort.",
       "steps": [
         {
           "when": {
@@ -456,6 +516,7 @@
     },
     "messages.adaptive-xhigh-as-max": {
       "id": "messages.adaptive-xhigh-as-max",
+      "description": "Use adaptive thinking on models that accept max but not xhigh.",
       "steps": [
         {
           "when": {
@@ -532,7 +593,7 @@
       },
       "why": "minimal is not a spelling on gpt-5.6",
       "evidence": [
-        "https://developers.openai.com/api/docs/models/gpt-5.5"
+        "https://developers.openai.com/api/docs/guides/latest-model"
       ]
     },
     {
@@ -738,7 +799,7 @@
       },
       "why": "K3 has no medium or xhigh, and cannot stop thinking",
       "evidence": [
-        "https://platform.kimi.com/docs/guide/use-thinking-models"
+        "https://docs.qwencloud.com/developer-guides/third-party-models/kimi"
       ]
     },
     {
@@ -752,7 +813,11 @@
       "set": {
         "reasoning.recipe": "thinking.toggle",
         "reasoning.dialect": "thinking_toggle"
-      }
+      },
+      "why": "Kimi K2.5 and K2.6 expose hybrid thinking through thinking.type",
+      "evidence": [
+        "https://platform.kimi.com/docs/api/models-overview"
+      ]
     },
     {
       "id": "model.trait-12",
@@ -765,7 +830,11 @@
         "reasoning.recipe": "mandatory",
         "reasoning.dialect": "mandatory_thinking",
         "history.reasoning": "all"
-      }
+      },
+      "why": "Kimi K2.7 Code is thinking-only and preserves reasoning across turns",
+      "evidence": [
+        "https://docs.qwencloud.com/developer-guides/third-party-models/kimi"
+      ]
     },
     {
       "id": "model.trait-13",
@@ -788,6 +857,9 @@
       "why": "Kimi Code's K3 has no medium or xhigh",
       "evidence": [
         "https://www.kimi.com/code/docs/kimi-code/models.html"
+      ],
+      "notes": [
+        "reasoning_effort none disables thinking and routes away from K3; it remains an explicit off override rather than a K3 effort level."
       ]
     },
     {
@@ -801,7 +873,11 @@
         "reasoning.recipe": "mandatory",
         "reasoning.dialect": "mandatory_thinking",
         "history.reasoning": "all"
-      }
+      },
+      "why": "Kimi For Coding uses the thinking-only K2.7 Code contract",
+      "evidence": [
+        "https://www.kimi.com/code/docs/kimi-code/models.html"
+      ]
     },
     {
       "id": "model.trait-15",
@@ -858,7 +934,11 @@
       "set": {
         "reasoning.recipe": "thinking.toggle",
         "reasoning.dialect": "thinking_toggle"
-      }
+      },
+      "why": "These GLM generations use thinking.type without a separate supported effort scale",
+      "evidence": [
+        "https://docs.z.ai/guides/capabilities/thinking-mode"
+      ]
     },
     {
       "id": "model.trait-18",
@@ -1262,85 +1342,9 @@
       ]
     },
     {
-      "id": "model.text-only-13",
-      "match": {
-        "pattern": "kimi-k3(?:-|$)"
-      },
-      "set": {
-        "image.input": "text_only"
-      },
-      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
-      "evidence": [
-        "https://platform.kimi.com/docs/models",
-        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
-      ],
-      "notes": [
-        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
-        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
-        "Claude stays unknown/main-first and is never in the negative list."
-      ]
-    },
-    {
-      "id": "model.text-only-14",
-      "match": {
-        "pattern": "kimi-k2\\.7-code(?:-|$)"
-      },
-      "set": {
-        "image.input": "text_only"
-      },
-      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
-      "evidence": [
-        "https://platform.kimi.com/docs/models",
-        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
-      ],
-      "notes": [
-        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
-        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
-        "Claude stays unknown/main-first and is never in the negative list."
-      ]
-    },
-    {
       "id": "model.text-only-15",
       "match": {
         "pattern": "kimi-k2(?!\\.5|\\.6)(?:-|$)"
-      },
-      "set": {
-        "image.input": "text_only"
-      },
-      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
-      "evidence": [
-        "https://platform.kimi.com/docs/models",
-        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
-      ],
-      "notes": [
-        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
-        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
-        "Claude stays unknown/main-first and is never in the negative list."
-      ]
-    },
-    {
-      "id": "model.text-only-16",
-      "match": {
-        "pattern": "k3(?:-|$)"
-      },
-      "set": {
-        "image.input": "text_only"
-      },
-      "why": "Documented Kimi / Moonshot text family; K2.5/K2.6 and vision-preview never match",
-      "evidence": [
-        "https://platform.kimi.com/docs/models",
-        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
-      ],
-      "notes": [
-        "Rules are anchored to complete documented families or exact IDs; matching is case-insensitive.",
-        "A gateway id in canonical vendor/model form is matched by its model part only when the vendor is canonical (see model_id_forms); a custom alias stays unknown and is probed.",
-        "Claude stays unknown/main-first and is never in the negative list."
-      ]
-    },
-    {
-      "id": "model.text-only-17",
-      "match": {
-        "pattern": "kimi-for-coding(?:-|$)"
       },
       "set": {
         "image.input": "text_only"
@@ -1594,7 +1598,11 @@
           "set": {
             "reasoning.recipe": "reasoning.effort",
             "reasoning.dialect": "reasoning_effort"
-          }
+          },
+          "why": "OpenAI reasoning controls apply only to documented reasoning model families",
+          "evidence": [
+            "https://developers.openai.com/api/docs/guides/reasoning"
+          ]
         }
       ],
       "builtin_tools_by_wire": {
@@ -1604,18 +1612,18 @@
           }
         ]
       },
-      "notes": [
-        "Why: Chat Completions accepts reasoning_effort only for reasoning model families,",
-        "while strict function schemas are an OpenAI capability rather than a generic default.",
-        "Responses models from GPT-5.1 onward document `none` as the no-reasoning effort; the",
-        "original GPT-5 does not. The optional Responses reasoning object is limited to these",
-        "reasoning families: GPT-4.1 supports Responses but is explicitly non-reasoning. Reasoning",
-        "families reject temperature, while sibling chat models such as gpt-4o retain it.",
-        "Evidence: : https://developers.openai.com/api/docs/guides/reasoning",
+      "why": "Chat reasoning controls, strict schemas, temperature suppression, and Responses server tools apply only where OpenAI documents them",
+      "evidence": [
+        "https://developers.openai.com/api/docs/guides/reasoning",
         "https://developers.openai.com/api/docs/models/gpt-5",
         "https://developers.openai.com/api/docs/models/gpt-5.1",
         "https://developers.openai.com/api/docs/models/gpt-4.1",
-        "https://developers.openai.com/api/docs/guides/function-calling#strict-mode"
+        "https://developers.openai.com/api/docs/guides/function-calling#strict-mode",
+        "https://developers.openai.com/api/docs/guides/tools-web-search"
+      ],
+      "notes": [
+        "The Responses reasoning object is limited to reasoning families; GPT-4.1 supports Responses but is non-reasoning.",
+        "Only web_search is admitted as a server tool; other hosted tools require resource or approval lifecycles not implemented here."
       ]
     },
     {
@@ -1656,9 +1664,13 @@
           }
         ]
       },
+      "why": "OpenRouter normalizes upstream reasoning and server tools behind its own request shapes",
+      "evidence": [
+        "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+        "https://openrouter.ai/docs/guides/features/server-tools/overview"
+      ],
       "notes": [
-        "Why: OpenRouter normalizes providers behind its own top-level reasoning object.",
-        "Evidence: : https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
+        "reasoning and history model traits are ignored because sending an upstream model's native spelling would bypass OpenRouter's normalized contract."
       ]
     },
     {
@@ -1678,7 +1690,11 @@
           },
           "set": {
             "api": "anthropic"
-          }
+          },
+          "why": "OpenCode Zen routes Claude and Qwen model IDs through Messages",
+          "evidence": [
+            "https://opencode.ai/docs/zen"
+          ]
         },
         {
           "id": "provider-rule.api-1.gpt--grok-",
@@ -1690,16 +1706,20 @@
           },
           "set": {
             "api": "responses"
-          }
+          },
+          "why": "OpenCode Zen routes GPT and Grok model IDs through Responses",
+          "evidence": [
+            "https://opencode.ai/docs/zen"
+          ]
         }
       ],
       "builtin_tools_by_wire": {},
+      "why": "One OpenCode base URL multiplexes wire protocols by model, so api=auto cannot infer the protocol from the URL",
+      "evidence": [
+        "https://opencode.ai/docs/zen"
+      ],
       "notes": [
-        "Why: one OpenCode base URL multiplexes wire protocols by model, so api=auto cannot infer",
-        "the protocol from the URL: Claude and Qwen are served by Messages, GPT and Grok by",
-        "Responses, and the rest by Chat Completions. Its model traits reuse the canonical effort",
-        "capabilities above; only routing remains an OpenCode provider overlay.",
-        "Evidence: : https://opencode.ai/docs/zen"
+        "Zen documents its websearch and webfetch features as client tools, not API server tools; builtin_tools_by_wire therefore remains empty."
       ]
     },
     {
@@ -1724,14 +1744,15 @@
       },
       "model_rules": [],
       "builtin_tools_by_wire": {},
-      "notes": [
-        "Why: DeepSeek uses thinking.type plus a reduced effort scale, does not define OpenAI's",
-        "prompt_cache_key, and requires the /beta endpoint for strict function schemas. Ordinary",
-        "turns may omit reasoning, but every assistant tool-call message must retain it.",
-        "Evidence: : https://api-docs.deepseek.com/guides/thinking_mode/",
+      "why": "DeepSeek uses thinking.type plus its own effort scale, omits OpenAI prompt_cache_key, and requires beta routing for strict function schemas",
+      "evidence": [
+        "https://api-docs.deepseek.com/guides/thinking_mode/",
         "https://api-docs.deepseek.com/api/create-chat-completion/",
-        "https://api-docs.deepseek.com/guides/tool_calls",
-        "https://api-docs.deepseek.com/guides/thinking_mode"
+        "https://api-docs.deepseek.com/guides/tool_calls"
+      ],
+      "notes": [
+        "Ordinary turns may omit prior reasoning, but assistant tool-call messages must retain it.",
+        "DeepSeek's Chat schema accepts function tools only, so no provider-side tools are admitted."
       ]
     },
     {
@@ -1793,10 +1814,15 @@
           }
         ]
       },
+      "why": "Qwen's endpoint owns history preservation and re-hosted effort scales, while Responses exposes a limited server-tool set",
+      "evidence": [
+        "https://docs.qwencloud.com/developer-guides/text-generation/thinking",
+        "https://docs.qwencloud.com/api-reference/chat/openai-chat",
+        "https://help.aliyun.com/en/model-studio/web-search",
+        "https://help.aliyun.com/en/model-studio/web-extractor"
+      ],
       "notes": [
-        "Why: Qwen ignores prior-turn reasoning by default, while tool loops should replay it.",
-        "Explicit preserve_thinking=true is folded at request time.",
-        "Evidence: : https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking"
+        "web_search and web_extractor are Responses server tools; Chat search is configured in the request body instead."
       ]
     },
     {
@@ -1826,14 +1852,16 @@
           }
         ]
       },
-      "notes": [
-        "Why: the international and China Kimi open platforms expose the same model controls",
-        "on different regional domains. Their temperature values are fixed; explicit",
-        "thinking.keep=\"all\" is folded at request time.",
-        "Evidence: : https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model",
+      "why": "The international and China Kimi API domains expose the same model controls, fixed temperature behavior, and builtin web search contract",
+      "evidence": [
+        "https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model",
         "https://platform.kimi.com/docs/guide/use-kimi-k2-thinking-model",
         "https://platform.kimi.ai/docs/api/models-overview",
-        "https://platform.kimi.ai/docs/api/chat"
+        "https://platform.kimi.ai/docs/api/chat",
+        "https://platform.kimi.ai/docs/guide/use-web-search"
+      ],
+      "notes": [
+        "The $web_search builtin function is a Chat tool entry that the model calls back; it is not a client-side search shortcut."
       ]
     },
     {
@@ -1850,10 +1878,12 @@
       },
       "model_rules": [],
       "builtin_tools_by_wire": {},
+      "why": "Kimi Code is a separate subscription API whose official WebSearch and FetchURL tools run on the client",
+      "evidence": [
+        "https://www.kimi.com/code/docs/kimi-code/models.html"
+      ],
       "notes": [
-        "Why: Kimi Code is a separate subscription API whose official client tools (WebSearch,",
-        "FetchURL) run on the client; no coding-endpoint server-tool contract exists.",
-        "Evidence: : https://platform.kimi.ai/docs/api/chat"
+        "No coding-endpoint server-tool contract is assumed."
       ]
     },
     {
@@ -1874,10 +1904,14 @@
           }
         ]
       },
+      "why": "Z.AI domains share thinking controls, automatic context caching, and a Chat web_search tool shape",
+      "evidence": [
+        "https://docs.z.ai/guides/capabilities/thinking",
+        "https://docs.z.ai/guides/capabilities/cache",
+        "https://docs.z.ai/guides/tools/web-search"
+      ],
       "notes": [
-        "Why: both Z.AI regions share thinking controls and automatic context caching.",
-        "Evidence: : https://docs.z.ai/guides/capabilities/thinking",
-        "https://docs.z.ai/guides/capabilities/cache"
+        "Retrieval and server MCP are not admitted because their result lifecycles are not implemented."
       ]
     },
     {
@@ -1898,9 +1932,9 @@
           }
         ]
       },
-      "notes": [
-        "Why: China's BigModel endpoint documents the same thinking and automatic-cache contract.",
-        "Evidence: : https://docs.bigmodel.cn/cn/guide/capabilities/thinking",
+      "why": "China's BigModel endpoint documents the same thinking, automatic-cache, and Chat web_search contracts",
+      "evidence": [
+        "https://docs.bigmodel.cn/cn/guide/capabilities/thinking",
         "https://docs.bigmodel.cn/cn/guide/capabilities/cache"
       ]
     },
@@ -1930,11 +1964,12 @@
           ]
         }
       ],
+      "why": "Ark applies one endpoint-owned effort scale to every hosted model, overriding upstream model scales",
+      "evidence": [
+        "https://www.volcengine.com/docs/82379/1330310"
+      ],
       "notes": [
-        "Why: Ark gives every model it hosts one effort scale of its own rather than each model's, so",
-        "the levels a model takes here are the endpoint's fact and outrank the model's -- DeepSeek V4",
-        "and GLM both arrive with three or two levels of their own and are served with these four.",
-        "Evidence: : https://www.volcengine.com/docs/82379/1330310"
+        "DeepSeek and GLM therefore use Ark's four levels here rather than their upstream scales."
       ]
     },
     {
@@ -1952,11 +1987,12 @@
           }
         ]
       },
+      "why": "Anthropic web search is a versioned Messages server-tool definition",
+      "evidence": [
+        "https://platform.claude.com/docs/en/build-with-claude/tool-use"
+      ],
       "notes": [
-        "Why: Anthropic server tools (web_search_20250305) are Messages tool definitions; only the",
-        "tested web search version is offered so far. OpenCode Zen documents endpoint routing only,",
-        "with no gateway server-tool contract, so no provider-side tools are assumed for it.",
-        "Evidence: : https://platform.claude.com/docs/en/build-with-claude/tool-use"
+        "Only the tested web_search_20250305 definition is admitted."
       ]
     }
   ]

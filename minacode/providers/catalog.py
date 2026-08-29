@@ -18,9 +18,11 @@ import json
 import re
 from collections.abc import Mapping
 from datetime import date
+from types import MappingProxyType
 from typing import cast
 
 from minacode.providers.schema import (
+    CATALOG_MAINTENANCE_SCOPE,
     CatalogDefaults,
     CatalogFormatError,
     CatalogSnapshot,
@@ -90,6 +92,16 @@ RECIPE_CONTEXT_KEYS = frozenset({"wire", "reasoning_enabled", "resolved_effort",
 _EFFORT_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
+def _freeze(value: object) -> object:
+    """Recursively freeze parsed JSON so a compiled snapshot cannot be changed in place."""
+
+    if isinstance(value, dict):
+        return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
 class CatalogCodec:
     """Decode raw bytes into a compiled, validated :class:`CatalogSnapshot`."""
 
@@ -118,6 +130,20 @@ class CatalogCodec:
     # ------------------------------------------------------------------
 
     def _validate_document(self, raw: RawCatalog) -> None:
+        known_top = {
+            "schema_version",
+            "version",
+            "updated_at",
+            "maintenance_scope",
+            "defaults",
+            "model_id_forms",
+            "request_recipes",
+            "model_rules",
+            "providers",
+        }
+        unknown_top = set(raw) - known_top
+        if unknown_top:
+            raise CatalogFormatError(f"catalog has unknown top-level fields {sorted(unknown_top)}")
         schema_version = raw.get("schema_version")
         if isinstance(schema_version, bool) or not isinstance(schema_version, int):
             raise CatalogFormatError("catalog.schema_version must be an integer")
@@ -137,6 +163,10 @@ class CatalogCodec:
         except ValueError as error:
             raise CatalogFormatError(f"catalog.updated_at must be a valid UTC date YYYY-MM-DD, got {updated_at!r}") from error
 
+        maintenance_scope = raw.get("maintenance_scope")
+        if maintenance_scope != CATALOG_MAINTENANCE_SCOPE:
+            raise CatalogFormatError(f"catalog.maintenance_scope must be {CATALOG_MAINTENANCE_SCOPE!r}")
+
         required = ("defaults", "model_id_forms", "request_recipes", "model_rules", "providers")
         for key in required:
             if key not in raw:
@@ -147,8 +177,13 @@ class CatalogCodec:
             raise CatalogFormatError("catalog.defaults must be an object")
         self._validate_defaults(defaults)
 
+        forms = raw.get("model_id_forms")
+        if not isinstance(forms, list):
+            raise CatalogFormatError("catalog.model_id_forms must be a list")
         seen_forms: set[str] = set()
-        for form in raw.get("model_id_forms", []):
+        for form in forms:
+            if not isinstance(form, dict):
+                raise CatalogFormatError("catalog.model_id_forms entries must be objects")
             self._require_unique_id(form, seen_forms, "model_id_forms")
             for key in ("id", "separator"):
                 if not isinstance(form.get(key), str) or not form.get(key):
@@ -159,6 +194,8 @@ class CatalogCodec:
             if not form.get("separator"):
                 raise CatalogFormatError(f"model_id_forms.{form.get('id')}.separator must be non-empty")
             self._validate_prose(form, "model_id_forms." + str(form.get("id")))
+            if not form.get("why") or not form.get("evidence"):
+                raise CatalogFormatError(f"model_id_forms.{form.get('id')} must carry why and evidence")
 
         recipes = raw.get("request_recipes")
         if not isinstance(recipes, dict):
@@ -173,13 +210,19 @@ class CatalogCodec:
             seen_recipes.add(rid)
             self._validate_recipe(rid, recipe)
 
+        model_rules = raw.get("model_rules")
+        if not isinstance(model_rules, list):
+            raise CatalogFormatError("catalog.model_rules must be a list")
         seen_rules: set[str] = set()
-        for rule in raw.get("model_rules", []):
+        for rule in model_rules:
             self._validate_rule(rule, seen_rules, "catalog.model_rules", allow_empty_selector=False)
 
+        providers = raw.get("providers")
+        if not isinstance(providers, list):
+            raise CatalogFormatError("catalog.providers must be a list")
         seen_hosts: set[str] = set()
         seen_provider_ids: set[str] = set()
-        for provider in raw.get("providers", []):
+        for provider in providers:
             if not isinstance(provider, dict) or not isinstance(provider.get("id"), str) or not provider["id"]:
                 raise CatalogFormatError("catalog.providers entries need a non-empty string id")
             pid = provider["id"]
@@ -201,8 +244,13 @@ class CatalogCodec:
                     raise CatalogFormatError(f"{pid}.model_rule_modes has unknown namespace {namespace!r}")
             provider_defaults = provider.get("defaults")
             if provider_defaults is not None:
-                self._validate_policy_values(pid + ".defaults", cast(dict, provider_defaults))
-            for rule in provider.get("model_rules", []):
+                if not isinstance(provider_defaults, dict):
+                    raise CatalogFormatError(f"{pid}.defaults must be an object")
+                self._validate_policy_values(pid + ".defaults", provider_defaults)
+            provider_rules = provider.get("model_rules", [])
+            if not isinstance(provider_rules, list):
+                raise CatalogFormatError(f"{pid}.model_rules must be a list")
+            for rule in provider_rules:
                 self._validate_rule(rule, seen_rules, pid + ".model_rules", allow_empty_selector=False)
             tools = provider.get("builtin_tools_by_wire")
             if tools is not None:
@@ -213,11 +261,13 @@ class CatalogCodec:
                         raise CatalogFormatError(f"{pid}.builtin_tools_by_wire has unknown wire {wire!r}")
                     self._validate_builtin_entries(f"{pid}.builtin_tools_by_wire.{wire}", entries)
             self._validate_prose(provider, pid)
+            if not provider.get("why") or not provider.get("evidence"):
+                raise CatalogFormatError(f"{pid} must carry why and evidence")
 
         # All recipe references from policy rules must exist.
-        for rule in raw.get("model_rules", []):
+        for rule in model_rules:
             self._validate_recipe_reference(rule, seen_recipes)
-        for provider in raw.get("providers", []):
+        for provider in providers:
             for rule in provider.get("model_rules", []):
                 self._validate_recipe_reference(rule, seen_recipes)
             for value in (provider.get("defaults") or {}).values():
@@ -226,8 +276,23 @@ class CatalogCodec:
             recipe_value = (provider.get("defaults") or {}).get("reasoning.recipe")
             if isinstance(recipe_value, str) and recipe_value not in seen_recipes:
                 raise CatalogFormatError(f"{provider.get('id')}.defaults.reasoning.recipe references unknown recipe {recipe_value!r}")
+        default_recipe = defaults.get("provider_policy", {}).get("reasoning.recipe")
+        if not isinstance(default_recipe, str) or default_recipe not in seen_recipes:
+            raise CatalogFormatError("catalog.defaults.provider_policy.reasoning.recipe must reference a request recipe")
+        dialects = defaults.get("reasoning_dialects")
+        if isinstance(dialects, dict):
+            for dialect, recipe in dialects.items():
+                if recipe not in seen_recipes:
+                    raise CatalogFormatError(f"catalog.defaults.reasoning_dialects.{dialect} references unknown recipe {recipe!r}")
 
     def _validate_defaults(self, defaults: Mapping[str, object]) -> None:
+        required = {"effort_order", "thinking_budgets", "reasoning_dialects", "wire_defaults", "provider_policy"}
+        missing = required - set(defaults)
+        if missing:
+            raise CatalogFormatError(f"catalog.defaults is missing required fields {sorted(missing)}")
+        unknown = set(defaults) - required
+        if unknown:
+            raise CatalogFormatError(f"catalog.defaults has unknown fields {sorted(unknown)}")
         effort_order = defaults.get("effort_order")
         if effort_order is not None:
             if not isinstance(effort_order, list) or not effort_order:
@@ -246,9 +311,31 @@ class CatalogCodec:
                     raise CatalogFormatError(f"catalog.defaults.thinking_budgets.{effort} must be a positive integer")
                 if effort_order and effort not in effort_order:
                     raise CatalogFormatError(f"catalog.defaults.thinking_budgets.{effort} is not in effort_order")
+        dialects = defaults.get("reasoning_dialects")
+        if not isinstance(dialects, dict) or not dialects:
+            raise CatalogFormatError("catalog.defaults.reasoning_dialects must be a non-empty dialect-to-recipe object")
+        for dialect, recipe in dialects.items():
+            if not isinstance(dialect, str) or _EFFORT_RE.fullmatch(dialect) is None or not isinstance(recipe, str) or not recipe:
+                raise CatalogFormatError("catalog.defaults.reasoning_dialects must map valid names to recipe ids")
+        wire_defaults = defaults.get("wire_defaults")
+        if not isinstance(wire_defaults, dict):
+            raise CatalogFormatError("catalog.defaults.wire_defaults must be an object keyed by wire")
+        for wire, values in wire_defaults.items():
+            if wire not in WIRES or not isinstance(values, dict):
+                raise CatalogFormatError(f"catalog.defaults.wire_defaults has invalid wire {wire!r}")
+            allowed = {"max_tokens", "why", "evidence", "notes"}
+            if set(values) - allowed:
+                raise CatalogFormatError(f"catalog.defaults.wire_defaults.{wire} has unknown fields {sorted(set(values) - allowed)}")
+            max_tokens = values.get("max_tokens")
+            if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+                raise CatalogFormatError(f"catalog.defaults.wire_defaults.{wire}.max_tokens must be a positive integer")
+            self._validate_prose(values, f"catalog.defaults.wire_defaults.{wire}")
+            if not values.get("why") or not values.get("evidence"):
+                raise CatalogFormatError(f"catalog.defaults.wire_defaults.{wire} must carry why and evidence")
         policy = defaults.get("provider_policy")
-        if policy is not None:
-            self._validate_policy_values("catalog.defaults.provider_policy", cast(dict, policy))
+        if not isinstance(policy, dict):
+            raise CatalogFormatError("catalog.defaults.provider_policy must be an object")
+        self._validate_policy_values("catalog.defaults.provider_policy", policy)
 
     def _validate_policy_values(self, where: str, values: Mapping[str, object]) -> None:
         for path, value in values.items():
@@ -290,9 +377,10 @@ class CatalogCodec:
             raise CatalogFormatError(f"{where}.{path} must be an object keyed by wire")
 
     def _validate_prose(self, entry: Mapping[str, object], where: str) -> None:
-        why = entry.get("why")
-        if why is not None and (not isinstance(why, str) or len(why) > MAX_PROSE_LENGTH or "\n" in why):
-            raise CatalogFormatError(f"{where}.why must be a single line up to {MAX_PROSE_LENGTH} chars")
+        for key in ("description", "why"):
+            value = entry.get(key)
+            if value is not None and (not isinstance(value, str) or not value or len(value) > MAX_PROSE_LENGTH or "\n" in value):
+                raise CatalogFormatError(f"{where}.{key} must be a non-empty single line up to {MAX_PROSE_LENGTH} chars")
         for key in ("evidence", "notes"):
             items = entry.get(key)
             if items is None:
@@ -331,9 +419,8 @@ class CatalogCodec:
         self._validate_selector(cast(dict, selector) if selector else None, f"{where}.{rid}.match")
         self._validate_policy_values(f"{where}.{rid}.set", cast(dict, rule["set"]))
         self._validate_prose(rule, f"{where}.{rid}")
-        narrowing = any(path in rule["set"] for path in ("reasoning.levels", "reasoning.mandatory", "image.input", "reasoning.off", "reasoning.off_responses"))
-        if narrowing and not (rule.get("why") and rule.get("evidence")):
-            raise CatalogFormatError(f"{where}.{rid} narrows a capability or declares text-only and must carry why and evidence")
+        if not rule.get("why") or not rule.get("evidence"):
+            raise CatalogFormatError(f"{where}.{rid} must carry why and evidence")
 
     def _validate_selector(self, selector: Mapping[str, object] | None, where: str) -> None:
         if selector is None:
@@ -353,6 +440,15 @@ class CatalogCodec:
                 re.compile(pattern)
             except re.error as error:
                 raise CatalogFormatError(f"{where}.pattern does not compile: {error}") from error
+        for field in ("tokens_any", "tokens_all"):
+            tokens = selector.get(field)
+            if tokens is not None and (not isinstance(tokens, list) or not tokens or not all(isinstance(token, str) and token for token in tokens)):
+                raise CatalogFormatError(f"{where}.{field} must be a non-empty list of strings")
+        separator = selector.get("token_separator")
+        if separator is not None and (not isinstance(separator, str) or not separator):
+            raise CatalogFormatError(f"{where}.token_separator must be a non-empty string")
+        if (selector.get("tokens_any") or selector.get("tokens_all")) and separator is None:
+            raise CatalogFormatError(f"{where}.token_separator is required with token selectors")
         version = selector.get("version")
         if version is not None:
             if not isinstance(version, dict) or not isinstance(version.get("pattern"), str) or not version["pattern"]:
@@ -361,8 +457,8 @@ class CatalogCodec:
                 compiled = re.compile(version["pattern"])
             except re.error as error:
                 raise CatalogFormatError(f"{where}.version.pattern does not compile: {error}") from error
-            if "major" not in compiled.groupindex:
-                raise CatalogFormatError(f"{where}.version.pattern must define a named group major")
+            if not {"major", "minor"}.issubset(compiled.groupindex):
+                raise CatalogFormatError(f"{where}.version.pattern must define named major/minor groups")
             for bound in ("min_inclusive", "max_inclusive", "max_exclusive"):
                 value = version.get(bound)
                 if value is not None and (
@@ -384,6 +480,9 @@ class CatalogCodec:
                 raise CatalogFormatError(f"{where} entries must each set a non-empty type")
 
     def _validate_recipe(self, rid: str, recipe: Mapping[str, object]) -> None:
+        self._validate_prose(recipe, f"request_recipes.{rid}")
+        if not recipe.get("description"):
+            raise CatalogFormatError(f"request_recipes.{rid} must carry a description")
         steps = recipe.get("steps")
         if not isinstance(steps, list) or len(steps) > MAX_RECIPE_STEPS:
             raise CatalogFormatError(f"request_recipes.{rid}.steps must be a list up to {MAX_RECIPE_STEPS}")
@@ -391,7 +490,9 @@ class CatalogCodec:
         if pins is not None and not isinstance(pins, bool):
             raise CatalogFormatError(f"request_recipes.{rid}.pins_temperature must be a boolean")
         for step_index, step in enumerate(steps):
-            self._validate_recipe_step(rid, step_index, cast(dict, step))
+            if not isinstance(step, dict):
+                raise CatalogFormatError(f"request_recipes.{rid}.steps[{step_index}] must be an object")
+            self._validate_recipe_step(rid, step_index, step)
 
     def _validate_recipe_step(self, rid: str, index: int, step: Mapping[str, object]) -> None:
         when = step.get("when")
@@ -420,7 +521,9 @@ class CatalogCodec:
         if len(set_actions) + len(remove) > MAX_RECIPE_PATHS:
             raise CatalogFormatError(f"request_recipes.{rid}.steps[{index}] touches too many paths")
         for action in set_actions:
-            self._validate_recipe_action(rid, index, cast(dict, action))
+            if not isinstance(action, dict):
+                raise CatalogFormatError(f"request_recipes.{rid}.steps[{index}] set entries must be objects")
+            self._validate_recipe_action(rid, index, action)
         for path in remove:
             self._validate_recipe_path(rid, index, path)
 
@@ -496,9 +599,19 @@ class CatalogCodec:
         defaults_raw = raw["defaults"]
         effort_order = tuple(str(e) for e in defaults_raw.get("effort_order") or [])
         budgets_raw = defaults_raw.get("thinking_budgets") or {}
-        thinking_budgets = {str(effort): int(budget) for effort, budget in budgets_raw.items()}
+        thinking_budgets = MappingProxyType({str(effort): int(budget) for effort, budget in budgets_raw.items()})
+        dialects_raw = defaults_raw.get("reasoning_dialects") or {}
+        reasoning_dialects = MappingProxyType({str(dialect): str(recipe) for dialect, recipe in dialects_raw.items()})
+        wire_defaults_raw = defaults_raw.get("wire_defaults") or {}
+        wire_defaults = MappingProxyType({str(wire): cast(Mapping[str, object], _freeze(values)) for wire, values in wire_defaults_raw.items()})
         provider_policy = defaults_raw.get("provider_policy") or {}
-        defaults = CatalogDefaults(effort_order=effort_order, thinking_budgets=thinking_budgets, provider_policy=dict(provider_policy))
+        defaults = CatalogDefaults(
+            effort_order=effort_order,
+            thinking_budgets=thinking_budgets,
+            reasoning_dialects=reasoning_dialects,
+            wire_defaults=wire_defaults,
+            provider_policy=cast(Mapping[str, object], _freeze(provider_policy)),
+        )
 
         forms = tuple(
             ModelIdForm(
@@ -523,9 +636,10 @@ class CatalogCodec:
             schema_version=raw["schema_version"],
             version=raw["version"],
             updated_at=date.fromisoformat(raw["updated_at"]),
+            maintenance_scope=raw["maintenance_scope"],
             defaults=defaults,
             model_id_forms=forms,
-            request_recipes=recipes,
+            request_recipes=MappingProxyType(recipes),
             model_rules=model_rules,
             providers=providers,
             source=source,
@@ -560,7 +674,7 @@ class CatalogCodec:
         return PolicyRule(
             id=str(rule["id"]),
             selector=self._compile_selector(rule.get("match")),
-            set=dict(rule["set"]),
+            set=cast(Mapping[str, object], _freeze(rule["set"])),
             why=str(rule.get("why") or ""),
             evidence=tuple(str(e) for e in rule.get("evidence") or ()),
             notes=tuple(str(n) for n in rule.get("notes") or ()),
@@ -570,12 +684,12 @@ class CatalogCodec:
         tools = provider.get("builtin_tools_by_wire")
         builtin = None
         if tools is not None:
-            builtin = {str(wire): tuple(dict(entry) for entry in entries) for wire, entries in tools.items()}
+            builtin = MappingProxyType({str(wire): tuple(cast(Mapping[str, object], _freeze(entry)) for entry in entries) for wire, entries in tools.items()})
         return ProviderRule(
             id=str(provider["id"]),
             hosts=tuple(str(h) for h in provider["hosts"]),
-            model_rule_modes=dict(provider.get("model_rule_modes") or {}),
-            defaults=dict(provider.get("defaults") or {}),
+            model_rule_modes=cast(Mapping[str, str], _freeze(provider.get("model_rule_modes") or {})),
+            defaults=cast(Mapping[str, object], _freeze(provider.get("defaults") or {})),
             model_rules=tuple(self._compile_rule(rule) for rule in provider.get("model_rules") or ()),
             builtin_tools_by_wire=builtin,
             why=str(provider.get("why") or ""),
@@ -618,12 +732,12 @@ class CatalogCodec:
             if set(value) == {"source"} and isinstance(value["source"], str):
                 return RecipeValue("source", value["source"])
             if "case" in value:
-                return RecipeValue("case", value)
+                return RecipeValue("case", _freeze(value))
             if set(value) == {"lookup"}:
-                return RecipeValue("lookup", value["lookup"])
+                return RecipeValue("lookup", _freeze(value["lookup"]))
             if set(value) == {"bounded_budget"}:
-                return RecipeValue("bounded_budget", value["bounded_budget"])
-        return RecipeValue("literal", value)
+                return RecipeValue("bounded_budget", _freeze(value["bounded_budget"]))
+        return RecipeValue("literal", _freeze(value))
 
 
 def decode_bundled() -> CatalogSnapshot:

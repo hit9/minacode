@@ -12,7 +12,6 @@ from minacode.base import (
     ToolCall,
 )
 from minacode.config import (
-    ANTHROPIC_DEFAULT_MAX_TOKENS,
     Config,
     ProviderConfig,
 )
@@ -92,7 +91,7 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert "temperature" not in params
     assert params["extra_body"]["temperature"] == 0.2
-    assert params["max_tokens"] == ANTHROPIC_DEFAULT_MAX_TOKENS
+    assert params["max_tokens"] == resolve(s.config.provider).output_max_tokens
     # An unversioned gateway alias remains generic rather than guessing a thinking generation.
     assert "thinking" not in params
     assert params["messages"][0] == {"role": "user", "content": [{"type": "text", "text": "first\n\nsecond"}]}

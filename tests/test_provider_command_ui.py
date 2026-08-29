@@ -13,10 +13,11 @@ import minacode.cli.modals as modals_mod
 from minacode.base import (
     SELECTION_BACK,
 )
-from minacode.cli import COMMANDS, CommandCompleter, CommandLoop
+from minacode.cli import COMMANDS, QUEUE_SAFE_COMMANDS, CommandCompleter, CommandLoop
 from minacode.cli.commands import (
     SET_KEYS,
     api,
+    catalog_command,
     config,
     language_command,
     model,
@@ -33,7 +34,22 @@ from minacode.config import (
     REASONING_CHOICES,
     ProviderConfig,
 )
+from minacode.providers.sync import CatalogRuntime
 from minacode.tui import TUI_MODAL_PENDING, DiffViewState, TabbedViewState, TuiApp
+
+
+def test_catalog_command_reports_the_selected_snapshot_and_is_not_queue_safe(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
+
+    status = catalog_command(command_loop, "status")
+
+    assert "| version |" in status
+    assert "| updated |" in status
+    assert "| schema |" in status
+    assert "| scope |" in status
+    assert catalog_command(command_loop, "unknown") == "Usage: /catalog [status|sync]"
+    assert "/catalog" not in QUEUE_SAFE_COMMANDS
 
 
 def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
