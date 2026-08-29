@@ -35,7 +35,8 @@ and their resolved values.
 **`/catalog [status|sync]`** — Shows the active compatibility catalog, including its version,
 publication date, maintenance scope, source, bundled/cached versions, and the last sync result.
 `status` is an explicit alias for the default view. `sync` checks GitHub immediately instead of
-waiting for the automatic check, which runs at most once every 72 hours.
+waiting for the automatic check, which runs at most once every 72 hours. See
+[Compatibility catalog](catalog.md) for source selection, activation, and failure behavior.
 
 ## The code index
 

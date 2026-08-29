@@ -56,6 +56,7 @@ Working through a repository task in an interactive session.
 | **[Worker](worker.md)** | Delegate bounded tasks to a second in-process session on its own provider, with context kept until reset. |
 | **[Skills](skills.md)** | Load reusable instruction packs on demand. |
 | **[Configuration](configuration.md)** | Providers, runtime settings, and data location. |
+| **[Compatibility catalog](catalog.md)** | How documented provider/model exceptions are selected, updated, and overridden. |
 | **[Context](context.md)** | How the window is filled, summarized when it fills up, and reused by the provider's cache. |
 | **[Safety](safety.md)** | What minacode can reach, and how to keep that bounded. |
 | **[Troubleshooting](troubleshooting.md)** | What a symptom means and what to do about it. |
@@ -78,6 +79,7 @@ troubleshooting
 commands
 tools
 configuration
+catalog
 worker
 mcp
 skills

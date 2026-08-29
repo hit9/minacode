@@ -10,6 +10,14 @@ Find the symptom; the fix is beside it.
 | Authentication errors | `url`, `key`, and `model` must come from the same provider |
 | `compaction provider ... is missing` | The `[compaction]` entry needs its own url, key, and model. See [Compaction model](configuration.md#compaction-model) |
 
+## Compatibility catalog
+
+| Symptom | Fix |
+|---|---|
+| Provider behavior looks stale | Run `/catalog` to compare the active, bundled, and cached versions, then `/catalog sync` to check immediately. See [Compatibility catalog](catalog.md) |
+| `/catalog sync` reports a network or validation error | The current catalog stays active. Check the connection or reported document error and retry later; no request policy was partially applied |
+| `/catalog` reports an invalid cache or same-version conflict | The bundled copy remains active. Upgrade minacode for a newer bundled copy, or wait for a higher valid catalog version |
+
 ## Model calls
 
 | Symptom | Fix |

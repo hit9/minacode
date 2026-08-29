@@ -26,7 +26,8 @@ model = "deepseek-v4-flash"
 
 These three fields are enough for most endpoints. minacode selects the usual protocol and applies
 only necessary, documented compatibility adjustments. Explicit settings always take precedence.
-Use `/config` to inspect the result.
+Use `/config` to inspect the result. [Compatibility catalog](catalog.md) explains which provider
+and model facts minacode maintains, how they update, and what happens to unknown endpoints.
 
 Define additional blocks to use more providers. Switch between them with `/provider [NAME]`, and
 switch the active model with `/model [MODEL]`.
