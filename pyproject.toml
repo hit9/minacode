@@ -31,11 +31,16 @@ classifiers = [
 ]
 
 dependencies = [
-    "anthropic>=0.64.0",
+    # anthropic 1.x and openai 3.x both moved their HTTP client to httpx2, which stops installing
+    # certifi and verifies TLS against the OS trust store instead (SSL_CERT_FILE/SSL_CERT_DIR
+    # override it). The floors pin that migration rather than leaving it to the resolver: an older
+    # pair would land on plain httpx, a combination retryable_error's transport-error matching is
+    # tested against but the rest of the tree no longer is.
+    "anthropic>=1.0.0",
     "code-symbol-index>=0.5.1",
     "json-repair",
     "fastmcp-slim[client]>=3,<4",
-    "openai>=2.37.0",
+    "openai>=3.0.0",
     "pathspec>=1.0",
     "pillow>=11.0",
     # 3.0.53 fixed Application.invalidate() so it is safe to call from any thread; older versions

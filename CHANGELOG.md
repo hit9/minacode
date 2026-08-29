@@ -99,6 +99,14 @@
   backward compatibility and both resolve to `high` server-side, so they were two menu entries
   that did the same thing as a third.
 
+- minacode now requires `openai >= 3.0.0` and `anthropic >= 1.0.0`. Both SDKs moved their HTTP
+  client to httpx2, which no longer installs `certifi` and verifies TLS against the operating
+  system's trust store instead. Nothing changes on a normal desktop install, but a minimal
+  container without system CA certificates, or a corporate proxy presenting its own certificate,
+  can now fail to connect where it previously succeeded — install the system CA bundle, or point
+  `SSL_CERT_FILE` or `SSL_CERT_DIR` at the bundle to use. The floors are pinned rather than left
+  to the resolver so every install lands on the httpx2 pair that minacode is tested against.
+
 ### Fixed
 
 - Restoring a session through the default library path validates provider settings against the
@@ -114,6 +122,12 @@
 
 - Responses requests keep configured `extra_body` extensions when a catalog recipe also writes
   under `extra_body`; catalog-managed fields still take precedence on direct conflicts.
+
+- A connection dropped mid-stream is retried again. The provider SDKs re-raise transport failures
+  from their streaming reads unwrapped, and their move to httpx2 put those errors in a hierarchy
+  that shares no base class with the httpx one the retry policy matched, so a dropped connection
+  stopped counting as transient and surfaced on the first attempt. Both httpx generations are now
+  matched, since the MCP client transports still raise the original ones.
 
 ## 0.34.2 - 2026-08-26
 

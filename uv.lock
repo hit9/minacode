@@ -810,11 +810,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.64.0" },
+    { name = "anthropic", specifier = ">=1.0.0" },
     { name = "code-symbol-index", specifier = ">=0.5.1" },
     { name = "fastmcp-slim", extras = ["client"], specifier = ">=3,<4" },
     { name = "json-repair" },
-    { name = "openai", specifier = ">=2.37.0" },
+    { name = "openai", specifier = ">=3.0.0" },
     { name = "pathspec", specifier = ">=1.0" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.53" },

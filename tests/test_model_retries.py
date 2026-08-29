@@ -555,6 +555,20 @@ def test_streamed_httpx_read_error_is_retryable():
     assert resilience.retryable_error(error) is True
 
 
+@pytest.mark.parametrize("module_name", ["httpx", "httpx2"])
+def test_streamed_transport_error_is_retryable_for_every_httpx_generation(module_name):
+    """Transport errors are matched by type across both httpx generations. openai 3.x and
+    anthropic 1.x raise httpx2's hierarchy, which shares no base class with httpx's, while the
+    MCP client transports still raise httpx's, so matching only one generation silently drops the
+    other's dropped-connection errors out of the retry path. The message deliberately carries no
+    retryable wording, so this pins the isinstance branch rather than the error-text fallback."""
+    module = pytest.importorskip(module_name)
+    cause = module.ReadError("stream ended")
+    error = ModelError(str(cause))
+    error.__cause__ = cause
+    assert resilience.retryable_error(error) is True
+
+
 def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
     """A streaming httpx transport error (raised unwrapped by the SDK's Stream.__stream__ and
     wrapped by call_client as ModelError(cause)) is retried to success, not surfaced on the

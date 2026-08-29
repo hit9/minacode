@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import email.utils
+import functools
+import importlib
 import random
 import re
 from datetime import UTC, datetime
@@ -61,6 +63,22 @@ def _billing_marker_hit(text: str) -> bool:
     return any(marker in text for marker in _BILLING_MARKERS)
 
 
+@functools.cache
+def _transport_errors() -> tuple[type[BaseException], ...]:
+    """Transport error base classes of every httpx generation present in the environment.
+
+    The provider SDKs moved to httpx2 (openai 3.x, anthropic 1.x) while the MCP client transports
+    still speak plain httpx, so both generations run in one process. They are separate exception
+    hierarchies — httpx2.TransportError is not a subclass of httpx.TransportError — so matching
+    only one silently drops the other's dropped-connection errors out of the retry path. Either
+    import may be absent once one side of the migration finishes; the tuple just gets shorter."""
+    errors: list[type[BaseException]] = []
+    for name in ("httpx", "httpx2"):
+        with contextlib.suppress(ImportError):
+            errors.append(importlib.import_module(name).TransportError)
+    return tuple(errors)
+
+
 def retryable_error(error: Exception) -> bool:
     """Whether the error is transient enough to retry, minus the deterministic and permanent classes.
 
@@ -72,7 +90,6 @@ def retryable_error(error: Exception) -> bool:
     """
     # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
     import anthropic
-    import httpx
     import openai
 
     # A truncated generation is deterministic: the same request hits the same output cap again.
@@ -109,10 +126,11 @@ def retryable_error(error: Exception) -> bool:
 
     # Streaming reads surface httpx transport errors unwrapped: the provider SDKs' Stream.__stream__
     # iterates the response directly and re-raises httpx failures (a dropped connection mid-stream is
-    # httpx.ReadError, an interrupted chunked body is httpx.RemoteProtocolError) rather than wrapping
-    # them as APIConnectionError. They're the same class of transient failure. httpx transport errors
-    # don't inherit OSError, so the isinstance above misses them.
-    if isinstance(cause, httpx.TransportError):
+    # ReadError, an interrupted chunked body is RemoteProtocolError) rather than wrapping them as
+    # APIConnectionError. They're the same class of transient failure. httpx transport errors don't
+    # inherit OSError, so the isinstance above misses them. See _transport_errors for why this
+    # matches both httpx generations rather than the one the SDKs happen to use today.
+    if isinstance(cause, _transport_errors()):
         return True
 
     # Fallback: parse status codes embedded in the error text or cause attributes.
