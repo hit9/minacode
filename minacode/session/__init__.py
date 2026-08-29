@@ -587,6 +587,16 @@ class Session:
         cwd: str = "",
         catalog: CatalogRuntime | None = None,
     ) -> Session:
+        if config is None:
+            data = ConfigFile.load()
+            catalog = catalog or CatalogRuntime(Config.data_dir_from(data))
+            config = Config.from_dict(data, policy=catalog.policy)
+            if settings is None:
+                settings = RuntimeSettings.from_dict(data)
+        else:
+            catalog = catalog or CatalogRuntime(config.data_dir)
+        if settings is None:
+            settings = RuntimeSettings()
         session = SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=cwd)
         session.catalog = catalog
         bootstrap_features(session)

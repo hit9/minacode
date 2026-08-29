@@ -39,15 +39,18 @@
 - The explanation under `/reason` uses a readable informational color instead of the disabled-row
   gray, while keeping the selected effort visually dominant.
 
-- Kimi K3 and K2.7 Code are no longer routed as text-only. Their documented endpoints accept
-  image input, so attachments now stay on the selected model instead of being diverted to the
-  image fallback. Kimi K2 remains text-only.
+- Kimi K3 and K2.7 Code are no longer routed as text-only on either product: the open-platform
+  IDs (`kimi-k3`, `kimi-k2.7-code`) and Kimi Code IDs (`k3`, `kimi-for-coding`, including their
+  suffixed variants) all document image input. Attachments now stay on the selected model instead
+  of being diverted to the image fallback. Kimi K2 remains text-only.
 
 - A well-known model now behaves the same wherever it is served. How a model takes reasoning — the
   thinking format, the replay rule, the effort scale — is a fact about the model, so it is matched
   on the model name and applies on every endpoint, including one minacode has never seen. Until
   now that knowledge was reachable only through a recognized host, so `deepseek-v4-flash` on a
   gateway or a self-hosted proxy was treated as an unknown model and sent generic requests.
+  Catalog-declared `vendor/model` IDs now use the model suffix for these rules too, including an
+  endpoint's model-based `api = "auto"` routing.
   Endpoint facts (wire, caching, strict schemas, provider-side tools) still come from the host, and
   a gateway that re-encodes reasoning into its own format — OpenRouter — keeps its own spelling.
 
@@ -91,6 +94,10 @@
   that did the same thing as a third.
 
 ### Fixed
+
+- Restoring a session through the default library path validates provider settings against the
+  active bundled-or-cached catalog, so a newer cached dialect or effort is not rejected using the
+  older bundled vocabulary before that same cached catalog becomes active.
 
 - Synced catalogs now distinguish image-capable (`auto`) models from text-only models and apply
   provider-local image rules with the same precedence as every other compatibility setting.

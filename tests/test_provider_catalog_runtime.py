@@ -7,11 +7,12 @@ from urllib.error import HTTPError, URLError
 import pytest
 
 from minacode.base import ConfigError
-from minacode.config import Config, ProviderConfig
+from minacode.config import Config, ConfigFile, ProviderConfig
 from minacode.providers.catalog import CatalogCodec, decode_bundled
 from minacode.providers.compat import ProviderPolicy
 from minacode.providers.schema import CatalogFormatError, CatalogSyncError, CatalogVersionConflict
 from minacode.providers.sync import CATALOG_URL, CatalogRepository, CatalogRuntime
+from minacode.session import Session
 
 CATALOG_PATH = Path(__file__).parents[1] / "minacode" / "providers" / "catalog.json"
 
@@ -165,6 +166,31 @@ def test_stale_explicit_dialect_is_a_config_error_not_a_key_error():
 
     with pytest.raises(ConfigError, match="is not supported by catalog"):
         policy.resolve(config)
+
+
+def test_snapshot_default_load_validates_config_against_the_active_cached_catalog(tmp_path, monkeypatch):
+    data = catalog_data()
+    data["version"] += 1
+    data["defaults"]["reasoning_dialects"]["future-dialect"] = "off"
+    repository = CatalogRepository(str(tmp_path))
+    os.makedirs(repository.catalog_dir)
+    Path(repository.cache_path).write_bytes(catalog_payload(data))
+
+    saved = Session(cwd=str(tmp_path), config=Config(data_dir=str(tmp_path)))
+    saved.messages.append({"role": "user", "content": "before catalog update"})
+    saved.save_snapshot()
+    raw_config = {
+        "paths": {"data_dir": str(tmp_path)},
+        "provider": {"model": "future-model", "chat_reasoning": "future-dialect"},
+    }
+    monkeypatch.setattr(ConfigFile, "load", classmethod(lambda _cls, _path=None: raw_config))
+
+    resumed = Session.load_snapshot(saved.uid, cwd=str(tmp_path))
+
+    assert resumed.config.provider.chat_reasoning == "future-dialect"
+    assert resumed.catalog is not None
+    assert resumed.catalog.source == "cached"
+    assert resumed.catalog.snapshot.version == data["version"]
 
 
 def test_provider_default_reasoning_levels_keep_their_provenance():

@@ -89,6 +89,13 @@ def run_with(s, model):
     [
         ("deepseek-chat", True),
         ("glm-5", True),
+        # Regression: these documented image-capable families must remain on the main route.
+        ("kimi-k3", False),
+        ("kimi-k2.7-code", False),
+        ("k3", False),
+        ("k3-256k", False),
+        ("kimi-for-coding", False),
+        ("kimi-for-coding-highspeed", False),
         ("deepseek-vl", False),
         ("glm-5v", False),
         ("", False),

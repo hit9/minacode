@@ -20,11 +20,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from minacode.base import SESSION_EVENT_KEY, TOOL_OUTPUT_ASSET_SUFFIX, Json, MinacodeError
-from minacode.config import Config, ConfigFile, RuntimeSettings
 from minacode.image import IMAGE_REFS_KEY, ImageRef
 from minacode.session.codec import SessionSnapshotCodec
 
 if TYPE_CHECKING:
+    from minacode.config import Config, RuntimeSettings
     from minacode.session import Session
 
 
@@ -374,13 +374,9 @@ class SessionSnapshotStore:
             os.unlink(os.path.join(directory, "latest"))
 
     @classmethod
-    def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> Session:
+    def load(cls, uid: str, config: Config, settings: RuntimeSettings, cwd: str = "") -> Session:
         from minacode.session import QueuedInput, Session, local_timestamp
 
-        if config is None:
-            config = Config.from_dict(ConfigFile.load())
-        if settings is None:
-            settings = RuntimeSettings()
         cwd = cwd or os.getcwd()
         uid = cls.resolve_uid(uid, config.data_dir, cwd)
         path = cls.find_session_path(config.data_dir, uid)
