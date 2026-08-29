@@ -13,12 +13,24 @@ from typing import TYPE_CHECKING, Any, Protocol
 import minacode.model.anthropic as anthropic_module
 import minacode.model.chat as chat_module
 import minacode.model.responses as responses_module
-from minacode.base import ANTHROPIC_CONTENT_KEY, PROVIDER_ORIGIN_KEY, Billing, Json, ModelError, Text, ToolCall
+from minacode.base import PROVIDER_ORIGIN_KEY, Billing, Json, ModelError, Text, ToolCall
 from minacode.config import ProviderConfig
-from minacode.image import ImageInputs
 
 if TYPE_CHECKING:
     from minacode.model.client import ModelClient
+
+
+def omit_request_fields(params: Json, names: tuple[str, ...]) -> Json:
+    """Remove configured endpoint-rejected fields from a completed wire request, in place."""
+
+    extra = params.get("extra_body")
+    for name in names:
+        params.pop(name, None)
+        if isinstance(extra, dict):
+            extra.pop(name, None)
+    if isinstance(extra, dict) and not extra:
+        params.pop("extra_body", None)
+    return params
 
 
 class WireProtocol(Protocol):
@@ -82,7 +94,7 @@ class ChatWire:
             derive_cache_key=self._client.prompt_cache_key,
             apply_provider_params=self._client.apply_provider_params,
         )
-        provider.omit_from_body(params)
+        omit_request_fields(params, provider.omit_body)
         client = self._client.client(provider=provider)
         if stream:
             message, usage, finish_reason = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
@@ -167,7 +179,7 @@ class ResponsesWire:
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         params: Json = {
             "model": provider.model,
-            "input": self.messages(Text.value(messages), self._client.provider_origin(provider)),
+            "input": self.messages(Text.value(messages), self._client.provider_origin(provider), provider=provider),
             "stream": stream,
             # Stateless by design, not to save anything: the wire can retain the conversation and
             # let a later request name it by id, but session messages are the source of truth, a
@@ -197,7 +209,7 @@ class ResponsesWire:
         self._client.apply_request(params, provider, resolved, wire="responses")
         if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
-        provider.omit_from_body(params)
+        omit_request_fields(params, provider.omit_body)
         client = self._client.client(provider=provider)
         if stream:
             result = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
@@ -221,7 +233,9 @@ class ResponsesWire:
             report_builtin_call=self._client.report_builtin_call,
         )
 
-    def messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
+    def messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None, provider: ProviderConfig | None = None) -> list[Json]:
+        provider = provider if provider is not None else self._client.session.config.provider
+        resolved = self._client.resolved(provider)
         text_only = self._client.session.image_route.is_text_only() if text_only is None else text_only
         return responses_module.responses_input(
             messages,
@@ -229,6 +243,8 @@ class ResponsesWire:
             provider_origin=self._client.provider_origin,
             replayable_echo=self._client.replayable_echo,
             images=self._client.session.images,
+            reasoning_history=resolved.reasoning_history,
+            latest_user_position=self._client.latest_user_position,
             text_only=text_only,
         )
 
@@ -271,7 +287,7 @@ class AnthropicWire:
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
         messages = Text.value(messages)
-        params = provider.omit_from_body(self.params(messages, tools, provider))
+        params = omit_request_fields(self.params(messages, tools, provider), provider.omit_body)
         client = self._client.anthropic_client(provider=provider)
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         if stream:
@@ -308,46 +324,28 @@ class AnthropicWire:
             images=self._client.session.images,
             builtin_tools=self._client.builtin_tools,
             apply_request=lambda params, entry, resolved: self._client.apply_request(params, entry, resolved, wire="anthropic"),
+            latest_user_position=self._client.latest_user_position,
             text_only=self._client.session.image_route.is_text_only(),
         )
 
     def messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
         text_only = self._client.session.image_route.is_text_only() if text_only is None else text_only
+        resolved = self._client.resolved(self._client.session.config.provider)
         return anthropic_module.anthropic_messages(
             messages,
             origin,
             provider_origin=self._client.provider_origin,
             replayable_echo=self._client.replayable_echo,
             images=self._client.session.images,
+            reasoning_history=resolved.reasoning_history,
+            latest_user_position=self._client.latest_user_position,
             text_only=text_only,
         )
 
     def estimation_payload(self, messages: list[Json], tools: list[Json] | None, builtin: list[Json]) -> Json:
         """The wire-shaped payload for one token estimate, matching what request() would send."""
         system = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
-        estimated_messages = messages
-        resolved = self._client.resolved(self._client.session.config.provider)
-        if resolved.chat_reasoning_history != "all":
-            latest_user = max(
-                (index for index, message in enumerate(messages) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
-                default=-1,
-            )
-            active_assistants = [index for index, message in enumerate(messages) if index > latest_user and message.get("role") == "assistant"]
-            keep_from = (
-                latest_user
-                if active_assistants
-                else max((index for index, message in enumerate(messages) if message.get("role") == "assistant"), default=len(messages))
-            )
-            estimated_messages = []
-            for index, message in enumerate(messages):
-                estimated = dict(message)
-                saved = estimated.get(ANTHROPIC_CONTENT_KEY)
-                if index < keep_from and isinstance(saved, list):
-                    estimated[ANTHROPIC_CONTENT_KEY] = [
-                        block for block in saved if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking")
-                    ]
-                estimated_messages.append(estimated)
-        payload: Json = {"system": system, "messages": self.messages(Text.value(estimated_messages))}
+        payload: Json = {"system": system, "messages": self.messages(Text.value(messages))}
         if request_tools := [*anthropic_module.anthropic_tool_schemas(tools or []), *builtin]:
             payload["tools"] = request_tools
         return payload

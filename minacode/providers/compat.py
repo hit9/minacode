@@ -85,7 +85,7 @@ class ResolvedProvider:
     base_url: str
     host: str
     chat_reasoning: str
-    chat_reasoning_history: str
+    reasoning_history: str
     reasoning_effort: str | None
     responses_reasoning: bool
     suppress_temperature: bool
@@ -490,10 +490,19 @@ class ProviderPolicy:
             return tuple(levels)
         return self._effort_order
 
+    def reasoning_values(self, config: PolicyConfig, model: str = "") -> tuple[str, ...]:
+        """Valid stored effort names for one configured model.
+
+        This vocabulary is deliberately wider than the picker: a normalized catalog effort may
+        survive a model switch long enough to be realigned, while a provider-defined name is valid
+        only for the model declaration that introduced it.
+        """
+
+        model = (model or str(getattr(config, "model", ""))).lower()
+        return tuple(dict.fromkeys(("off", *self._effort_order, *config.declared_levels(model))))
+
     def reasoning_mandatory(self, config: PolicyConfig, model: str = "") -> bool:
         model = (model or str(getattr(config, "model", ""))).lower()
-        if config.declared_levels(model):
-            return False
         return bool(self._resolver.field_value(self._provider_for(config), model, "reasoning.mandatory"))
 
     def reasoning_choices(self, config: PolicyConfig, model: str = "") -> tuple[str, ...]:
@@ -504,7 +513,7 @@ class ProviderPolicy:
         """
 
         model = (model or str(getattr(config, "model", ""))).lower()
-        mandatory = not config.declared_levels(model) and self.reasoning_mandatory(config, model)
+        mandatory = self.reasoning_mandatory(config, model)
         return self.supported_efforts(config, model) if mandatory else ("off", *self.supported_efforts(config, model))
 
     def effort_source(self, config: PolicyConfig, model: str = "") -> tuple[str, str]:
@@ -601,7 +610,7 @@ class ProviderPolicy:
 
         history = self._resolver.field_value(provider, model, "history.reasoning")
         configured_history = str(getattr(config, "reasoning_history", "auto"))
-        chat_reasoning_history = configured_history if configured_history != "auto" else str(history or "all")
+        reasoning_history = configured_history if configured_history != "auto" else str(history or "all")
         wire_defaults = self.snapshot.defaults.wire_defaults.get(api, {})
         configured_max_tokens = getattr(config, "max_tokens", 0)
         if isinstance(configured_max_tokens, bool) or not isinstance(configured_max_tokens, int):
@@ -616,7 +625,7 @@ class ProviderPolicy:
             base_url=url,
             host=host,
             chat_reasoning=chat_reasoning,
-            chat_reasoning_history=chat_reasoning_history,
+            reasoning_history=reasoning_history,
             reasoning_effort=reasoning_effort,
             responses_reasoning=responses_reasoning,
             suppress_temperature=suppress_temperature,

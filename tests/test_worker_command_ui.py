@@ -1,4 +1,5 @@
 """worker command ui (split from tests/test_command_ui.py)."""
+
 from types import SimpleNamespace
 
 from test_command_ui import ModalHarness
@@ -56,6 +57,7 @@ def test_worker_command_completion(tmp_path):
     api_texts = [c.text for c in completer.get_completions(Document("/worker api "), None)]
     assert set(api_texts) == set(PROVIDER_API_CHOICES) | {"default"}
 
+
 def test_worker_api_subcommand_sets_clears_and_rejects(tmp_path):
     command_loop = loop(tmp_path)
 
@@ -69,6 +71,7 @@ def test_worker_api_subcommand_sets_clears_and_rejects(tmp_path):
     assert command_loop.session.config.worker_api == ""
 
     assert worker_command(command_loop, "api chat responses") == "Usage: /worker api [API]"
+
 
 def test_worker_api_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -91,10 +94,12 @@ def test_worker_api_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeyp
     assert worker_command(command_loop, "api") == "worker api: (inherit)"
     assert command_loop.session.config.worker_api == ""
 
+
 def test_worker_status_line_reports_worker_config(tmp_path):
     command_loop = loop(tmp_path)
 
     assert "worker: no active session" in worker_command(command_loop, "")
+
 
 def test_run_worker_config_drives_pickers_until_done(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -127,6 +132,7 @@ def test_run_worker_config_drives_pickers_until_done(tmp_path, monkeypatch):
         monkeypatch.setattr(worker_mod, "select_choice", lambda *a, value=value, **k: value)
         WorkerFlow(command_loop).run_worker_config()
     assert driven == ["provider", "api"]
+
 
 def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -161,6 +167,7 @@ def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path, mo
     assert cleared == "worker provider: off"  # picking "off" clears without cascading
     assert command_loop.session.config.worker_provider == ""
 
+
 def test_worker_model_picker_sets_the_override_without_the_model_chain(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -185,6 +192,7 @@ def test_worker_model_picker_sets_the_override_without_the_model_chain(tmp_path,
     assert command_loop.session.config.worker_model == "m-b"
     assert result == "Set worker.model = m-b"
 
+
 def test_worker_reason_picker_covers_efforts_and_default(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -201,6 +209,28 @@ def test_worker_reason_picker_covers_efforts_and_default(tmp_path, monkeypatch):
     assert command_loop.session.config.worker_reasoning == "low"
     assert result == "Set worker.reasoning = low"
 
+
+def test_worker_reason_picker_uses_the_effective_models_declared_scale(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    command_loop.session.config.providers["custom"] = ProviderConfig.from_dict(
+        {
+            "model": "main",
+            "models": {"worker-*": {"reasoning": ["cheap", "deep"]}},
+        }
+    )
+    command_loop.session.config.worker_provider = "custom"
+    command_loop.session.config.worker_model = "worker-small"
+
+    def select(_loop, _title, choices, **_kwargs):
+        assert choices == ("off", "cheap", "deep", "default")
+        return "deep"
+
+    monkeypatch.setattr(worker_mod, "select_choice", select)
+
+    assert worker_command(command_loop, "reason") == "Set worker.reasoning = deep"
+
+
 def test_worker_pickers_return_no_change_on_back(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -216,6 +246,7 @@ def test_worker_pickers_return_no_change_on_back(tmp_path, monkeypatch):
     assert command_loop.session.config.worker_model == "m-x"
     assert command_loop.session.config.worker_reasoning == "high"
 
+
 def test_worker_model_and_reason_pickers_clear_via_default(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -227,6 +258,7 @@ def test_worker_model_and_reason_pickers_clear_via_default(tmp_path, monkeypatch
     assert worker_command(command_loop, "reason") == "worker reasoning: (inherit)"
     assert command_loop.session.config.worker_model == ""
     assert command_loop.session.config.worker_reasoning == ""
+
 
 def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -260,6 +292,7 @@ def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path, monk
     assert worker.config.providers["fast"].model == "fast-mini"
     assert worker.config.providers["fast"].reasoning == "high"
 
+
 def test_worker_provider_cascade_aborts_at_model_stage_keeping_earlier_stages(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -279,6 +312,7 @@ def test_worker_provider_cascade_aborts_at_model_stage_keeping_earlier_stages(tm
     assert "worker model: unchanged" in result
     assert "worker reasoning" not in result
 
+
 def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -296,6 +330,7 @@ def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_path, 
     assert "Set worker.model = fast-model" in result
     assert "worker reasoning: unchanged" in result
 
+
 def test_worker_provider_typed_form_does_not_cascade(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.session.config.providers["alt"] = ProviderConfig(model="m")
@@ -307,6 +342,7 @@ def test_worker_provider_typed_form_does_not_cascade(tmp_path, monkeypatch):
     assert command_loop.session.config.worker_provider == "alt"
     assert command_loop.session.config.worker_model == ""
     assert command_loop.session.config.worker_reasoning == ""
+
 
 def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_path):
     """Ctrl-O is the only door to a script under yolo, where no prompt ever offered `v`: the entry
@@ -332,6 +368,7 @@ def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_pa
     assert "── result " in viewer[-1]
     assert "counted 30 rows" in viewer[-1]
 
+
 def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.store_tool_result("ToolScript", [{"action": "describe", "tools": ["Read"]}], "Read\njson:    no")
@@ -341,6 +378,7 @@ def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
     tool_output_viewer(command_loop)
 
     assert modal.frames == []
+
 
 def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_path):
     """The log line clips a failure to one row. Here the whole traceback sits under the numbered
@@ -358,6 +396,7 @@ def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_path):
     assert " 2  print(rows[2])" in viewer
     assert "IndexError: list index out of range" in viewer
     assert 'File "<toolscript>", line 2' in viewer
+
 
 def test_tool_output_viewer_shows_the_whole_command_not_the_clipped_log_line(tmp_path):
     """The transcript row collapses and clips a command at 200 characters. A viewer opened to see

@@ -1,4 +1,5 @@
 """`omit_body`: request fields an endpoint rejects, dropped on the way out."""
+
 import json
 
 import pytest
@@ -7,6 +8,7 @@ from model_harness import _AnthropicMockClientFactory, _MockClientFactory, _sess
 from minacode.base import ConfigError
 from minacode.config import ProviderConfig
 from minacode.model import ModelClient
+from minacode.model.protocol import omit_request_fields
 
 CHAT_BODY = {
     "id": "c",
@@ -36,16 +38,25 @@ def test_a_named_field_never_reaches_the_chat_request(tmp_path, monkeypatch):
     assert "reasoning_effort" not in body
     assert body["messages"] and body["model"] == "gpt-5.5"
 
+
 def test_a_named_field_never_reaches_the_anthropic_request(tmp_path, monkeypatch):
     s = _session(tmp_path, url="https://api.anthropic.com", api="anthropic", model="claude-sonnet-4-6", stream=False, reasoning="off", temperature=0.2)
     body = sent_body(ModelClient(s), _AnthropicMockClientFactory([(200, ANTHROPIC_BODY)]), monkeypatch, attribute="anthropic_client")
     assert body["temperature"] == 0.2
 
     s = _session(
-        tmp_path, url="https://api.anthropic.com", api="anthropic", model="claude-sonnet-4-6", stream=False, reasoning="off", temperature=0.2, omit_body=("temperature",)
+        tmp_path,
+        url="https://api.anthropic.com",
+        api="anthropic",
+        model="claude-sonnet-4-6",
+        stream=False,
+        reasoning="off",
+        temperature=0.2,
+        omit_body=("temperature",),
     )
     body = sent_body(ModelClient(s), _AnthropicMockClientFactory([(200, ANTHROPIC_BODY)]), monkeypatch, attribute="anthropic_client")
     assert "temperature" not in body
+
 
 def test_a_field_is_dropped_wherever_the_request_puts_it(tmp_path, monkeypatch):
     """A provider's 400 names the field, not the place minacode happened to put it, so a name
@@ -56,24 +67,30 @@ def test_a_field_is_dropped_wherever_the_request_puts_it(tmp_path, monkeypatch):
     assert "enable_search" not in body
     assert "extra_body" not in body
 
+
 def test_omitting_the_last_extra_body_field_leaves_no_empty_object():
     provider = ProviderConfig(omit_body=("enable_search",))
-    assert provider.omit_from_body({"model": "m", "extra_body": {"enable_search": True}}) == {"model": "m"}
+    assert omit_request_fields({"model": "m", "extra_body": {"enable_search": True}}, provider.omit_body) == {"model": "m"}
 
-    kept = ProviderConfig(omit_body=("enable_search",)).omit_from_body({"model": "m", "extra_body": {"enable_search": True, "keep": 1}})
+    kept = omit_request_fields(
+        {"model": "m", "extra_body": {"enable_search": True, "keep": 1}},
+        ProviderConfig(omit_body=("enable_search",)).omit_body,
+    )
     assert kept == {"model": "m", "extra_body": {"keep": 1}}
+
 
 def test_the_fields_carrying_the_request_itself_are_refused():
     """Dropping one of these does not adjust a request, it empties it, and the provider error
     would point anywhere but at this setting."""
-    for name in ("model", "messages", "input"):
+    for name in ("model", "messages", "input", "stream"):
         with pytest.raises(ConfigError):
             ProviderConfig.from_dict({"omit_body": [name]})
 
     assert ProviderConfig.from_dict({}).omit_body == ()
     assert ProviderConfig.from_dict({"omit_body": "reasoning_effort, stream_options"}).omit_body == ("reasoning_effort", "stream_options")
 
+
 def test_an_unsent_field_is_not_an_error():
     """Named fields are what an endpoint rejects, not what minacode promises to send: a name that
     never appears must stay harmless as the request shape changes."""
-    assert ProviderConfig(omit_body=("nothing_like_this",)).omit_from_body({"model": "m"}) == {"model": "m"}
+    assert omit_request_fields({"model": "m"}, ProviderConfig(omit_body=("nothing_like_this",)).omit_body) == {"model": "m"}

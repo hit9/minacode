@@ -321,6 +321,7 @@ def test_anthropic_replays_thinking_according_to_model_generation(tmp_path, mode
     prior = {
         "role": "assistant",
         "content": "checking",
+        "tool_calls": [{"id": "tu", "type": "function", "function": {"name": "Read", "arguments": '{"path":"a"}'}}],
         "_anthropic_content": [
             {"type": "thinking", "thinking": "R" * 800, "signature": "signature"},
             {"type": "text", "text": "checking"},
@@ -348,9 +349,9 @@ def test_anthropic_replays_thinking_according_to_model_generation(tmp_path, mode
         *history[2:],
     ]
 
-    # Always return complete blocks on the wire; older models filter all but the latest turn
-    # server-side, which the context estimate mirrors without mutating the request.
-    assert {"type": "thinking", "thinking": "R" * 800, "signature": "signature"} in blocks
+    # History policy governs the actual request and its token estimate. Keeping these two views
+    # aligned prevents compaction from budgeting for a different payload than the one sent.
+    assert ({"type": "thinking", "thinking": "R" * 800, "signature": "signature"} in blocks) is keeps_prior
     assert {"type": "tool_use", "id": "tu", "name": "Read", "input": {"path": "a"}} in blocks
     assert (tokens > client.estimated_request_tokens(without_old_thinking) + 150) is keeps_prior
 
@@ -362,7 +363,12 @@ def test_anthropic_always_replays_current_tool_loop_thinking(tmp_path):
     blocks = [{"type": "thinking", "thinking": "reasoning", "signature": "signature"}, {"type": "tool_use", "id": "tu", "name": "Read", "input": {}}]
     history = [
         {"role": "user", "content": "first"},
-        {"role": "assistant", "content": None, "_anthropic_content": blocks},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "tu", "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
+            "_anthropic_content": blocks,
+        },
         {"role": "tool", "tool_call_id": "tu", "content": "done"},
     ]
 

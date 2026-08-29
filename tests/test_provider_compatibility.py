@@ -120,7 +120,7 @@ def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
         }
     )
     assert resolve(provider).chat_reasoning == "reasoning_effort"
-    assert resolve(provider).chat_reasoning_history == "current_turn"
+    assert resolve(provider).reasoning_history == "current_turn"
 
     # Qwen3.8-Max documents low/medium/xhigh; the two levels it has no spelling for fold to the
     # nearest one it does, which for both is xhigh.
@@ -149,7 +149,7 @@ def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
     # reasoning is a fact about it, so the format follows the model name rather than the domain.
     provider.url = "https://notaliyuncs.com/compatible-mode/v1"
     assert resolve(provider).chat_reasoning == "reasoning_effort"
-    assert resolve(provider).chat_reasoning_history == "all"
+    assert resolve(provider).reasoning_history == "all"
 
     provider.model = "other-model"
     assert resolve(provider).chat_reasoning == "off"
@@ -160,7 +160,7 @@ def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
     resolved = resolve(provider)
     assert resolved.chat_reasoning == "reasoning_effort"
     assert resolved.prompt_cache_key is True
-    assert resolved.chat_reasoning_history == "all"
+    assert resolved.reasoning_history == "all"
     assert client.prompt_cache_key(provider, None).startswith("minacode-")
 
     params = {}
@@ -178,7 +178,7 @@ def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
     assert params == {"reasoning_effort": "low"}
 
     provider.model = "kimi-k2.6"
-    assert resolve(provider).chat_reasoning_history == "current_turn"
+    assert resolve(provider).reasoning_history == "current_turn"
     params = {}
     client.apply_provider_params(params, provider)
     assert params == {"extra_body": {"thinking": {"type": "disabled"}}}
@@ -202,7 +202,7 @@ def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
     resolved = resolve(provider)
     assert resolved.chat_reasoning == "reasoning_effort"
     assert resolved.prompt_cache_key is True
-    assert resolved.chat_reasoning_history == "all"
+    assert resolved.reasoning_history == "all"
     assert client.prompt_cache_key(provider, None).startswith("minacode-")
 
     params = {}
@@ -235,7 +235,7 @@ def test_zai_regional_endpoints_share_documented_reasoning_effort(url, reasoning
     resolved = resolve(provider)
     assert resolved.chat_reasoning == "thinking_effort"
     assert resolved.prompt_cache_key is False
-    assert resolved.chat_reasoning_history == "current_turn"
+    assert resolved.reasoning_history == "current_turn"
     assert client.prompt_cache_key(provider, None) == ""
 
     params = {}

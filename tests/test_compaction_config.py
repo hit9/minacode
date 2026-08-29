@@ -370,7 +370,7 @@ def test_deepseek_tool_call_replay_travels_with_the_model_not_the_endpoint():
     direct = ProviderConfig.from_dict({"url": "https://api.deepseek.com/v1", "model": "deepseek-v4-chat"})
     gateway = ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "deepseek-v4-chat"})
 
-    assert resolve(direct).chat_reasoning_history == "tool_calls"
-    assert resolve(gateway).chat_reasoning_history == "tool_calls"
+    assert resolve(direct).reasoning_history == "tool_calls"
+    assert resolve(gateway).reasoning_history == "tool_calls"
     # A model the gateway does not document keeps the generic full-replay default.
-    assert resolve(ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "vendor/model"})).chat_reasoning_history == "all"
+    assert resolve(ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "vendor/model"})).reasoning_history == "all"

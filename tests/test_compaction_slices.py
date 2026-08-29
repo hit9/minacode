@@ -252,7 +252,7 @@ def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
 
 
 def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_path):
-    """Providers with chat_reasoning_history="current_turn" replay reasoning only after the last
+    """Providers with reasoning_history="current_turn" replay reasoning only after the last
     user message, so where the appended instruction sits relative to that boundary decides whether
     the summary request strips the same set the live request did.
 
@@ -271,7 +271,7 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
     def reasoning_history(path):
         live_session = session_with_provider(path)
         live_session.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        assert resolve(live_session.config.provider).chat_reasoning_history == "current_turn"
+        assert resolve(live_session.config.provider).reasoning_history == "current_turn"
         live_session.messages = [
             {"role": "user", "content": "earlier task"},
             {

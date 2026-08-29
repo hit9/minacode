@@ -15,7 +15,7 @@ from minacode.base import SELECTION_BACK, SESSION_EVENT_KEY
 from minacode.cli import commands
 from minacode.cli.modals import select_choice
 from minacode.config import PROVIDER_API_CHOICES
-from minacode.tools.delegate import DelegateTool, refresh_worker_entry
+from minacode.tools.delegate import DelegateTool, refresh_worker_entry, worker_provider_config
 
 if TYPE_CHECKING:
     from minacode.cli import CommandLoop
@@ -243,7 +243,9 @@ class WorkerFlow:
         return "Set worker.reasoning = " + value
 
     def _reasoning_choices(self) -> tuple[str, ...]:
-        return ("off", *self.loop.session.policy.effort_order)
+        config = self.loop.session.config
+        provider_name = config.worker_provider or config.active_provider
+        return self.loop.session.policy.reasoning_choices(worker_provider_config(config, provider_name))
 
     def _worker_api_picker(self) -> str:
         """Standalone /worker api picker: one selection, no cascade."""

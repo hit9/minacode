@@ -67,7 +67,7 @@ Most users can leave these unset.
 | `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body. Fields inside an object minacode also manages are merged rather than replacing it, so `extra_body.reasoning.context` reaches a Responses host without dropping the resolved effort |
 | `builtin_tools` | `[]` | Tools the provider runs itself, passed through verbatim; see below |
 | `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
-| `reasoning_history` | `auto` | Reasoning replay policy: catalog-selected by default; `all`, `current_turn`, or `tool_calls` explicitly overrides it |
+| `reasoning_history` | `auto` | Reasoning replay policy on Chat, Responses, and Anthropic: catalog-selected by default; `all`, `current_turn`, or `tool_calls` explicitly overrides it |
 
 ### Extra HTTP headers
 
@@ -82,9 +82,10 @@ model = "deepseek/deepseek-v4-flash"
 headers = { x-cmd-zdr = "1" }   # Command Code: route only to zero-retention upstreams
 ```
 
-Values are strings or plain integers. `key` still supplies authentication, so a header is only
-needed for what the provider documents separately — zero-retention routing, a gateway's tenant or
-routing key. `/config` lists the headers in effect.
+Values are ASCII strings or plain integers. `key` still supplies authentication, so a header is
+only needed for what the provider documents separately — zero-retention routing, a gateway's
+tenant or routing key. The same headers are used when `/model` asks the endpoint for its model
+list. `/config` lists the headers in effect.
 
 ### Fields an endpoint rejects
 
@@ -96,7 +97,8 @@ omit_body = ["reasoning_effort", "stream_options"]
 ```
 
 `extra_body` is the other half — it adds fields, `omit_body` removes them. A name is dropped
-wherever it sits in the request. `/config` lists what is being omitted.
+wherever it sits in the request. `model`, `messages`, `input`, and `stream` cannot be removed;
+use `stream = false` when an endpoint does not stream. `/config` lists what is being omitted.
 
 Streaming is enabled by default for all three protocols. If a compatible endpoint does not
 support it, set `stream = false` in that provider block, or use `/set provider.stream off` for
@@ -148,6 +150,9 @@ first, under a model name or a glob:
 
 Those levels become what `/reason` offers for models the glob matches, replacing minacode's own.
 They can include names minacode does not know — `ultra` above — since they are sent as written.
+Each list must contain unique levels and must not include `off`; minacode adds `off` unless the
+catalog documents that the model always reasons. Worker and compaction reasoning overrides use
+the scale declared for their effective model too.
 
 ## Provider-side tools
 

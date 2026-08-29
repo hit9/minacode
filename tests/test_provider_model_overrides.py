@@ -1,11 +1,12 @@
 """per-model declarations in `[provider.X.models]`: the effort scale a config states for a model."""
+
 from dataclasses import replace
 
 import pytest
 from catalog_harness import normalized_reasoning, reasoning_choices, resolve
 
 from minacode.base import ConfigError
-from minacode.config import ProviderConfig
+from minacode.config import Config, ProviderConfig
 
 
 def entry(**overrides) -> ProviderConfig:
@@ -26,6 +27,7 @@ def test_a_declared_scale_is_what_the_model_offers():
     for level in ("low", "medium", "high", "ultra"):
         assert resolve(replace(entry(), reasoning=level)).reasoning_effort == level
 
+
 def test_a_declared_level_is_sent_as_written():
     assert resolve(entry(reasoning="ultra")).reasoning_effort == "ultra"
 
@@ -36,11 +38,13 @@ def test_an_effort_off_the_declared_scale_is_moved_onto_it(stored, aligned):
     one. It lands on the nearest level the declaration names that minacode also knows."""
     assert normalized_reasoning(replace(entry(), reasoning=stored)) == aligned
 
+
 def test_declarations_apply_only_to_models_their_glob_matches():
     """An entry switched to another model with /model keeps the catalog's own answer."""
     provider = replace(entry(reasoning="max"), model="gpt-4o")
     assert provider.declared_levels() == ()
     assert resolve(provider).reasoning_effort == "max"
+
 
 def test_the_first_matching_glob_wins_like_a_catalog_rule():
     provider = ProviderConfig.from_dict(
@@ -52,6 +56,7 @@ def test_the_first_matching_glob_wins_like_a_catalog_rule():
     )
     assert provider.declared_levels() == ("low",)
 
+
 def test_a_scale_of_names_minacode_knows_none_of_is_offered_as_written():
     """Nothing has to rank `cheap` against `deep`: they are the menu, and one of them is chosen."""
     provider = ProviderConfig.from_dict({"url": "https://gw.example/v1", "model": "m", "models": {"m": {"reasoning": ["cheap", "normal", "deep"]}}})
@@ -62,6 +67,7 @@ def test_a_scale_of_names_minacode_knows_none_of_is_offered_as_written():
     # in the middle rather than on a guessed one.
     assert normalized_reasoning(replace(provider, reasoning="max")) == "normal"
 
+
 def test_only_a_declared_level_widens_what_reasoning_accepts():
     """`ultra` is a valid effort because a model declares it; an undeclared word stays a typo."""
     with pytest.raises(ConfigError):
@@ -69,18 +75,67 @@ def test_only_a_declared_level_widens_what_reasoning_accepts():
     with pytest.raises(ConfigError):
         ProviderConfig.from_dict({"url": "https://gw.example/v1", "model": "m", "reasoning": "ultra"})
 
+
 def test_a_malformed_declaration_is_a_config_error():
-    for models in ({"m": ["low"]}, {"m": {"reasoning": [""]}}, {"m": {"reasoning": 3}}):
+    for models in (
+        ["m"],
+        {"m": ["low"]},
+        {"m": {}},
+        {"m": {"reasoning": [""]}},
+        {"m": {"reasoning": ["low", "low"]}},
+        {"m": {"reasoning": ["off", "high"]}},
+        {"m": {"reasoning": 3}},
+        {" ": {"reasoning": ["low"]}},
+    ):
         with pytest.raises(ConfigError):
             ProviderConfig.from_dict({"url": "https://gw.example/v1", "model": "m", "models": models})
 
     assert ProviderConfig.from_dict({}).model_overrides == ()
+
+
+def test_custom_levels_validate_worker_and_compaction_against_their_effective_models():
+    data = {
+        "provider": {
+            "active": "p",
+            "p": {
+                "model": "main",
+                "models": {
+                    "main": {"reasoning": ["cheap", "deep"]},
+                    "small": {"reasoning": ["brief", "careful"]},
+                },
+            },
+        },
+        "worker": {"model": "small", "reasoning": "careful"},
+        "compaction": {"model": "main", "reasoning": "deep"},
+    }
+
+    config = Config.from_dict(data)
+    assert config.worker_reasoning == "careful"
+    assert config.compaction_reasoning == "deep"
+
+    data["worker"]["reasoning"] = "deep"
+    with pytest.raises(ConfigError, match="worker.reasoning"):
+        Config.from_dict(data)
+
+
+def test_a_declaration_does_not_override_catalogued_mandatory_reasoning():
+    provider = ProviderConfig.from_dict(
+        {
+            "url": "https://api.x.ai/v1",
+            "model": "grok-4.6",
+            "models": {"grok-*": {"reasoning": ["low", "high"]}},
+        }
+    )
+
+    assert reasoning_choices(provider) == ("low", "high")
+
 
 def test_declarations_follow_the_entry_into_its_copies():
     """Worker and compaction entries are dataclasses.replace copies, so a declaration reaches the
     requests they make without being configured a second time."""
     worker = replace(entry(reasoning="ultra"), model="gpt-5.6-mini")
     assert resolve(worker).reasoning_effort == "ultra"
+
 
 def test_a_catalogued_model_offers_the_levels_it_documents():
     """The scale minacode ships is the endpoint's own: DeepSeek documents low/high/max, and the
@@ -90,12 +145,14 @@ def test_a_catalogued_model_offers_the_levels_it_documents():
 
     assert reasoning_choices(deepseek) == ("off", "low", "high", "max")
 
+
 def test_a_model_the_catalog_says_nothing_about_keeps_the_full_scale():
     """Unknown means unconstrained: an endpoint minacode has no evidence for must not have its
     choices narrowed on a guess."""
     unknown = ProviderConfig(url="https://gw.example/v1", key="k", model="custom-model")
 
     assert reasoning_choices(unknown) == ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
 
 def test_switching_to_a_model_without_the_stored_level_moves_it_onto_that_model_s_scale():
     stored = ProviderConfig(url="https://api.openai.com/v1", key="k", model="gpt-5", reasoning="minimal")
@@ -104,6 +161,7 @@ def test_switching_to_a_model_without_the_stored_level_moves_it_onto_that_model_
 
     on_deepseek = replace(stored, url="https://api.deepseek.com", model="deepseek-v4-flash")
     assert normalized_reasoning(on_deepseek) == "low"
+
 
 def test_a_model_that_always_reasons_does_not_offer_off():
     """Grok, Kimi K3 and GLM-5.3 document that reasoning cannot be turned off. Offering `off`
@@ -120,12 +178,14 @@ def test_a_model_that_always_reasons_does_not_offer_off():
     gemini_25 = ProviderConfig(url="https://generativelanguage.googleapis.com/v1beta/openai", key="k", model="gemini-2.5-flash")
     assert reasoning_choices(gemini_25)[0] == "off"
 
+
 def test_off_stored_against_an_always_reasoning_model_moves_to_its_weakest_level():
     """The request reasons either way, so leaving the setting on `off` would show an effort the
     model is not spending."""
     grok = ProviderConfig(url="https://api.x.ai/v1", key="k", model="grok-4.6", reasoning="off")
 
     assert normalized_reasoning(grok) == "low"
+
 
 def test_kimi_k3_still_sends_its_closest_to_off_spelling_when_a_config_names_off():
     """`off` is not offered, but a config can still name it, and the open platform documents the

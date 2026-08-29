@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import platform
+import re
 import shutil
 import sys
 import tomllib
@@ -28,6 +29,7 @@ DEFAULT_OUTPUT_RESERVE_TOKENS = 16_384
 # Zero means unconfigured. Each wire's catalog policy decides whether it needs a concrete default.
 DEFAULT_MAX_TOKENS = 0
 MIN_CONTEXT_SAFETY_TOKENS = 4_096
+HTTP_HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
 
 def request_budget_for(max_context_tokens: int, output_budget: int) -> int:
@@ -127,9 +129,8 @@ class ProviderConfig:
     # `[provider.X.models]` declarations in declaration order; the first matching glob wins, the
     # way catalog rules resolve. A declaration overrides the catalog for those models.
     model_overrides: tuple[ModelOverride, ...] = ()
-    # Request-body fields this endpoint must never receive. `extra_body` adds and merges, so a
-    # gateway that answers 400 for a field minacode sends could only be worked around by editing
-    # the client. Removal is the missing half, and it is the last step before the request.
+    # Request-body fields this endpoint must never receive. Removal is applied at the wire boundary;
+    # this value stays plain configuration rather than learning request-body behavior.
     omit_body: tuple[str, ...] = ()
     builtin_tools: tuple[Json, ...] = ()
     # Per-provider compaction overrides ([provider.X.compaction] model/reasoning/api), folded on
@@ -142,7 +143,6 @@ class ProviderConfig:
     @classmethod
     def from_dict(cls, data: Json, *, policy: ProviderPolicy | None = None) -> ProviderConfig:
         policy = policy or bundled_policy()
-        reasoning_choices = ("off", *policy.effort_order)
         chat_reasoning_choices = ("auto", *policy.reasoning_dialects)
         api = Config.str(data, "api", "auto")
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
@@ -150,13 +150,9 @@ class ProviderConfig:
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
         reasoning_history = Config.str(data, "reasoning_history", "auto")
         model_overrides = cls.model_overrides_from(data)
-        # A level a model declares is a valid effort for this entry: declaring `ultra` is what
-        # makes `reasoning = "ultra"` mean something. Everything else stays a typo, not a value
-        # forwarded to the provider.
         declared = {level for override in model_overrides for level in override.reasoning_levels}
         for key, value, choices in (
             ("api", api, PROVIDER_API_CHOICES),
-            ("reasoning", reasoning, (*reasoning_choices, *sorted(declared))),
             ("chat_reasoning", chat_reasoning, chat_reasoning_choices),
             ("reasoning_history", reasoning_history, REASONING_HISTORY_CHOICES),
         ):
@@ -164,12 +160,10 @@ class ProviderConfig:
                 raise ConfigError("provider." + key + " must be one of " + ", ".join(choices))
         compaction_root = Config.table(data, "compaction")
         compaction_reasoning = Config.str(compaction_root, "reasoning", "")
-        if compaction_reasoning and compaction_reasoning not in reasoning_choices:
-            raise ConfigError("provider.compaction.reasoning must be one of " + ", ".join(reasoning_choices))
         compaction_api = Config.str(compaction_root, "api", "")
         if compaction_api and compaction_api not in PROVIDER_API_CHOICES:
             raise ConfigError("provider.compaction.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
-        return cls(
+        provider = cls(
             url=Config.str(data, "url"),
             key=Config.str(data, "key"),
             model=Config.str(data, "model"),
@@ -195,6 +189,16 @@ class ProviderConfig:
             compaction_reasoning=compaction_reasoning,
             compaction_api=compaction_api,
         )
+        choices = policy.reasoning_values(provider)
+        if reasoning not in choices:
+            raise ConfigError("provider.reasoning must be one of " + ", ".join(choices))
+        # The global [compaction].model is not visible while an entry is parsed, so its nested
+        # override accepts any name this entry declares; Config.from_dict validates the effective
+        # provider/model pair once both layers are known.
+        compaction_choices = tuple(dict.fromkeys(("off", *policy.effort_order, *sorted(declared))))
+        if compaction_reasoning and compaction_reasoning not in compaction_choices:
+            raise ConfigError("provider.compaction.reasoning must be one of " + ", ".join(compaction_choices))
+        return provider
 
     @staticmethod
     def model_overrides_from(data: Json) -> tuple[ModelOverride, ...]:
@@ -202,19 +206,28 @@ class ProviderConfig:
 
         `reasoning` is an ordered list, weakest first — the order is what gives a level minacode
         does not recognize its place on the scale, so an unordered set would not do."""
+        raw_models = data.get("models")
+        if raw_models is not None and not isinstance(raw_models, dict):
+            raise ConfigError("provider.models must be a table")
         overrides: list[ModelOverride] = []
-        for pattern, declared in Config.table(data, "models").items():
+        for pattern, declared in (raw_models or {}).items():
             if not isinstance(declared, dict):
                 raise ConfigError(f"provider.models.{pattern} must be a table")
-            levels = Config.str_tuple(declared, "reasoning")
-            if any(not level.strip() for level in levels):
-                raise ConfigError(f"provider.models.{pattern}.reasoning must not contain empty levels")
-            overrides.append(ModelOverride(match=pattern.lower(), reasoning_levels=levels))
+            levels = tuple(level.strip() for level in Config.str_tuple(declared, "reasoning"))
+            if not levels or any(not level for level in levels):
+                raise ConfigError(f"provider.models.{pattern}.reasoning must contain at least one level")
+            if "off" in levels or len(set(levels)) != len(levels):
+                raise ConfigError(f"provider.models.{pattern}.reasoning must contain unique effort levels, without off")
+            match = pattern.strip().lower()
+            if not match:
+                raise ConfigError("provider.models patterns must not be empty")
+            overrides.append(ModelOverride(match=match, reasoning_levels=levels))
         return tuple(overrides)
 
-    # The fields that carry the request itself. Dropping one does not adjust a request, it empties
-    # it, and the provider's error for the result would point anywhere but at this setting.
-    OMIT_BODY_PROTECTED: ClassVar[tuple[str, ...]] = ("model", "messages", "input")
+    # These fields either carry the request or select the local response parser. Dropping `stream`
+    # while still entering the streaming branch can turn a valid non-streaming response into an
+    # empty assistant message, so changing that behavior belongs to provider.stream instead.
+    OMIT_BODY_PROTECTED: ClassVar[tuple[str, ...]] = ("model", "messages", "input", "stream")
 
     @classmethod
     def clean_omit_body(cls, names: tuple[str, ...]) -> tuple[str, ...]:
@@ -222,20 +235,6 @@ class ProviderConfig:
             if name in cls.OMIT_BODY_PROTECTED:
                 raise ConfigError("provider.omit_body cannot drop " + ", ".join(cls.OMIT_BODY_PROTECTED))
         return names
-
-    def omit_from_body(self, params: Json) -> Json:
-        """Drop this entry's `omit_body` fields from a built request, in place.
-
-        A name is matched at the top level and inside `extra_body`, because a provider's 400 names
-        the field, not the place minacode happened to put it. An `extra_body` emptied this way is
-        removed too, so the SDK is not handed a stray empty object."""
-        for name in self.omit_body:
-            params.pop(name, None)
-            if isinstance(extra := params.get("extra_body"), dict):
-                extra.pop(name, None)
-        if isinstance(extra := params.get("extra_body"), dict) and not extra:
-            params.pop("extra_body")
-        return params
 
     def declared_levels(self, model: str = "") -> tuple[str, ...]:
         """The effort scale declared for this model, or none when no glob matches it."""
@@ -369,7 +368,6 @@ class Config:
     @classmethod
     def from_dict(cls, data: Json, *, policy: ProviderPolicy | None = None) -> Config:
         policy = policy or bundled_policy()
-        reasoning_choices = ("off", *policy.effort_order)
         provider_root = cls.table(data, "provider")
         active = cls.str(provider_root, "active", "default")
         providers = {
@@ -384,9 +382,12 @@ class Config:
         worker_provider = cls.str(worker_root, "provider", "")
         if worker_provider and worker_provider not in providers:
             raise ConfigError(f"worker.provider `{worker_provider}` does not exist")
+        worker_model = cls.str(worker_root, "model", "")
         worker_reasoning = cls.str(worker_root, "reasoning", "")
-        if worker_reasoning and worker_reasoning not in reasoning_choices:
-            raise ConfigError("worker.reasoning must be one of " + ", ".join(reasoning_choices))
+        worker_entry = providers[worker_provider or active]
+        worker_choices = policy.reasoning_values(worker_entry, worker_model or worker_entry.model)
+        if worker_reasoning and worker_reasoning not in worker_choices:
+            raise ConfigError("worker.reasoning must be one of " + ", ".join(worker_choices))
         worker_api = cls.str(worker_root, "api", "")
         if worker_api and worker_api not in PROVIDER_API_CHOICES:
             raise ConfigError("worker.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
@@ -394,9 +395,14 @@ class Config:
         compaction_provider = cls.str(compaction_root, "provider", "")
         if compaction_provider and compaction_provider not in providers:
             raise ConfigError(f"compaction.provider `{compaction_provider}` does not exist")
+        compaction_model = cls.str(compaction_root, "model", "")
         compaction_reasoning = cls.str(compaction_root, "reasoning", "")
-        if compaction_reasoning and compaction_reasoning not in reasoning_choices:
-            raise ConfigError("compaction.reasoning must be one of " + ", ".join(reasoning_choices))
+        compaction_entry = providers[compaction_provider or active]
+        effective_compaction_model = compaction_entry.compaction_model or compaction_model or compaction_entry.model
+        compaction_choices = policy.reasoning_values(compaction_entry, effective_compaction_model)
+        effective_compaction_reasoning = compaction_entry.compaction_reasoning or compaction_reasoning
+        if effective_compaction_reasoning and effective_compaction_reasoning not in compaction_choices:
+            raise ConfigError("compaction.reasoning must be one of " + ", ".join(compaction_choices))
         compaction_api = cls.str(compaction_root, "api", "")
         if compaction_api and compaction_api not in PROVIDER_API_CHOICES:
             raise ConfigError("compaction.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
@@ -410,11 +416,11 @@ class Config:
             data_dir=cls.str(paths, "data_dir", "~/.minacode"),
             mcp=cls.table(data, "mcp"),
             worker_provider=worker_provider,
-            worker_model=cls.str(worker_root, "model", ""),
+            worker_model=worker_model,
             worker_reasoning=worker_reasoning,
             worker_api=worker_api,
             compaction_provider=compaction_provider,
-            compaction_model=cls.str(compaction_root, "model", ""),
+            compaction_model=compaction_model,
             compaction_reasoning=compaction_reasoning,
             compaction_api=compaction_api,
             vision_provider=vision_provider,
@@ -467,15 +473,24 @@ class Config:
         (`x-cmd-zdr: 1`), and a TOML author writes that unquoted. Booleans are not: `true` has no
         agreed-upon wire spelling. Control characters are rejected here rather than reaching httpx
         as an opaque encoding error at request time."""
-        table = Config.table(data, key)
+        raw = data.get(key)
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise ConfigError(f"config value `{key}` must be a table")
         headers: dict[str, str] = {}
-        for name, value in table.items():
+        for name, value in raw.items():
+            if not isinstance(name, str):
+                raise ConfigError(f"config value `{key}` contains a non-string header name")
             if isinstance(value, bool) or not isinstance(value, (str, int)):
                 raise ConfigError(f"config value `{key}.{name}` must be a string or integer")
             text = str(value)
-            if not name.strip() or any(ord(char) < 32 or ord(char) == 127 for char in name + text):
-                raise ConfigError(f"config value `{key}.{name}` must be a single-line header name and value")
-            headers[name] = text
+            normalized = name.lower()
+            if HTTP_HEADER_NAME.fullmatch(name) is None or not text.isascii() or any(ord(char) < 32 or ord(char) == 127 for char in text):
+                raise ConfigError(f"config value `{key}.{name}` must be an ASCII HTTP header name and single-line value")
+            if normalized in headers:
+                raise ConfigError(f"config value `{key}` contains the duplicate header `{name}`")
+            headers[normalized] = text
         return headers
 
     @staticmethod

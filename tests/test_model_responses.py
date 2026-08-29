@@ -807,6 +807,41 @@ def test_responses_replay_drops_reasoning_items_that_carry_no_payload(tmp_path):
     assert [item["id"] for item in replayed] == ["rs_kept", "rs_text", "fc_1"]
 
 
+def test_responses_reasoning_history_filters_the_actual_replayed_items(tmp_path):
+    s = _session(tmp_path, api="responses", model="gpt-5", reasoning_history="current_turn")
+    model = ModelClient(s)
+    origin = model.provider_origin()
+    history = [
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "content": "done",
+            "_provider_origin": origin,
+            "_responses_output": [
+                {"id": "rs_old", "type": "reasoning", "encrypted_content": "old"},
+                {"id": "msg_old", "type": "message", "content": [{"type": "output_text", "text": "done"}]},
+            ],
+        },
+        {"role": "user", "content": "next"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
+            "_provider_origin": origin,
+            "_responses_output": [
+                {"id": "rs_current", "type": "reasoning", "encrypted_content": "current"},
+                {"id": "fc_current", "type": "function_call", "call_id": "call_1", "name": "Read", "arguments": "{}"},
+            ],
+        },
+    ]
+
+    replayed = model.wire(s.config.provider).messages(history)
+    replayed_ids = {item.get("id") for item in replayed}
+
+    assert "rs_old" not in replayed_ids
+    assert "rs_current" in replayed_ids
+
+
 def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
     """`/provider` can switch protocols mid-session, so history holds assistant turns produced by
     a protocol other than the one now in use. Each protocol replays only its own saved reply and
@@ -1013,9 +1048,7 @@ def test_catalog_extra_body_paths_do_not_replace_user_extensions(tmp_path, monke
         extra_body={"user_extension": "kept"},
     )
     model = ModelClient(s)
-    factory = _MockClientFactory(
-        [(200, {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-4.1", "output": []})]
-    )
+    factory = _MockClientFactory([(200, {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-4.1", "output": []})])
     monkeypatch.setattr(model, "client", factory)
 
     def apply_catalog_recipe(params, _provider, _resolved, *, wire):
@@ -1066,6 +1099,7 @@ def test_provider_origin_separates_issuers_a_hostname_cannot(tmp_path):
     assert origin() != origin(url="http://localhost:8000/upstream-b/v1")
     assert origin() != origin(key="sk-b")
     assert origin() != origin(model="gpt-oss-mini")
+    assert origin(headers={"x-tenant": "team-a"}) != origin(headers={"x-tenant": "team-b"})
     assert origin() == origin()
     # A credential is fingerprinted, never carried into a session snapshot verbatim.
     assert "sk-a" not in origin()

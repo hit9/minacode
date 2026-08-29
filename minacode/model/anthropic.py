@@ -23,6 +23,7 @@ from minacode.base import (
 )
 from minacode.config import ProviderConfig
 from minacode.image import ImageInputs
+from minacode.model.history import keeps_reasoning
 from minacode.providers.compat import ResolvedProvider
 
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ def anthropic_params(
     images: ImageInputs,
     builtin_tools: Callable[[ResolvedProvider | None], list[Json]],
     apply_request: Callable[[Json, ProviderConfig, ResolvedProvider], Json],
+    latest_user_position: Callable[[list[Json]], int],
     text_only: bool = False,
 ) -> Json:
     """Assemble the Messages request body from normalized messages and provider settings.
@@ -62,7 +64,14 @@ def anthropic_params(
         "system": system,
         "messages": mark_prompt_cache_tail(
             anthropic_messages(
-                messages, provider_origin(provider), provider_origin=provider_origin, replayable_echo=replayable_echo, images=images, text_only=text_only
+                messages,
+                provider_origin(provider),
+                provider_origin=provider_origin,
+                replayable_echo=replayable_echo,
+                images=images,
+                reasoning_history=resolved.reasoning_history,
+                latest_user_position=latest_user_position,
+                text_only=text_only,
             )
         ),
         "max_tokens": resolved.output_max_tokens,
@@ -91,6 +100,8 @@ def anthropic_messages(
     provider_origin: Callable[[ProviderConfig | None], str],
     replayable_echo: Callable[[Json, str], bool],
     images: ImageInputs,
+    reasoning_history: str = "all",
+    latest_user_position: Callable[[list[Json]], int] | None = None,
     text_only: bool = False,
 ) -> list[Json]:
     """Convert normalized messages to Messages history, merging consecutive same-role turns.
@@ -102,7 +113,8 @@ def anthropic_messages(
     """
     origin = origin or provider_origin(None)
     converted: list[Json] = []
-    for message in messages:
+    latest_user = latest_user_position(messages) if latest_user_position is not None else -1
+    for index, message in enumerate(messages):
         role = message.get("role")
         if role == "system":
             continue
@@ -110,6 +122,8 @@ def anthropic_messages(
             append_anthropic_message(converted, "user", images.anthropic_content(message, text_only=text_only))
         elif role == "assistant":
             blocks = anthropic_assistant_blocks(message, origin, provider_origin=provider_origin, replayable_echo=replayable_echo)
+            if not keeps_reasoning(reasoning_history, message, index, latest_user):
+                blocks = [block for block in blocks if block.get("type") not in ("thinking", "redacted_thinking")]
             if blocks:
                 append_anthropic_message(converted, "assistant", blocks)
         elif role == "tool":

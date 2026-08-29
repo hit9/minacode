@@ -21,7 +21,6 @@ from prompt_toolkit.utils import get_cwidth
 
 from minacode import compaction
 from minacode.base import (
-    HTTP_USER_AGENT,
     SELECTION_BACK,
     ConfigError,
     LogBlock,
@@ -435,7 +434,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
             f"provider.chat_reasoning: {provider.chat_reasoning}",
             f"provider.reasoning_history: {provider.reasoning_history}",
-            f"provider.resolved_chat_reasoning_history: {resolved.chat_reasoning_history}",
+            f"provider.resolved_reasoning_history: {resolved.reasoning_history}",
             f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
             f"provider.max_tokens: {provider.max_tokens or '(server default)'}",
             # Show the effective limit either way: the whole point of the key is which number the
@@ -860,12 +859,14 @@ def remote_models(loop: CommandLoop, provider: ProviderConfig) -> tuple[str, ...
         # lazy import: /model discovery is the only OpenAI use here, so the SDK stays off the startup path
         from openai import OpenAI
 
+        from minacode.model import ModelClient
+
         page = OpenAI(
             api_key=provider.key,
             base_url=loop.session.policy.resolve(provider).base_url,
             timeout=min(provider.timeout, 10),
             max_retries=0,
-            default_headers={"User-Agent": HTTP_USER_AGENT},
+            default_headers=ModelClient.request_headers(provider),
         ).models.list()
     except Exception:  # noqa: BLE001 - remote model discovery is optional and provider SDKs expose varied failures.
         return ()

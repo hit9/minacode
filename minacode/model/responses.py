@@ -24,6 +24,7 @@ from minacode.base import (
 )
 from minacode.config import ProviderConfig
 from minacode.image import ImageInputs
+from minacode.model.history import keeps_reasoning
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -36,6 +37,8 @@ def responses_input(
     provider_origin: Callable[[ProviderConfig | None], str],
     replayable_echo: Callable[[Json, str], bool],
     images: ImageInputs,
+    reasoning_history: str = "all",
+    latest_user_position: Callable[[list[Json]], int] | None = None,
     text_only: bool = False,
 ) -> list[Json]:
     """Convert normalized messages to Responses input items.
@@ -49,13 +52,16 @@ def responses_input(
     origin = origin or provider_origin(None)
     converted: list[Json] = []
     seen_output_ids: set[str] = set()
-    for message in messages:
+    latest_user = latest_user_position(messages) if latest_user_position is not None else -1
+    for index, message in enumerate(messages):
         role = str(message.get("role") or "")
         content = message.get("content")
         saved_output = message.get(RESPONSES_OUTPUT_KEY) if replayable_echo(message, origin) else None
         if role == "assistant" and isinstance(saved_output, list):
             for item in saved_output:
                 if not isinstance(item, dict) or not replayable_output_item(item):
+                    continue
+                if item.get("type") == "reasoning" and not keeps_reasoning(reasoning_history, message, index, latest_user):
                     continue
                 if content is None and item.get("type") == "message":
                     continue

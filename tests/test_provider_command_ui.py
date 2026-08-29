@@ -147,6 +147,29 @@ def test_model_override_binds_to_the_entry_it_was_set_on(tmp_path):
     assert session.config.providers["a"].model == "model-on-a"
 
 
+def test_saved_override_restores_a_level_declared_for_the_restored_model(tmp_path):
+    command_loop = loop(tmp_path)
+    session = command_loop.session
+    session.config.providers["custom"] = ProviderConfig.from_dict(
+        {
+            "model": "small",
+            "models": {
+                "small": {"reasoning": ["brief", "careful"]},
+                "large": {"reasoning": ["normal", "deep"]},
+            },
+        }
+    )
+    session.provider_overrides = {
+        "active_provider": "custom",
+        "providers": {"custom": {"model": "large", "reasoning": "deep"}},
+    }
+
+    session.apply_provider_overrides()
+
+    assert session.config.provider.model == "large"
+    assert session.config.provider.reasoning == "deep"
+
+
 def test_provider_and_model_commands_validate_direct_arguments(tmp_path):
     command_loop = loop(tmp_path)
 
@@ -412,6 +435,7 @@ def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
     provider = command_loop.session.config.provider
     provider.url = "https://example.com/v1"
     provider.key = "secret"
+    provider.headers = {"x-tenant": "team-a"}
     calls = []
 
     class Models:
@@ -427,6 +451,7 @@ def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
     assert remote_models(command_loop, provider) == ("alpha", "zeta")
     assert calls[0]["api_key"] == "secret"
     assert calls[0]["max_retries"] == 0
+    assert calls[0]["default_headers"]["x-tenant"] == "team-a"
 
 
 def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):

@@ -1,4 +1,5 @@
 """provider request build (split from tests/test_core_logic.py)."""
+
 import json
 import time
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ def test_explicit_manual_thinking_maps_max_to_the_largest_budget(tmp_path):
 
     assert params == {"extra_body": {"enable_thinking": True, "thinking_budget": 32768}}
 
+
 def test_explicit_manual_thinking_budget_stays_under_the_configured_output_cap(tmp_path):
     """These hosts fold max_tokens into max_completion_tokens and reject a budget that reaches it."""
     client = ModelClient(session(tmp_path))
@@ -42,6 +44,7 @@ def test_explicit_manual_thinking_budget_stays_under_the_configured_output_cap(t
         client.apply_provider_params(params, provider)
 
         assert params["extra_body"]["thinking_budget"] == expected
+
 
 def test_chat_provider_extra_body_passthrough(tmp_path):
     client = ModelClient(session(tmp_path))
@@ -83,6 +86,7 @@ def test_chat_provider_extra_body_passthrough(tmp_path):
     assert ProviderConfig.from_dict({"extra_body": "nope"}).extra_body == {}
     assert ProviderConfig().extra_body == {}
 
+
 def _strict_check(node, path="root"):
     if isinstance(node, dict):
         for key in ("minItems", "maxItems", "minLength", "maxLength"):
@@ -105,6 +109,7 @@ def _strict_check(node, path="root"):
         for index, item in enumerate(node):
             _strict_check(item, f"{path}[{index}]")
 
+
 def test_strict_tools_off_path_emits_non_strict_schema():
     for tool in TOOL_REGISTRY.values():
         legacy = {
@@ -117,6 +122,7 @@ def test_strict_tools_off_path_emits_non_strict_schema():
         }
         assert tool.schema(False) == legacy
         assert "strict" not in tool.schema(False)["function"]
+
 
 def test_strict_tools_gating_and_beta_routing():
     def resolved(url, strict=False):
@@ -138,6 +144,7 @@ def test_strict_tools_gating_and_beta_routing():
     assert resolved("https://api.openai.com/v1", strict=True).strict_tools_active is True
     assert resolved("https://api.openai.com/v1", strict=True).base_url == "https://api.openai.com/v1"
 
+
 def test_resolved_base_url_removes_known_protocol_suffixes():
     def p(url):
         return resolve(ProviderConfig(url=url)).base_url
@@ -149,6 +156,7 @@ def test_resolved_base_url_removes_known_protocol_suffixes():
     assert p("https://api.openai.com/v1/") == "https://api.openai.com/v1"
     assert p("https://api.openai.com/v1/chat/completions/") == "https://api.openai.com/v1"
 
+
 def test_provider_api_auto_recognizes_explicit_endpoint_suffixes():
     assert ProviderConfig.from_dict({"api": "responses"}).api == "responses"
     assert resolve(ProviderConfig(url="https://api.openai.com/v1/responses")).api == "responses"
@@ -157,9 +165,11 @@ def test_provider_api_auto_recognizes_explicit_endpoint_suffixes():
     assert resolve(ProviderConfig(url="https://api.openai.com/v1")).api == "chat"
     assert resolve(ProviderConfig(url="https://api.openai.com/v1/responses", api="chat")).api == "chat"
 
+
 def test_openai_responses_path_supports_strict_tools():
     provider = ProviderConfig(url="https://api.openai.com/v1", api="responses", strict_tools=True)
     assert resolve(provider).strict_tools_active is True
+
 
 def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     before = {name: json.dumps(tool.params_schema()) for name, tool in TOOL_REGISTRY.items()}
@@ -180,6 +190,7 @@ def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     search_queries = TOOL_REGISTRY["Search"].schema(True)["function"]["parameters"]["properties"]["queries"]
     assert search_queries["anyOf"][1] == {"type": "null"}
 
+
 def test_strict_tools_skips_free_form_object_schemas():
     # MCP.arguments is a free-form object; strict cannot close it, so MCP stays non-strict.
     mcp = TOOL_REGISTRY["MCP"].schema(True)["function"]
@@ -187,8 +198,10 @@ def test_strict_tools_skips_free_form_object_schemas():
     assert Tool._strictifiable(TOOL_REGISTRY["MCP"].params_schema()) is False
     assert Tool._strictifiable(TOOL_REGISTRY["Read"].params_schema()) is True
 
+
 def test_drop_nulls_strips_omitted_strict_arguments():
     assert drop_nulls({"a": 1, "b": None, "c": {"d": None, "e": 2}, "f": [{"g": None, "h": 3}]}) == {"a": 1, "c": {"e": 2}, "f": [{"h": 3}]}
+
 
 def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tmp_path):
     client = ModelClient(session(tmp_path))
@@ -209,6 +222,7 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
     assert calls[2].name == "Read"
     assert calls[2].args == []
     assert calls[3] == ToolCall(id="list-payload", name="Recall", args=[["tr.1"]])
+
 
 def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -244,17 +258,20 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
     assert s.state.current_model_attempt == 0
     assert s.state.model_retry_reason == ""
 
+
 def test_retryable_error_detects_status_codes_in_text(tmp_path):
 
     assert resilience.retryable_error(ModelError("Error code: 500 - provider failed"))
     assert resilience.retryable_error(ModelError("{'error': {'code': 503, 'message': 'busy'}}"))
     assert not resilience.retryable_error(ModelError("Error code: 400 - bad request"))
 
+
 def test_retry_reason_is_short_and_safe(tmp_path):
 
     assert resilience.retry_reason(ModelError("Error code: 429 - secret provider payload")) == "429"
     assert resilience.retry_reason(ModelError("request timed out with secret provider payload")) == "timeout"
     assert resilience.retry_reason(ModelError("connection reset by peer")) == "connection"
+
 
 def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     usage = ModelUsage()
@@ -278,6 +295,7 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     assert usage.cache_write_prompt_tokens == 11
     assert usage.last_cache_write_prompt_tokens == 5
 
+
 def test_model_usage_folds_anthropic_cache_legs_into_prompt_tokens():
     usage = ModelUsage()
 
@@ -292,6 +310,7 @@ def test_model_usage_folds_anthropic_cache_legs_into_prompt_tokens():
     assert usage.prompt_tokens == 31_020
     assert usage.total_tokens == 31_025
 
+
 def test_model_usage_records_the_request_budget_beside_the_last_tokens():
     usage = ModelUsage()
     usage.add({"prompt_tokens": 10, "completion_tokens": 5}, budget=85_904)
@@ -302,6 +321,7 @@ def test_model_usage_records_the_request_budget_beside_the_last_tokens():
     usage.add({"prompt_tokens": 20, "completion_tokens": 5})
     assert usage.last_prompt_tokens == 20
     assert usage.last_prompt_budget == 85_904
+
 
 def test_context_cleans_surrogate_text(tmp_path):
     bad = "bad \udce5 text"
@@ -314,12 +334,14 @@ def test_context_cleans_surrogate_text(tmp_path):
     json.dumps(messages, ensure_ascii=False).encode("utf-8")
     assert "\udce5" not in str(messages)
 
+
 def _session_for(tmp_path, provider):
     """A session whose active entry is the one under test: the client builders check the session's
     own config for completeness before honouring the entry they are handed."""
     built = session(tmp_path)
     built.config.providers[built.config.active_provider] = provider
     return built
+
 
 def test_configured_headers_reach_both_wire_clients(tmp_path):
     """`extra_body` cannot express a header, so a provider feature documented as one -- Command
@@ -337,13 +359,26 @@ def test_configured_headers_reach_both_wire_clients(tmp_path):
         assert built.default_headers["x-tenant"] == "team"
         assert built.default_headers["User-Agent"] == HTTP_USER_AGENT
 
+
 def test_configured_headers_may_replace_minacode_defaults(tmp_path):
     provider = ProviderConfig.from_dict({"url": "https://gateway.example/v1", "key": "k", "model": "m", "headers": {"User-Agent": "fleet/1"}})
 
     assert ModelClient(_session_for(tmp_path, provider)).client(provider).default_headers["User-Agent"] == "fleet/1"
 
+
 def test_unsendable_headers_are_a_config_error_not_a_request_failure():
-    for headers in ({"x-flag": True}, {"x-flag": 1.5}, {"x-flag": ["a"]}, {"x-flag": "two\nlines"}, {"bad\theader": "1"}):
+    for headers in (
+        "x-flag",
+        {1: "one"},
+        {"x-flag": True},
+        {"x-flag": 1.5},
+        {"x-flag": ["a"]},
+        {"x-flag": "two\nlines"},
+        {"bad\theader": "1"},
+        {"x-unicode": "é"},
+        {"x-é": "one"},
+        {"X-Tenant": "one", "x-tenant": "two"},
+    ):
         with pytest.raises(Exception) as error:
             ProviderConfig.from_dict({"headers": headers})
         assert "headers" in str(error.value)

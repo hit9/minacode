@@ -348,18 +348,20 @@ class Session:
         a model that no longer exists surfaces on the first request exactly as it would have live."""
         overrides = self.provider_overrides
         providers = self.config.providers
-        reasoning_choices = ("off", *self.policy.effort_order)
         for name, fields in (overrides.get("providers") or {}).items():
             entry = providers.get(name)
             if entry is None or not isinstance(fields, dict):
                 continue
+            restored_model = fields.get("model")
+            model = restored_model if isinstance(restored_model, str) else entry.model
+            reasoning_choices = self.policy.reasoning_values(entry, model)
             reasoning = fields.get("reasoning")
-            if reasoning and reasoning not in reasoning_choices:
+            if not isinstance(reasoning, str) or reasoning not in reasoning_choices:
                 reasoning = None
             api = fields.get("api")
             if api and api not in PROVIDER_API_CHOICES:
                 api = None
-            for attr, value in (("model", fields.get("model")), ("reasoning", reasoning), ("api", api)):
+            for attr, value in (("model", model if isinstance(restored_model, str) else None), ("reasoning", reasoning), ("api", api)):
                 if value is not None:
                     setattr(entry, attr, value)
         active = overrides.get("active_provider")

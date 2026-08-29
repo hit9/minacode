@@ -172,11 +172,16 @@ class ModelClient:
         Everything that decides who can verify the ciphertext belongs here. A hostname alone does
         not: two local gateways separated only by port, or two entries on one host holding keys for
         different organizations, would share an identity and defeat the check. The full base URL
-        covers scheme, port, and path routing; the key is reduced to a fingerprint so a credential
-        never reaches a session snapshot. Rotating a key costs one turn of reasoning continuity.
+        covers scheme, port, and path routing; the key and configured headers are fingerprinted so
+        credentials never reach a snapshot. Changing either costs one turn of reasoning continuity.
         """
         provider = provider if provider is not None else self.session.config.provider
-        credential = hashlib.sha256(provider.key.encode("utf-8")).hexdigest()[:12] if provider.key else "-"
+        issuer = json.dumps(
+            {"key": provider.key, "headers": sorted((name.lower(), value) for name, value in provider.headers.items())},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        credential = hashlib.sha256(issuer.encode("utf-8")).hexdigest()[:12] if provider.key or provider.headers else "-"
         return f"{self.resolved(provider).base_url}/{provider.model.lower()}#{credential}"
 
     @staticmethod
@@ -478,7 +483,13 @@ class ModelClient:
 
         Both wires share this so a header configured for an entry follows it across a `/provider`
         switch and into the worker and compaction entries, which are copies of it."""
-        return {"User-Agent": HTTP_USER_AGENT, **provider.headers}
+        headers = {"User-Agent": HTTP_USER_AGENT}
+        for name, value in provider.headers.items():
+            # httpx treats header names case-insensitively, but the OpenAI SDK starts with its own
+            # exact-cased User-Agent. Keep that spelling so a configured override replaces it
+            # instead of coexisting with it under a differently cased key.
+            headers["User-Agent" if name.lower() == "user-agent" else name.lower()] = value
+        return headers
 
     def client(self, provider: ProviderConfig | None = None) -> OpenAI:
         provider = provider if provider is not None else self.session.config.provider

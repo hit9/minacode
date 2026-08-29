@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from minacode.base import PROVIDER_ECHO_KEYS, SESSION_EVENT_KEY, Json, ModelError, Text
 from minacode.config import ProviderConfig
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
+from minacode.model.history import keeps_reasoning
 from minacode.providers.compat import ResolvedProvider
 
 if TYPE_CHECKING:
@@ -30,24 +31,19 @@ def chat_messages(
 ) -> list[Json]:
     """Build Chat Completions history from normalized messages under the provider's replay contract.
 
-    Scrubs provider-echo keys and reasoning per the resolved chat_reasoning_history, substituting
+    Scrubs provider-echo keys and reasoning per the resolved reasoning_history, substituting
     image content for local image refs. `latest_user_position` is the boundary the caller uses for
     "current turn" reasoning — ModelClient.latest_user_position — so the same rule cannot drift.
     `text_only` is the route's image-delivery verdict: raw blocks are suppressed but readable
     labels and stable asset paths stay.
     """
-    history = resolved.chat_reasoning_history
-
     converted: list[Json] = []
     latest_user = latest_user_position(messages)
     for index, message in enumerate(messages):
         clean = {
             key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)
         }
-        keep_reasoning = history == "all" or (
-            bool(message.get("tool_calls")) and (history == "tool_calls" or (history == "current_turn" and index > latest_user))
-        )
-        if message.get("role") == "assistant" and not keep_reasoning:
+        if message.get("role") == "assistant" and not keeps_reasoning(resolved.reasoning_history, message, index, latest_user):
             for key in ("reasoning_content", "reasoning", "reasoning_details"):
                 clean.pop(key, None)
         if message.get("role") == "user" and images.refs(message):

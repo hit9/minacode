@@ -6,27 +6,33 @@
 
 - A provider entry can set `reasoning_history = "all"`, `"current_turn"`, or `"tool_calls"` when
   an unknown gateway needs a replay policy different from the catalog. The default `auto` follows
-  the selected catalog; request-body extensions no longer change history behavior implicitly.
+  the selected catalog; request-body extensions no longer change history behavior implicitly. The
+  selected policy governs both the request and its context estimate on Chat, Responses, and
+  Anthropic.
 
 - A provider entry can state what a model accepts, for when the built-in guess is wrong:
   `[provider.X.models]` maps a model name or glob to an ordered `reasoning` list, weakest first.
   Effort support belongs to the model rather than the endpoint, so this is where it is declared;
   the levels become what `/reason` offers for matching models and follow the entry into worker and
   compaction requests. A declared level may be one minacode has never heard of — `["low", "high",
-  "ultra"]` puts `ultra` in the picker and sends it as written.
+  "ultra"]` puts `ultra` in the picker and sends it as written. Worker and compaction overrides
+  validate against their effective model's declaration, saved sessions restore custom levels, and
+  a declaration cannot add `off` to a model the catalog documents as always reasoning.
 
 - `omit_body = ["reasoning_effort"]` leaves named fields out of the request. `extra_body` could
   only add and merge, so an endpoint that answers 400 for a field minacode sends had no
   configuration answer at all. A name is dropped wherever it sits in the built request, on all
   three wires, as the last step before sending; the fields that carry the request itself (`model`,
-  `messages`, `input`) are refused. `/config` lists what is omitted.
+  `messages`, `input`) and the local response-parser selector (`stream`) are refused. `/config`
+  lists what is omitted.
 
 - A provider entry can send extra HTTP headers with `headers = { x-cmd-zdr = "1" }`. `extra_body`
   reaches the request body only, so a provider feature documented as a header had no expression at
   all — Command Code's zero-retention routing, a gateway's tenant or routing key. The entry's
   headers are merged over minacode's own on both the OpenAI-compatible and Anthropic wires, follow
-  the entry into worker and compaction requests, and are listed by `/config`. Values are strings or
-  plain integers; `key` still supplies authentication.
+  the entry into worker and compaction requests and model discovery, and are listed by `/config`.
+  A header change also separates opaque reasoning issued under a different tenant or routing key.
+  Values are ASCII strings or plain integers; `key` still supplies authentication.
 
 - Provider and model compatibility knowledge now ships as one complete, versioned JSON catalog.
   At startup minacode validates the bundled and previously synced copies and uses the whole copy

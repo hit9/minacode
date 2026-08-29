@@ -48,6 +48,7 @@ from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.render import BashLivePreview, StatusBar, UiPrinter, search_sources_footer
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, CodeIndex, tool_payload, toolblocks, tooloutput
+from minacode.tools.delegate import worker_provider_config
 from minacode.tools.toolblocks import ToolDisplay
 from minacode.tui import TuiApp
 
@@ -222,7 +223,12 @@ Full documentation: https://minacode.readthedocs.io
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
             reasoning_choices=lambda: self.session.policy.reasoning_choices(self.session.config.provider),
-            worker_reasoning_choices=lambda: ("off", *self.session.policy.effort_order),
+            worker_reasoning_choices=lambda: self.session.policy.reasoning_choices(
+                worker_provider_config(
+                    self.session.config,
+                    self.session.config.worker_provider or self.session.config.active_provider,
+                )
+            ),
             worker_models=lambda: tuple(
                 dict.fromkeys(
                     (*self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider].available_models, "default")
