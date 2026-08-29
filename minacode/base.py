@@ -95,9 +95,8 @@ PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY, SEARCH_SOURCE
 def builtin_function_names(entries: Iterable[Json]) -> tuple[str, ...]:
     """Names of the builtin tools the provider calls back for instead of running entirely alone.
 
-    Kimi's builtin functions are declared like any other builtin tool, but the model emits a real
-    tool call for them and expects the client to answer it, so both the runner (to recognize the
-    call) and the no-tools guard (to keep it) need the declared names."""
+    These entries look like ordinary tool calls but use a client-echo handshake, so both the runner
+    (to recognize the call) and the no-tools guard (to keep it) need the declared names."""
     names: list[str] = []
     for entry in entries:
         if entry.get("type") != "builtin_function":
@@ -112,9 +111,8 @@ def builtin_function_names(entries: Iterable[Json]) -> tuple[str, ...]:
 def builtin_tool_label(name: str) -> str:
     """A display label for a tool the provider runs for itself.
 
-    One tool carries a different name in each protocol — `web_search_call` as a Responses output
-    item, `web_search` as a Messages server tool, `$web_search` as a Kimi builtin function — and
-    all of them should read as the same phase in the transcript."""
+    Protocols may suffix, prefix, or otherwise wrap a common operation name; normalization keeps
+    those spellings readable as the same phase in the transcript."""
     return (name.lstrip("$").removesuffix("_call").replace("_", " ").strip() or "provider tool").title()
 
 

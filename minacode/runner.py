@@ -231,8 +231,7 @@ class ToolRunner:
         side of it is to send the arguments straight back. The result therefore skips confirmation,
         the registry, and the usual `tool ... output:` framing — anything added here would reach the
         provider as part of its own protocol. It is logged like a tool call so the transcript still
-        shows that the work happened. Evidence:
-        https://platform.kimi.ai/docs/guide/use-web-search
+        shows that the work happened.
         """
         # An unrecognized name is parsed as a single raw payload, which is exactly what to echo.
         payload = call.args[0] if len(call.args) == 1 else call.args

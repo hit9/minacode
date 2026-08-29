@@ -99,6 +99,7 @@ Common optional provider settings:
 - `extra_body = {}`: add provider-specific OpenAI-compatible request fields.
 - `builtin_tools = [...]`: offer tools that the provider runs on its own servers; entries use the provider's documented wire shape.
 - `chat_reasoning = "auto"`: select the Chat reasoning wire format. Override only when the endpoint documents a different format.
+- `reasoning_history = "auto"`: replay reasoning according to the catalog; use `all`, `current_turn`, or `tool_calls` only as an explicit compatibility override.
 
 For known provider/model combinations, minacode maps the selected reasoning effort to a supported value. Unknown compatible providers and model names remain supported on the generic path and keep the selected value. When a request is rejected, inspect `/config`, confirm the API protocol, and set `chat_reasoning` only when the endpoint's documentation requires it.
 

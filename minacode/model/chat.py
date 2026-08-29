@@ -37,11 +37,6 @@ def chat_messages(
     labels and stable asset paths stay.
     """
     history = resolved.chat_reasoning_history
-    thinking = provider.extra_body.get("thinking")
-    if provider.extra_body.get("preserve_thinking") is True or (
-        isinstance(thinking, dict) and (thinking.get("keep") == "all" or thinking.get("clear_thinking") is False)
-    ):
-        history = "all"
 
     converted: list[Json] = []
     latest_user = latest_user_position(messages)

@@ -66,6 +66,7 @@ Most users can leave these unset.
 | `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body. Fields inside an object minacode also manages are merged rather than replacing it, so `extra_body.reasoning.context` reaches a Responses host without dropping the resolved effort |
 | `builtin_tools` | `[]` | Tools the provider runs itself, passed through verbatim; see below |
 | `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
+| `reasoning_history` | `auto` | Reasoning replay policy: catalog-selected by default; `all`, `current_turn`, or `tool_calls` explicitly overrides it |
 
 ### Extra HTTP headers
 

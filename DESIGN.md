@@ -250,7 +250,9 @@ generic standards path.
   key while preserving canonical role/content — Chat sends ordinary messages; Responses maps calls
   and results to `function_call`/`function_call_output` items.
 - Reasoning is continuation data: preserve what the provider returns, choose replay policy at
-  projection, estimate the same wire payload.
+  projection, estimate the same wire payload. `reasoning_history = auto` selects the catalog rule;
+  an explicit replay mode overrides it. Request-body extensions never implicitly change history
+  semantics.
 - Image routing is main-first with a bounded vision fallback. An unknown route sends raw image
   blocks to the active model; static evidence (a catalog of documented text-only families) or a
   session-learned HTTP-400 rule switches the route to text-only, where `[vision]` observes current

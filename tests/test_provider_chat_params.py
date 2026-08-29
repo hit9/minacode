@@ -1,4 +1,5 @@
 """provider chat params (split from tests/test_core_logic.py)."""
+
 import pytest
 from catalog_harness import resolve
 from test_core_logic import session
@@ -36,6 +37,7 @@ def test_runtime_settings_reads_theme_from_config():
     settings = RuntimeSettings.from_dict({}, theme="light")
     assert settings.theme == "light"
 
+
 def test_config_validates_provider_selection_and_provider_fields():
     config = Config.from_dict(
         {
@@ -60,9 +62,15 @@ def test_config_validates_provider_selection_and_provider_fields():
     with pytest.raises(ConfigError):
         ProviderConfig.from_dict({"chat_reasoning": "bad"})
     with pytest.raises(ConfigError):
+        ProviderConfig.from_dict({"reasoning_history": "bad"})
+    with pytest.raises(ConfigError):
         ProviderConfig.from_dict({"prompt_cache_key": "not stable"})
 
     assert ProviderConfig.from_dict({"reasoning": "max"}).reasoning == "max"
+
+    for mode in ("auto", "all", "current_turn", "tool_calls"):
+        assert ProviderConfig.from_dict({"reasoning_history": mode}).reasoning_history == mode
+
 
 def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     client = ModelClient(session(tmp_path))
@@ -79,6 +87,7 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     client.apply_provider_params(params, ProviderConfig(url="https://api.deepseek.com/v1", model="deepseek-chat", reasoning="off"))
     assert params["extra_body"] == {"thinking": {"type": "disabled"}}
     assert "reasoning_effort" not in params
+
 
 def test_every_resolvable_chat_reasoning_mode_is_configurable_by_hand():
     """`chat_reasoning` is the escape hatch when auto guesses wrong for a gateway or an
@@ -99,6 +108,7 @@ def test_every_resolvable_chat_reasoning_mode_is_configurable_by_hand():
     for mode in resolvable:
         assert ProviderConfig.from_dict({"chat_reasoning": mode}).chat_reasoning == mode
 
+
 def test_openai_suppresses_temperature_only_for_reasoning_families(tmp_path):
     """Reasoning models reject temperature outright, while sibling chat models still take it."""
     client = ModelClient(session(tmp_path))
@@ -114,6 +124,7 @@ def test_openai_suppresses_temperature_only_for_reasoning_families(tmp_path):
     client.apply_provider_params(params, chat)
     assert params == {"temperature": 0.7}
 
+
 def test_opencode_routes_each_model_family_to_its_documented_protocol():
     """One base URL multiplexes three wire protocols by model, so api=auto cannot read the URL."""
 
@@ -124,6 +135,7 @@ def test_opencode_routes_each_model_family_to_its_documented_protocol():
     assert api("qwen3-coder") == "anthropic"
     assert api("gpt-5.6") == "responses"
     assert api("deepseek-v4") == "chat"
+
 
 def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
     """Thinking pins sampling to the default; any other temperature is rejected."""
@@ -152,6 +164,7 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
     assert "thinking" not in params
     assert "temperature" not in params
     assert params["extra_body"]["temperature"] == 0.3
+
 
 @pytest.mark.parametrize(
     ("model", "expected"),
@@ -187,6 +200,7 @@ def test_anthropic_thinking_matches_the_generation_of_the_model(tmp_path, model,
 
     assert {key: params[key] for key in ("thinking", "output_config") if key in params} == expected
 
+
 def test_anthropic_reasoning_off_respects_models_that_cannot_stop_thinking(tmp_path):
     """Adaptive models think by default, so "off" has to say so — except on the always-thinking
     families, which reject `disabled` with a 400 and have to be left unconfigured."""
@@ -205,6 +219,7 @@ def test_anthropic_reasoning_off_respects_models_that_cannot_stop_thinking(tmp_p
     assert thinking("claude-mythos-5") is None
     # Extended-thinking models think only when asked, so the parameter is simply absent.
     assert thinking("claude-sonnet-4-5") is None
+
 
 def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_path):
     """xhigh arrived after the 4.6 generation, which tops out at max."""
@@ -235,6 +250,7 @@ def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_pat
     assert params["thinking"] == {"type": "enabled", "budget_tokens": 4096}
     assert params["output_config"] == {"effort": "medium"}
 
+
 def test_anthropic_thinking_budget_stays_under_the_requested_output_budget(tmp_path):
     """The API rejects a budget that is not strictly below max_tokens, so max_tokens has to lower it.
 
@@ -254,6 +270,7 @@ def test_anthropic_thinking_budget_stays_under_the_requested_output_budget(tmp_p
     provider.max_tokens, provider.reasoning = 32_000, "medium"
     assert client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)["thinking"]["budget_tokens"] == 4_096
 
+
 def test_openrouter_reasoning_object_recipe_sends_the_resolved_effort(tmp_path):
     """OpenRouter normalizes reasoning behind its own object, so the recipe reads the resolved
     effort rather than the configured value directly (equal here, because the host's ignore-mode
@@ -264,6 +281,7 @@ def test_openrouter_reasoning_object_recipe_sends_the_resolved_effort(tmp_path):
     client.apply_provider_params(params, ProviderConfig(url="https://openrouter.ai/api/v1", model="kimi-k3", reasoning="medium"))
 
     assert params["extra_body"] == {"reasoning": {"effort": "medium"}}
+
 
 def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
     """The API verifies that thinking blocks return exactly as it produced them, signature
@@ -283,6 +301,7 @@ def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
     )
 
     assert params["messages"][1]["content"] == blocks
+
 
 @pytest.mark.parametrize(
     ("model", "keeps_prior"),
@@ -335,6 +354,7 @@ def test_anthropic_replays_thinking_according_to_model_generation(tmp_path, mode
     assert {"type": "tool_use", "id": "tu", "name": "Read", "input": {"path": "a"}} in blocks
     assert (tokens > client.estimated_request_tokens(without_old_thinking) + 150) is keeps_prior
 
+
 def test_anthropic_always_replays_current_tool_loop_thinking(tmp_path):
     s = session(tmp_path)
     s.config.provider.api = "anthropic"
@@ -347,6 +367,7 @@ def test_anthropic_always_replays_current_tool_loop_thinking(tmp_path):
     ]
 
     assert ModelClient(s).wire(ProviderConfig(api="anthropic", model="claude")).messages(history)[1]["content"] == blocks
+
 
 def test_context_estimate_ignores_opaque_echo_bytes_but_counts_readable_reasoning(tmp_path):
     """Serialized ciphertext/signatures are not prompt text, but readable reasoning replayed by
@@ -375,6 +396,7 @@ def test_context_estimate_ignores_opaque_echo_bytes_but_counts_readable_reasonin
     }
     assert context.estimated_tokens([anthropic]) > context.estimated_tokens([plain]) + 150
 
+
 def test_context_gate_estimates_the_actual_chat_reasoning_history(tmp_path):
     s = session(tmp_path)
     s.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -398,6 +420,7 @@ def test_context_gate_estimates_the_actual_chat_reasoning_history(tmp_path):
     assert context.request_tokens(final_reasoning) < context.request_token_budget()
     assert context.request_tokens(tool_reasoning) > context.request_tokens(tool_plain) + 4_000
     assert context.request_tokens(tool_reasoning) >= context.request_token_budget()
+
 
 def test_context_estimate_uses_each_protocols_replayed_reasoning_shape(tmp_path):
     plain = [{"role": "user", "content": "question"}, {"role": "assistant", "content": "answer"}]

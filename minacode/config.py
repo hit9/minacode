@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
+REASONING_HISTORY_CHOICES = ("auto", "all", "current_turn", "tool_calls")
 
 
 # Output room kept out of the input budget for one request's answer. It is a planning reserve, not a
@@ -113,13 +114,15 @@ class ProviderConfig:
     strict_tools: bool = False
     reasoning: str = "medium"
     chat_reasoning: str = "auto"
+    # Replay policy is independent of the request's reasoning spelling. ``auto`` selects the
+    # catalog policy; an explicit value is the generic escape hatch for an unknown gateway.
+    reasoning_history: str = "auto"
     timeout: int = 120
     response_timeout: int = 600
     extra_body: Json = field(default_factory=dict)
     # Extra HTTP headers sent with every request to this entry. `extra_body` reaches the request
-    # body only, so features a provider puts in the header -- CommandCode's `x-cmd-zdr`, a gateway's
-    # tenant or routing key -- had no expression at all. Merged over minacode's own defaults, so an
-    # entry can also replace the User-Agent; the SDK still derives auth from `key`.
+    # body only, so transport metadata needs a separate channel. Merged over minacode's own
+    # defaults; the SDK still derives authentication from `key`.
     headers: dict[str, str] = field(default_factory=dict)
     # `[provider.X.models]` declarations in declaration order; the first matching glob wins, the
     # way catalog rules resolve. A declaration overrides the catalog for those models.
@@ -145,6 +148,7 @@ class ProviderConfig:
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
         reasoning = Config.str(data, "reasoning", "medium")
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
+        reasoning_history = Config.str(data, "reasoning_history", "auto")
         model_overrides = cls.model_overrides_from(data)
         # A level a model declares is a valid effort for this entry: declaring `ultra` is what
         # makes `reasoning = "ultra"` mean something. Everything else stays a typo, not a value
@@ -154,6 +158,7 @@ class ProviderConfig:
             ("api", api, PROVIDER_API_CHOICES),
             ("reasoning", reasoning, (*reasoning_choices, *sorted(declared))),
             ("chat_reasoning", chat_reasoning, chat_reasoning_choices),
+            ("reasoning_history", reasoning_history, REASONING_HISTORY_CHOICES),
         ):
             if value not in choices:
                 raise ConfigError("provider." + key + " must be one of " + ", ".join(choices))
@@ -178,6 +183,7 @@ class ProviderConfig:
             strict_tools=Config.bool(data, "strict_tools", False),
             reasoning=reasoning,
             chat_reasoning=chat_reasoning,
+            reasoning_history=reasoning_history,
             timeout=Config.int(data, "timeout", 120),
             response_timeout=max(0, Config.int(data, "response_timeout", 600)),
             extra_body=Config.table(data, "extra_body"),
@@ -243,8 +249,7 @@ class ProviderConfig:
         return [name for name in ("url", "key", "model") if not getattr(self, name)]
 
     def builtin_function_names(self) -> tuple[str, ...]:
-        """Declared builtin functions, which the runner answers instead of rejecting as unknown.
-        Evidence: https://platform.kimi.ai/docs/guide/use-web-search"""
+        """Declared provider functions that use the client-echo handshake."""
         return builtin_function_names(self.builtin_tools)
 
     def output_token_budget(self) -> int:
@@ -538,6 +543,7 @@ model = ""
 # api = "auto"                 # auto | chat | responses | anthropic
 # stream = true
 # reasoning = "medium"
+# reasoning_history = "auto"  # auto | all | current_turn | tool_calls
 # max_context_tokens = 0       # how much of THIS model's window to use; 0 inherits runtime.max_context_tokens.
                                # Set it per entry when models differ: 1048576 for a 1M-window model,
                                # 131072 for a 128K one. Fewer compactions on the big one, no overflow
@@ -547,18 +553,16 @@ model = ""
                                # input budget, trading against runtime.max_context_tokens one for one
 # timeout = 120                # transport inactivity
 # response_timeout = 600       # total generation time; 0 disables
-# available_models = ["gpt-5", "gpt-5-mini"]
-# headers = { x-cmd-zdr = "1" }  # extra HTTP headers for this entry; the key above still sets auth
+# available_models = ["example-model", "example-model-mini"]
+# headers = { x-routing-mode = "private" }  # extra HTTP headers; the key above still sets auth
 # omit_body = ["reasoning_effort"]   # request fields this endpoint rejects; extra_body is the
                                      # other half, for fields it needs added
 
 # [provider.default.models]    # what a model accepts, when the built-in guess is wrong
-# "gpt-5.6*" = { reasoning = ["low", "medium", "high", "ultra"] }   # weakest first
+# "reasoner-*" = { reasoning = ["low", "medium", "high", "ultra"] }   # weakest first
 
 # builtin_tools = [{ type = "web_search" }]   # provider-side tools, passed through verbatim
-                                              # OpenAI/Qwen: { type = "web_search" }
-                                              # Anthropic:   { type = "web_search_20250305", name = "web_search" }
-                                              # Z.AI:        { type = "web_search", web_search = { enable = "True" } }
+                                              # entries use the active protocol's documented shape
 
 # [runtime]                    # optional overrides (defaults shown)
 # yolo = false

@@ -4,6 +4,10 @@
 
 ### Added
 
+- A provider entry can set `reasoning_history = "all"`, `"current_turn"`, or `"tool_calls"` when
+  an unknown gateway needs a replay policy different from the catalog. The default `auto` follows
+  the selected catalog; request-body extensions no longer change history behavior implicitly.
+
 - A provider entry can state what a model accepts, for when the built-in guess is wrong:
   `[provider.X.models]` maps a model name or glob to an ordered `reasoning` list, weakest first.
   Effort support belongs to the model rather than the endpoint, so this is where it is declared;
@@ -31,6 +35,9 @@
   publication date, maintenance scope, source, bundled/cached versions, and the latest sync result.
 
 ### Changed
+
+- The explanation under `/reason` uses a readable informational color instead of the disabled-row
+  gray, while keeping the selected effort visually dominant.
 
 - Kimi K3 and K2.7 Code are no longer routed as text-only. Their documented endpoints accept
   image input, so attachments now stay on the selected model instead of being diverted to the

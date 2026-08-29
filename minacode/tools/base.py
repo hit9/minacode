@@ -102,7 +102,7 @@ class Tool:
 
     @staticmethod
     def _strict_schema(schema: Json) -> Json:
-        """Rewrite a JSON Schema to satisfy strict function-calling (OpenAI / DeepSeek beta):
+        """Rewrite a JSON Schema to satisfy strict function-calling:
         every object property becomes required (genuine optionals turned nullable),
         additionalProperties is forced false, and unsupported keywords are dropped."""
         # Strict validators only allow scalar types in a `type` union; object/array nullability

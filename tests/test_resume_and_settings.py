@@ -1,4 +1,5 @@
 """resume and settings (split from tests/test_core_logic.py)."""
+
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +53,7 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
     # The alias is resolved against the current project, not a global pointer.
     assert selected == [("latest", config, settings, str(tmp_path))]
 
+
 def test_resume_request_starts_the_next_run_on_the_chosen_session(tmp_path, monkeypatch):
     """/sessions ends one run and main starts the next on the session it named, instead of
     re-pointing a live object graph at a different Session."""
@@ -89,6 +91,7 @@ def test_resume_request_starts_the_next_run_on_the_chosen_session(tmp_path, monk
     # Each run is torn down before the next is built; nothing is carried across.
     assert closed == ["second-uid", ""]
 
+
 def test_runtime_settings_reads_limits_and_yolo_override():
     settings = RuntimeSettings.from_dict(
         {"runtime": {"shell_timeout": 7, "max_agent_steps": 0, "max_context_tokens": 0, "yolo": False}},
@@ -99,6 +102,7 @@ def test_runtime_settings_reads_limits_and_yolo_override():
     assert settings.max_steps == 1
     assert settings.max_context_tokens == 1
     assert settings.yolo is True
+
 
 def test_runtime_language_defaults_normalizes_and_validates():
     assert RuntimeSettings().language == "auto"
@@ -120,9 +124,11 @@ def test_runtime_language_defaults_normalizes_and_validates():
     with pytest.raises(ConfigError, match="runtime.language"):
         RuntimeSettings.clean_language("x" * 65)
 
+
 def test_runtime_settings_default_context_budget_is_256k():
     assert RuntimeSettings().max_context_tokens == 256 * 1024
     assert RuntimeSettings.from_dict({}).max_context_tokens == 256 * 1024
+
 
 def test_provider_timeout_defaults_distinguish_inactivity_from_total_generation():
     assert ProviderConfig().timeout == 120
@@ -131,6 +137,13 @@ def test_provider_timeout_defaults_distinguish_inactivity_from_total_generation(
     assert Config.from_dict({}).provider.response_timeout == 600
     assert ProviderConfig.from_dict({"response_timeout": 0}).response_timeout == 0
     assert "# response_timeout = 600" in ConfigFile.DEFAULT_TEXT
+
+
+def test_provider_reasoning_history_defaults_to_catalog_policy():
+    assert ProviderConfig().reasoning_history == "auto"
+    assert Config.from_dict({}).provider.reasoning_history == "auto"
+    assert '# reasoning_history = "auto"' in ConfigFile.DEFAULT_TEXT
+
 
 def test_provider_max_tokens_defaults_to_zero_and_reserve_stays_bounded():
     assert ProviderConfig().max_tokens == DEFAULT_MAX_TOKENS == 0
@@ -147,10 +160,12 @@ def test_provider_max_tokens_defaults_to_zero_and_reserve_stays_bounded():
     assert policy.resolve(ProviderConfig(api="anthropic")).output_max_tokens == expected
     assert policy.resolve(ProviderConfig(api="anthropic", max_tokens=2_048)).output_max_tokens == 2_048
 
+
 def test_provider_stream_defaults_on_and_can_be_disabled():
     assert ProviderConfig().stream is True
     assert ProviderConfig.from_dict({"stream": False}).stream is False
     assert "# stream = true" in ConfigFile.DEFAULT_TEXT
+
 
 def test_provider_ignores_obsolete_image_input_values():
     assert not hasattr(ProviderConfig(), "image_input")

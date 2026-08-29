@@ -513,6 +513,18 @@ def test_only_deepseek_keeps_completed_tool_reasoning_across_user_turns(tmp_path
     assert "reasoning_content" not in qwen.wire(qwen.session.config.provider).messages(history)[1]
 
 
+def test_explicit_reasoning_history_keeps_final_reasoning(tmp_path):
+    s = _session(
+        tmp_path,
+        url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="qwen3.8-max-preview",
+        reasoning_history="all",
+    )
+    message = {"role": "assistant", "content": "answer", "reasoning_content": "reasoning"}
+
+    assert ModelClient(s).wire(s.config.provider).messages([message]) == [message]
+
+
 @pytest.mark.parametrize(
     "extra_body",
     [
@@ -521,11 +533,11 @@ def test_only_deepseek_keeps_completed_tool_reasoning_across_user_turns(tmp_path
         {"thinking": {"clear_thinking": False}},
     ],
 )
-def test_explicit_preserved_thinking_keeps_final_reasoning(tmp_path, extra_body):
+def test_extra_body_does_not_implicitly_change_reasoning_history(tmp_path, extra_body):
     s = _session(tmp_path, url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3.8-max-preview", extra_body=extra_body)
     message = {"role": "assistant", "content": "answer", "reasoning_content": "reasoning"}
 
-    assert ModelClient(s).wire(s.config.provider).messages([message]) == [message]
+    assert ModelClient(s).wire(s.config.provider).messages([message]) == [{"role": "assistant", "content": "answer"}]
 
 
 def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_path, monkeypatch):

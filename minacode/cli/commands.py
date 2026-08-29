@@ -180,10 +180,9 @@ def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     # itself, since text appearing under a list of choices otherwise reads as being about the
     # choice rather than about the list.
     why, evidence = loop.session.policy.effort_source(provider, model)
-    # Fragments rather than a plain preview string, to take the dim style every other secondary
-    # line in a modal uses. The preview default is green italic, which reads as content; this is
-    # a note about the screen, like the key hints above it.
-    footer: StyleAndTextTuples = [("class:choice.disabled", "  │ " + line + "\n") for line in ("Why these levels", why, evidence) if line]
+    # The explanation has its own quiet informational tone: visible enough to read, while the
+    # selected row remains the strongest element in the modal.
+    footer: StyleAndTextTuples = [("class:choice.explanation", "  │ " + line + "\n") for line in ("Why these levels", why, evidence) if line]
     return select_choice(loop, "Reasoning effort", choices, labels=labels, current=current, preview_fn=(lambda _choice: footer) if why else None)
 
 
@@ -435,6 +434,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.supported_reasoning: {', '.join(loop.session.policy.reasoning_choices(provider))}",
             f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
             f"provider.chat_reasoning: {provider.chat_reasoning}",
+            f"provider.reasoning_history: {provider.reasoning_history}",
             f"provider.resolved_chat_reasoning_history: {resolved.chat_reasoning_history}",
             f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
             f"provider.max_tokens: {provider.max_tokens or '(server default)'}",

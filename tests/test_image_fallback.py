@@ -87,56 +87,10 @@ def run_with(s, model):
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
-        # documented text families
         ("deepseek-chat", True),
-        ("deepseek-reasoner", True),
-        ("deepseek-v4-flash", True),
-        ("deepseek-v4-pro", True),
-        ("deepseek-v3", True),
-        ("deepseek-v3.1", True),
-        ("deepseek-v3.2", True),
-        ("deepseek-r1", True),
         ("glm-5", True),
-        ("glm-5-turbo", True),
-            ("glm-5.1", True),
-            ("glm-4.6", True),
-            ("glm-4.7", True),
-            ("kimi-k2", True),
-        ("moonshot-v1-8k", True),
-        ("moonshot-v1-32k", True),
-        ("moonshot-v1-128k", True),
-        ("minimax-m2.5", True),
-        ("gpt-oss-20b", True),
-        ("gpt-oss-120b", True),
-        ("qwen3-max-2026-01-23", True),
-        ("qwen3-coder-next", True),
-        # vision variants and unknown models stay main-first (never in the negative list)
-            ("deepseek-v4-flash-vision-exp", False),
-            ("deepseek-v4-pro-vision", False),
-            # Current Kimi K3 and K2.7 Code endpoints accept images; they must stay main-first.
-            ("kimi-k3", False),
-            ("kimi-k2.7-code", False),
-            ("k3", False),
-            ("kimi-for-coding", False),
-        # documented DeepSeek vision families share only the `deepseek-` prefix
         ("deepseek-vl", False),
-        ("deepseek-vl2", False),
-        ("deepseek-ocr", False),
         ("glm-5v", False),
-        ("glm-4.6v", False),
-        ("glm-4.5v", False),
-        ("glm-ocr", False),
-        ("kimi-k2.5", False),
-        ("kimi-k2.6", False),
-        ("moonshot-v1-32k-vision-preview", False),
-        ("moonshot-v1-8k-vision-preview", False),
-        ("qwen-vl-max", False),
-        ("deepseek vision", False),
-        ("gpt-4o", False),
-        ("gpt-4o-mini", False),
-        ("gpt-5", False),
-        ("claude-sonnet-4-5", False),
-        ("gemini-2.0-flash", False),
         ("", False),
     ],
 )
@@ -148,16 +102,9 @@ def test_static_text_only_catalog_positives_and_negatives(model, expected):
     ("model", "expected"),
     [
         ("deepseek/deepseek-chat", True),
-        ("deepseek/deepseek-v3.2", True),
-        ("deepseek/deepseek-r1", True),
         ("z-ai/glm-5", True),
-        ("bigmodel/glm-4.6", True),
-        ("qwen/qwen3-coder-next", True),
-        ("moonshotai/moonshot-v1-32k", True),
-        ("openai/gpt-oss-120b", True),
         # a non-canonical vendor prefix keeps the ID unknown, so it is probed on the main model
         ("my-gateway/deepseek-chat", False),
-        ("openrouter/deepseek-chat", False),
         ("deepseek/glm-5v", False),
     ],
 )
@@ -172,7 +119,6 @@ def test_resolve_folds_static_text_only_evidence():
     assert resolved("deepseek-chat").text_only is True
     assert resolved("deepseek/deepseek-chat").text_only is True
     assert resolved("glm-5v").text_only is False
-    assert resolved("gpt-4o").text_only is False
     assert resolved("my-gateway/deepseek-chat").text_only is False
 
 

@@ -262,9 +262,9 @@ class CompatibilityResolver:
     def text_only(self, provider: ProviderRule | None, model: str) -> bool:
         """Whether a configured model ID resolves to documented static text-only evidence.
 
-        The full ID is matched first; a canonical ``vendor/model`` gateway form (OpenRouter/OpenCode)
-        is matched by its model part only when the vendor prefix is one of the canonical family
-        slugs, so a custom alias or an unknown host stays unknown and is probed on the main model.
+        The full ID is matched first; a catalog-declared canonical ``vendor/model`` form is matched
+        by its model part only when the vendor prefix is one of the declared family slugs, so a
+        custom alias or an unknown host stays unknown and is probed on the main model.
         """
 
         return self.field_value(provider, model, "image.input") == "text_only"
@@ -436,6 +436,7 @@ class PolicyConfig(Protocol):
     model: str
     api: str
     chat_reasoning: str
+    reasoning_history: str
     reasoning: str
     max_tokens: int
     temperature: float | None
@@ -599,7 +600,8 @@ class ProviderPolicy:
             url += "/beta"
 
         history = self._resolver.field_value(provider, model, "history.reasoning")
-        chat_reasoning_history = str(history or "all")
+        configured_history = str(getattr(config, "reasoning_history", "auto"))
+        chat_reasoning_history = configured_history if configured_history != "auto" else str(history or "all")
         wire_defaults = self.snapshot.defaults.wire_defaults.get(api, {})
         configured_max_tokens = getattr(config, "max_tokens", 0)
         if isinstance(configured_max_tokens, bool) or not isinstance(configured_max_tokens, int):

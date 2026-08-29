@@ -1,4 +1,5 @@
 """provider command ui (split from tests/test_command_ui.py)."""
+
 import threading
 from types import SimpleNamespace
 
@@ -73,6 +74,7 @@ def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
     assert result == "b"
     assert "Beta" in "".join(text for frame in modal.frames for _, text in frame)
 
+
 def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -99,6 +101,7 @@ def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, mo
     assert "Set provider.model = model-b" in result
     assert "Set provider.api = responses (wire: responses)" in result
 
+
 def test_runtime_provider_switches_are_recorded_for_resume(tmp_path):
     """Every runtime switch is recorded per entry so a later --resume can restore it."""
     command_loop = loop(tmp_path)
@@ -118,6 +121,7 @@ def test_runtime_provider_switches_are_recorded_for_resume(tmp_path):
     assert api(command_loop, "responses") == "Set provider.api = responses (wire: responses)"
     assert session.provider_overrides["providers"]["other"]["api"] == "responses"
     assert session.provider_overrides["active_provider"] == "other"
+
 
 def test_model_override_binds_to_the_entry_it_was_set_on(tmp_path):
     """model/reasoning/api overrides key on the active entry at switch time, so a /provider after a
@@ -142,12 +146,14 @@ def test_model_override_binds_to_the_entry_it_was_set_on(tmp_path):
     assert session.config.providers["default"].model == "model-on-default"
     assert session.config.providers["a"].model == "model-on-a"
 
+
 def test_provider_and_model_commands_validate_direct_arguments(tmp_path):
     command_loop = loop(tmp_path)
 
     assert provider(command_loop, "one two") == "Usage: /provider [NAME]"
     assert provider(command_loop, "missing") == "Unknown provider: missing"
     assert model(command_loop, "one two") == "Usage: /model [MODEL]"
+
 
 def test_reason_strict_and_set_commands_validate_values(tmp_path):
     from prompt_toolkit.document import Document
@@ -172,6 +178,7 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert stream_values == ["on", "off"]
     assert set_value(command_loop, "provider.image_input off") == "Unknown config key: provider.image_input"
 
+
 def test_reason_only_accepts_efforts_the_active_model_takes(tmp_path):
     """What is offered is what the model accepts, so the chosen effort is the sent effort."""
     command_loop = loop(tmp_path)
@@ -185,6 +192,7 @@ def test_reason_only_accepts_efforts_the_active_model_takes(tmp_path):
     # effort sent, with nothing rewritten in between.
     assert reason(command_loop, "max").startswith("Usage: /reason ")
 
+
 def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.config.providers["default"] = ProviderConfig.from_dict(
@@ -197,6 +205,7 @@ def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
     # A level minacode knows but this model does not is refused like any other unavailable one.
     assert reason(command_loop, "medium").startswith("Usage: /reason ")
 
+
 def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
@@ -205,6 +214,7 @@ def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_pat
     provider.reasoning = "max"
 
     assert "provider.resolved_reasoning_effort: xhigh" in config(command_loop, "")
+
 
 def test_language_command_shows_sets_and_resets(tmp_path):
     command_loop = loop(tmp_path)
@@ -226,12 +236,14 @@ def test_language_command_shows_sets_and_resets(tmp_path):
     assert language_command(command_loop, "x" * 65).startswith("runtime.language")
     assert command_loop.session.settings.language == "auto"  # unchanged after the rejected set
 
+
 def test_config_shows_runtime_language(tmp_path):
     command_loop = loop(tmp_path)
     assert "runtime.language: auto" in config(command_loop, "")
 
     command_loop.session.settings.language = "Chinese"
     assert "runtime.language: Chinese" in config(command_loop, "")
+
 
 def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_path):
     # A model chosen with /model may not be served over the provider's configured protocol, so the
@@ -250,6 +262,7 @@ def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_pa
 
     provider.url = "https://example.com/v1/responses"
     assert api(command_loop, "auto") == "Set provider.api = auto (wire: responses)"
+
 
 def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -271,6 +284,7 @@ def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_
     assert shown["current"] == "chat"
     assert shown["labels"]["auto"] == "auto - infer from the endpoint URL and model (responses)"
     assert shown["labels"]["chat"] == "chat (current)"
+
 
 def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch):
     """The picker is the model's scale, not minacode's."""
@@ -297,13 +311,10 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
     assert shown["labels"]["off"] == "off - disable reasoning"
     # A shortened list has to account for itself where it is shown, or it just looks broken.
     assert shown["footer"] == (
-        "  │ Why these levels\n"
-        "  │ this generation dropped minimal, and max is not a spelling here\n"
-        "  │ https://developers.openai.com/api/docs/models/gpt-5.5\n"
+        "  │ Why these levels\n  │ this generation dropped minimal, and max is not a spelling here\n  │ https://developers.openai.com/api/docs/models/gpt-5.5\n"
     )
-    # The dim style every other secondary line in a modal uses, not the preview default, which is
-    # green italic and reads as content rather than as a note about the screen.
-    assert shown["footer_styles"] == {"class:choice.disabled"}
+    assert shown["footer_styles"] == {"class:choice.explanation"}
+
 
 def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
     import minacode.cli.modals as modals_mod
@@ -327,6 +338,7 @@ def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeyp
     # A config declaration is its own account of itself; there is no page to cite for it.
     assert shown["footer"] == "  │ Why these levels\n  │ declared for this model in your config\n"
 
+
 def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     from prompt_toolkit.document import Document
 
@@ -341,6 +353,7 @@ def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     # The wire is a command, not a /set key, so it must not be reachable both ways.
     assert "provider.api" not in SET_KEYS
     assert set_value(command_loop, "provider.api chat") == "Unknown config key: provider.api"
+
 
 def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reasoning_to_the_wire(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -377,6 +390,7 @@ def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reasoning_to
     assert provider.reasoning == "high"
     assert "Set provider.api = responses (wire: responses)" in result
 
+
 def test_model_chain_leaves_the_wire_alone_when_selection_is_unavailable(tmp_path):
     # Non-interactive input returns None from every picker; the model still applies, the wire is untouched.
     command_loop = loop(tmp_path)
@@ -391,6 +405,7 @@ def test_model_chain_leaves_the_wire_alone_when_selection_is_unavailable(tmp_pat
     assert provider.model == "model-a"
     assert provider.api == "responses"
     assert provider.reasoning == "low"
+
 
 def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
@@ -413,6 +428,7 @@ def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
     assert calls[0]["api_key"] == "secret"
     assert calls[0]["max_retries"] == 0
 
+
 def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
@@ -424,6 +440,7 @@ def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
     monkeypatch.setattr(openai_module, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
 
     assert remote_models(command_loop, provider) == ()
+
 
 def test_effort_is_an_alias_for_reason(tmp_path):
     command_loop = loop(tmp_path)
@@ -442,6 +459,7 @@ def test_effort_is_an_alias_for_reason(tmp_path):
 
     texts = [c.text for c in CommandCompleter().get_completions(Document("/effort "), None)]
     assert set(texts) == {"off", *command_loop.session.policy.effort_order}
+
 
 def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -475,6 +493,7 @@ def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_pa
         ),
     )
 
+
 def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -492,6 +511,7 @@ def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path, mon
 
     assert "Set provider.model = remote-model" in model(command_loop, "")
     assert transitions == ["Loading models...", ""]
+
 
 def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
@@ -539,6 +559,7 @@ def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monk
     assert command_loop.session.config.provider.reasoning == "medium"
     assert "Set provider.model = model-b" in result[0]
 
+
 def test_single_enabled_choice_is_selected_without_opening_modal(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -546,6 +567,7 @@ def test_single_enabled_choice_is_selected_without_opening_modal(tmp_path, monke
 
     assert select_choice(command_loop, "Provider", ("only",), current="only") == "only"
     assert select_choice(command_loop, "Model", ("heading", "only"), disabled={"heading"}) == "only"
+
 
 def test_provider_auto_selects_sole_provider_and_model(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -568,6 +590,7 @@ def test_provider_auto_selects_sole_provider_and_model(tmp_path, monkeypatch):
     assert titles == ["Request API", "Reasoning effort"]
     assert "Set provider.model = only-model" in result
 
+
 def test_diff_viewer_switches_tabs_and_opens_selected_file(tmp_path):
     command_loop = diff_loop(tmp_path)
     switched = ModalHarness(["l", "q"])
@@ -584,6 +607,7 @@ def test_diff_viewer_switches_tabs_and_opens_selected_file(tmp_path):
     assert "Edit · b.py" in text
     assert "[diff]" in text
 
+
 def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path):
     command_loop = diff_loop(tmp_path)
     initial = ModalHarness(["enter", "q"])
@@ -598,6 +622,7 @@ def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path):
     assert initial_text != scrolled_text
     assert "[diff]" in scrolled_text
 
+
 def test_empty_diff_viewer_reports_zero_position(tmp_path):
     command_loop = loop(tmp_path)
     modal = ModalHarness(["q"])
@@ -607,6 +632,7 @@ def test_empty_diff_viewer_reports_zero_position(tmp_path):
 
     assert "No diffs" in text
     assert "[0/0]" in text
+
 
 def test_diff_view_state_owns_navigation_transitions():
     state = DiffViewState(TabbedViewState(("Latest", "Session")))
@@ -626,6 +652,7 @@ def test_diff_view_state_owns_navigation_transitions():
     assert state.handle_key("r", 3, 10) is DiffViewState.REFRESH
     assert state.handle_key("q", 3, 10) is None
 
+
 def test_diff_view_g_and_shift_g_jump_top_and_bottom():
     state = DiffViewState(TabbedViewState(("Latest", "Session")))
 
@@ -643,6 +670,7 @@ def test_diff_view_g_and_shift_g_jump_top_and_bottom():
     state.handle_key("g", 5, 10)
     assert state.view.scroll == 0
 
+
 @pytest.mark.parametrize(("key", "expected_tab"), [("l", 1), ("tab", 1), ("h", 0)])
 def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
     state = DiffViewState(TabbedViewState(("Latest", "Session"), tab=0 if key != "h" else 1))
@@ -653,6 +681,7 @@ def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
     assert state.view.tab == expected_tab
     assert state.mode is DiffViewState.Mode.LIST
     assert state.file == 0
+
 
 def test_switching_provider_says_when_it_had_to_move_the_effort(tmp_path):
     """The one moment an effort changes without being chosen. Saying it is the price of never
@@ -668,6 +697,7 @@ def test_switching_provider_says_when_it_had_to_move_the_effort(tmp_path):
     assert result == "Set provider = deep\nReasoning medium is not offered by deepseek-v4-flash, using high"
     assert session.config.provider.reasoning == "high"
     assert session.provider_overrides["providers"]["deep"]["reasoning"] == "high"
+
 
 def test_switching_provider_stays_quiet_when_the_effort_still_fits(tmp_path):
     command_loop = loop(tmp_path)

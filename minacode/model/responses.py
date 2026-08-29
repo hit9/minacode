@@ -190,11 +190,8 @@ def reassemble_stream(
         for event in client.responses.create(**params):
             raise_if_inactive()
             event_type = str(message_field(event, "type") or "")
-            # Two spellings of the same event: hosts that summarize reasoning stream the summary,
-            # hosts that expose the raw chain stream the text. DeepSeek only ever sends the
-            # latter and documents that it generates no summary at all, so listening for one
-            # spelling leaves a thinking model with no preview.
-            # Evidence: https://api-docs.deepseek.com/guides/responses_api
+            # Two wire spellings of the same event: summarized reasoning and raw reasoning text.
+            # Accept both shapes so a standards-compatible extension does not lose its preview.
             if event_type in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
                 emit("reasoning", str(message_field(event, "delta") or ""))
             elif event_type in ("response.output_text.delta", "response.refusal.delta"):
@@ -323,9 +320,8 @@ def responses_result(
 def responses_sources(saved_output: list[Json], collect_sources: Callable[..., list[Json]]) -> list[Json]:
     """Sources a Responses host attached to one response.
 
-    Two hosts, two places: OpenAI cites inline through `url_citation` annotations on the
-    message, while Qwen returns no citations at all and reports sources only on the search
-    call. Reading both keeps one renderer honest across them."""
+    Responses implementations attach them either to message annotations or to the server-tool
+    item. Reading both wire locations keeps one renderer honest across them."""
     groups: list[Any] = []
     for item in saved_output:
         if item.get("type") == "message":

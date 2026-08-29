@@ -381,7 +381,6 @@ def anthropic_result(
     assistant: Json = {"role": "assistant", "content": text or None, ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
     # A long server-side tool run can be paused and handed back mid-turn. The turn continues by
     # sending this message back unchanged, which the saved content blocks above already do.
-    # Evidence: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
     if message_field(result, "stop_reason") == "pause_turn":
         assistant[PAUSED_TURN_KEY] = True
     if sources := anthropic_sources(saved_content, collect_sources):

@@ -119,7 +119,7 @@ class CommandLoop:
 - `/set KEY VALUE` — Set `provider.*` and `runtime.*`.
 - `/language [NAME]` — Force or show the reply language; auto follows your messages.
 - `/yolo` — Toggle tool confirmations.
-- `/strict` — Toggle strict tool-call schemas (OpenAI / DeepSeek).
+- `/strict` — Toggle strict tool-call schemas where supported.
 - `/mcp` — Manage MCP server connections.
 - `/exit`, `/quit` — Exit.
 

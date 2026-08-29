@@ -538,6 +538,7 @@ class View:
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
                 "choice.preview": "ansigreen italic",
+                "choice.explanation": Theme.style("status.reason"),
                 # The preview's user messages take the same tone as the transcript's `• ` lines.
                 "choice.user": Theme.style("user.log"),
                 # The Ctrl-O browser's rows, coloured as the transcript colours the same call: the

@@ -530,7 +530,7 @@ class ModelClient:
                 item = raw if isinstance(raw, dict) else responses.dump_message_item(raw)
                 if not isinstance(item, dict):
                     continue
-                # OpenAI and OpenRouter nest the fields one level down under `url_citation`.
+                # Some Responses/Chat source records nest the common fields under `url_citation`.
                 nested = item.get("url_citation")
                 if isinstance(nested, dict):
                     item = nested
@@ -543,9 +543,7 @@ class ModelClient:
         """Provider-side tool entries, copied so a request cannot mutate the loaded config.
 
         These reach every protocol's `tools` array unchanged. Each host expresses its builtin
-        tools in the shape of the active protocol — including OpenRouter on both Chat and Responses
-        — so one pass-through serves all of them. Qwen Chat configures search through
-        `extra_body.enable_search` instead.
+        tools in the shape of the active protocol, so one pass-through serves all of them.
 
         Documented providers restrict which wire may carry each provider-native entry. Entries
         outside that wire stay configured but inactive, so switching models never requires
@@ -629,9 +627,8 @@ class ModelClient:
         details = [item for item in (responses.dump_message_item(raw) for raw in raw_details) if item]
         if details:
             data["reasoning_details"] = details
-        # Chat hosts that cite (OpenAI's search models, OpenRouter's web plugin) hang annotations
-        # off the message. Hosts that report search on the response instead of the message are not
-        # covered here; their sources stay where the provider put them.
+        # Chat citations hang annotations off the message. Sources reported elsewhere in the
+        # response stay where the provider put them.
         if sources := self.collect_sources(self.message_field(message, "annotations")):
             data[SEARCH_SOURCES_KEY] = sources
         tool_calls: list[Json] = []
