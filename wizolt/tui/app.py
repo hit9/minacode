@@ -356,8 +356,17 @@ class TuiApp:
         self.invalidate()
 
     def invalidate(self) -> None:
-        if self.app is not None:
-            self.app.invalidate()
+        app = self.app
+        if app is None:
+            return
+        try:
+            app.invalidate()
+        except RuntimeError:
+            # prompt-toolkit checks `is_running` before scheduling, but shutdown can clear its
+            # event loop between that check and the thread-safe call. A redraw that lost that race
+            # is obsolete; an error from a still-running application is not.
+            if app.is_running:
+                raise
 
     def invalidate_frame(self) -> None:
         """Ask for a redraw from a source that fires far faster than the eye needs.

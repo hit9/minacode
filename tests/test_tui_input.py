@@ -33,6 +33,32 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import CallbackPlaceholder, TuiApp
 
 
+def test_invalidate_ignores_redraw_that_loses_application_shutdown_race():
+    app = TuiApp()
+    prompt_app = SimpleNamespace(is_running=True)
+
+    def invalidate():
+        prompt_app.is_running = False
+        raise RuntimeError("no running event loop")
+
+    prompt_app.invalidate = invalidate
+    app.app = prompt_app
+
+    app.invalidate()
+
+
+def test_invalidate_preserves_runtime_error_while_application_is_running():
+    app = TuiApp()
+
+    def invalidate():
+        raise RuntimeError("redraw failed")
+
+    app.app = SimpleNamespace(is_running=True, invalidate=invalidate)
+
+    with pytest.raises(RuntimeError, match="redraw failed"):
+        app.invalidate()
+
+
 def ctrl_c_queue_scenario(cwd, results):
     config = Config(data_dir=cwd)
     scenario_session = Session(cwd=cwd, config=config)

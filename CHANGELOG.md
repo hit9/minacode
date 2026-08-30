@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.37.1 - 2026-08-29
+
+### Fixed
+
+- Avoid a rare crash when the terminal UI exits while background work requests a redraw.
+
 ## 0.37.0 - 2026-08-29
 
 ### Changed
