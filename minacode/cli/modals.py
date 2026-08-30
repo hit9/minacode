@@ -662,16 +662,17 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
                     ),
                 )
             )
-        # A blank line sets the fields apart from the body below the rule, and the body from
-        # the result: three sections instead of one wall of text.
+        # A blank line on each side of a rule sets the fields apart from the body, and the
+        # body from the result: three sections instead of one wall of text.
         lines.append([])
         lines.append(separator(width))
+        lines.append([])
         lines.extend(code_rows(view.text, view.lexer, width, margin) if view.lexer else markdown_rows(view.text, width))
         if view.result.strip():
             # Plain, unlexed, and whole: this is the result exactly as the model received it, and a
             # viewer opened to check what a script did may not quietly edit or clip it. Default
             # foreground, not dimmed, so the answer reads as plainly as the text above it.
-            lines.extend([[], separator(width, "result")])
+            lines.extend([[], separator(width, "result"), []])
             lines.extend(wrapped_rows(view.result.rstrip(), width, margin))
         wrapped[width] = lines
         return lines
