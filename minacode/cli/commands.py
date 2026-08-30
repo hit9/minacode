@@ -347,6 +347,7 @@ def catalog_command(loop: CommandLoop, args: str) -> str:
     elif state.last_synced_at:
         rows.append(("sync", "last " + time.strftime("%Y-%m-%d %H:%M", time.localtime(state.last_synced_at))))
     rows.append(("remote", CATALOG_URL))
+    rows.append(("hint", "run `/catalog sync` to force a remote check"))
     return markdown_table(["field", "value"], rows)
 
 

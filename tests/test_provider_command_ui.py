@@ -52,6 +52,25 @@ def test_catalog_command_reports_the_selected_snapshot_and_is_not_queue_safe(tmp
     assert catalog_command(command_loop, "unknown") == "Usage: /catalog [status|sync]"
 
 
+def test_catalog_command_completes_its_subcommands(tmp_path):
+    from prompt_toolkit.document import Document
+
+    completer = CommandCompleter()
+    sub_texts = [c.text for c in completer.get_completions(Document("/catalog "), None)]
+    assert set(sub_texts) == {"status", "sync"}
+    sync_texts = [c.text for c in completer.get_completions(Document("/catalog sy"), None)]
+    assert set(sync_texts) == {"sync"}
+
+
+def test_catalog_command_status_suggests_the_manual_sync(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
+
+    status = catalog_command(command_loop, "status")
+
+    assert "`/catalog sync`" in status
+
+
 def test_catalog_command_adds_the_sync_error_prefix_once(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)

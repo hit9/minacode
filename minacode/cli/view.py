@@ -135,6 +135,12 @@ class CommandCompleter(Completer):
                 yield from self.matches(self.mcp_connected_servers(), value)
                 return
 
+        if text.startswith("/catalog "):
+            tail = text[len("/catalog ") :]
+            if " " not in tail:
+                yield from self.matches(("status", "sync"), tail)
+                return
+
         span = active_mention(text)
         if span is not None:
             yield from self._mention_completions(span, span.start - len(text))
