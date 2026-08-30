@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="https://raw.githubusercontent.com/hit9/wizolt/master/docs/_static/wizolt-logo.png" alt="Wizolt logo: a blue hooded terminal mage holding a lightning staff" width="48">
+  <img src="https://raw.githubusercontent.com/hit9/wizolt/master/docs/_static/wizolt-logo.png" alt="Wizolt logo: a blue hooded terminal mage holding a lightning staff" width="112"><br>
   wizolt
 </h1>
 
