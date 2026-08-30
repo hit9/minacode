@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.36.0 - 2026-08-29
 
 ### Added
 
@@ -738,7 +738,7 @@
   declares one; prose, `/` commands, and everything else still complete on `Tab`.
 
 - Provider `429` responses whose error body carries account/billing wording (e.g. OpenAI
-  `insufficient_quota`, Kimi `exceeded_current_quota_error`, z.ai "Insufficient balance ...") are
+  `insufficient_quota`, Kimi `exceeded_current_quota_error`, `z.ai` "Insufficient balance ...") are
   treated as permanent quota/billing failures: the request fails immediately instead of retrying
   through the backoff. Transient rate-limit 429s retry exactly as before, including the ones
   phrased with the same vocabulary — Google/Vertex `Quota exceeded for quota metric …` and
@@ -1210,14 +1210,14 @@
   Builtin skills use the same discovery and loading path as ordinary skills; user and project
   skills can override them by name.
 - Add `max` reasoning effort and map normalized effort levels to each documented provider/model
-  family, including OpenAI GPT-5 and o-series generations, Anthropic, DeepSeek, Qwen, Kimi, Z.AI,
+  family, including OpenAI GPT-5 and o-series generations, Anthropic, DeepSeek, Qwen, Kimi, `Z.AI`,
   OpenRouter, and OpenCode Zen. Unknown providers and future model names retain generic
   pass-through behavior, and `/config` now shows the resolved effort sent to the active model.
 - Add a `provider.builtin_tools` option (a list of tables, default empty) appended verbatim to the
   `tools` array of whichever protocol the provider speaks, so a provider's own server-side tools can
   be offered to the model. This is how provider web search is enabled: `{ type = "web_search" }` for
   OpenAI and Qwen on the Responses API, `{ type = "web_search_20250305", name = "web_search" }` for
-  Anthropic, `{ type = "web_search", web_search = { enable = "True" } }` for Z.AI, and
+  Anthropic, `{ type = "web_search", web_search = { enable = "True" } }` for `Z.AI`, and
   `{ type = "openrouter:web_search" }` for OpenRouter. Entries are passed through unchanged after a
   check for a non-empty `type` and against the provider's documented wire. Enabling an active entry
   changes the prompt cache key, and `/config` distinguishes configured entries from the active
@@ -1225,7 +1225,7 @@
   `enable_search` — and continues to use `provider.extra_body`.
 - Scope known `provider.builtin_tools` entries to their documented request wire. Responses-only
   entries (OpenAI, Qwen) are omitted on Chat or Anthropic, Anthropic server tools only travel over
-  Messages, and Z.AI/Kimi Chat entries only over Chat. Incompatible entries remain configured and
+  Messages, and `Z.AI/Kimi` Chat entries only over Chat. Incompatible entries remain configured and
   become active again after switching back, so a shared provider configuration works across models
   without destructive edits; `/api` and `/config` report when they are inactive. On an active wire,
   known providers still reject unsupported entries (for example Qwen `code_interpreter` or
@@ -1466,7 +1466,7 @@
 - Detect OpenAI reasoning through the `o` and `gpt-5` model families instead of enumerating releases. Aliyun endpoints under `aliyuncs.com` use `reasoning_effort` only for the documented Qwen3.8 family, including `none` for `/reason off`, so existing `chat_reasoning = "auto"` configurations work without per-model overrides.
 - Stop imposing the obsolete 32K output cap on DeepSeek; current models use the server-side default unless `provider.max_tokens` is explicitly configured.
 - Raise the normalized `minimal` manual-thinking budget to the provider-supported 1,024-token floor instead of sending an invalid 256-token Anthropic budget.
-- Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
+- Add documented compatibility overrides for Kimi and `Z.AI` across their international and China endpoints. Kimi Code remains distinct from the open platform; both `Z.AI` regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and `Z.AI` relies on automatic context caching.
 
 ### Fixed
 - Prevent models from narrating assumed tool failures and issuing speculative retries before minacode has executed their pending calls by making the tool-result boundary explicit in the system prompt.
