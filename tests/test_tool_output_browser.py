@@ -9,9 +9,10 @@ from tui_harness import loop, session
 
 import minacode.cli.modals as modals_mod
 from minacode.cli import CommandLoop
-from minacode.cli.modals import tool_output_viewer
+from minacode.cli.modals import job_view, tool_output_viewer
 from minacode.engine import Agent
 from minacode.session import Session
+from minacode.session.jobs import BackgroundJob
 from minacode.tools import Tool, tooloutput
 
 
@@ -420,3 +421,60 @@ def test_tool_output_viewer_reads_resumed_history(tmp_path):
     detail = next(frame for frame in ("".join(value for _, value in f) for f in modal.frames) if "read-only" in frame)
     assert "printf persisted" in detail
     assert "persisted output" in detail
+
+
+def _finished_job(tmp_path, job_id: str, command: str, log_text: str) -> "BackgroundJob":
+    """A done BackgroundJob whose log file is on disk, the state a real ``Job(start)`` leaves
+    behind after the process exits."""
+    import subprocess
+
+    log_path = tmp_path / f"{job_id}.log"
+    log_path.write_text(log_text)
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return BackgroundJob(id=job_id, command=command, process=proc, log_path=str(log_path), started_at=0.0, status="done", exit_code=0)
+
+
+def test_tool_output_browser_shows_the_job_log_for_a_known_job(tmp_path):
+    """A Job status/wait record opens the job's full log while the job still exists in the
+    session, so the browser is where a backgrounded build's real output is read."""
+    command_loop = loop(tmp_path)
+    command_loop.session.jobs["job.3"] = _finished_job(tmp_path, "job.3", "make build", "compiling...\nbuild ok\n")
+    command_loop.session.store_tool_result("Job", [{"action": "wait", "job": "job.3"}], "Job: job.3\nStatus: done\n--- output ---\nbuild ok")
+
+    view = job_view(command_loop, command_loop.session.tool_records[-1])
+
+    assert view is not None
+    assert view.label == "job · tr.1"
+    assert "compiling..." in view.text and "build ok" in view.text
+    assert ("job", "job.3") in view.rows
+    assert ("status", "done") in view.rows
+    assert ("exit", "0") in view.rows
+    assert ("command", "make build") in view.rows
+    assert "Status: done" in view.result
+
+
+def test_tool_output_browser_job_view_falls_back_to_the_return_value_when_the_job_is_gone(tmp_path):
+    """After a resume the session's job table is gone and a kill deletes the log file; those
+    records show the tool's return value instead of pretending there is a log."""
+    command_loop = loop(tmp_path)
+    command_loop.session.store_tool_result("Job", [{"action": "wait", "job": "job.9"}], "Job: job.9\nStatus: done")
+
+    view = job_view(command_loop, command_loop.session.tool_records[-1])
+
+    assert view is not None
+    assert view.text == "Job: job.9\nStatus: done"
+    assert view.result == ""
+
+
+def test_tool_output_browser_job_start_record_links_to_the_job_it_started(tmp_path):
+    """A ``Job(start)`` call names the job only in its return value; the view finds the id there
+    and shows the log anyway."""
+    command_loop = loop(tmp_path)
+    command_loop.session.jobs["job.1"] = _finished_job(tmp_path, "job.1", "long task", "started output\n")
+    command_loop.session.store_tool_result("Job", [{"action": "start", "command": "long task"}], "Started job.1: long task")
+
+    view = job_view(command_loop, command_loop.session.tool_records[-1])
+
+    assert view is not None
+    assert "started output" in view.text

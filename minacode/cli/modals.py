@@ -8,6 +8,8 @@ without a CommandLoop instance.
 
 from __future__ import annotations
 
+import contextlib
+import re
 import shutil
 import threading
 from collections.abc import Callable
@@ -21,7 +23,7 @@ from rich.markdown import Markdown
 
 from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox, oneline
 from minacode.render import UiPrinter
-from minacode.session import ToolResultRecord
+from minacode.session import BackgroundJob, ToolResultRecord
 from minacode.tools import AskSpec, BashTool, DelegateTool, ToolScript, tooloutput
 from minacode.tui import (
     ASK_DONE,
@@ -432,6 +434,8 @@ def record_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
         return script_view(loop, record)
     if record.name == "Delegate":
         return delegate_view(loop, record)
+    if record.name == "Job":
+        return job_view(loop, record)
     return None
 
 
@@ -451,6 +455,60 @@ def delegate_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView |
     if note:
         rows.append(("shown", note))
     return ApprovalView(f"order · {record.key}", view.text, view.lexer, rows, result)
+
+
+def job_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
+    """The stored Job call as the job's full log, when the job is still around; its return
+    value otherwise.
+
+    A Job start/status/wait writes the process output to a session log (a temp file for
+    ``Job start``, an in-memory tail for a Bash call promoted to a job), and the record keeps
+    only the tool's short return value. The browser shows the real log while the job still
+    exists in ``session.jobs``; after a resume that table is gone, and a ``kill`` deletes the
+    log file, so those records fall back to the return value like any other call."""
+
+    payload = next((arg for arg in record.args if isinstance(arg, dict)), {})
+    action = str(payload.get("action") or "")
+    job_id = str(payload.get("job") or "").strip()
+    if job_id and not job_id.startswith("job.") and job_id.isdigit():
+        job_id = f"job.{job_id}"
+    if not job_id and action == "start":
+        match = re.search(r"\bjob\.\d+\b", record.output)
+        if match is not None:
+            job_id = match.group(0)
+    job = loop.session.jobs.get(job_id) if job_id else None
+    result, note = tooloutput.viewer_text(record.output)
+    if job is None:
+        rows = [("key", record.key)]
+        if note:
+            rows.append(("shown", note))
+        return ApprovalView(f"job · {record.key}", result, "", rows)
+    job.update_status()
+    log = _job_log(job)
+    bounded, log_note = tooloutput.viewer_text(log)
+    rows = [("key", record.key), ("job", job.id), ("status", job.status)]
+    if job.exit_code is not None:
+        rows.append(("exit", str(job.exit_code)))
+    if job.command:
+        rows.append(("command", job.command))
+    for extra in (log_note, note):
+        if extra:
+            rows.append(("shown", extra))
+    return ApprovalView(f"job · {record.key}", bounded, "bash", rows, result)
+
+
+def _job_log(job: BackgroundJob) -> str:
+    """The job's merged stdout+stderr in full: the memory tail for a promoted Bash call, the
+    log file for one started via ``Job(start)``."""
+
+    if job.stream_buffer is not None:
+        with job.stream_lock or contextlib.nullcontext():
+            return "".join(job.stream_buffer)
+    try:
+        with open(job.log_path, "rb") as file:
+            return file.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: ChoiceViewState | None = None) -> tuple[ApprovalView | None, ChoiceViewState]:
