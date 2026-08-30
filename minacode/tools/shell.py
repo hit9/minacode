@@ -293,6 +293,8 @@ class BashTool(Tool):
             selector.close()
         self.session.job_counter += 1
         job_id = f"job.{self.session.job_counter}"
+        partial_stdout = "".join(stdout_parts)
+        partial_stderr = "".join(stderr_parts)
         buffer: list[str] = []
         buffer_lock = threading.Lock()
         job = BackgroundJob(
@@ -305,6 +307,11 @@ class BashTool(Tool):
             stream_lock=buffer_lock,
         )
         self.session.jobs[job_id] = job
+        # Output already consumed by the foreground selector belongs to the same job history as
+        # bytes drained after promotion. Seed it before the drainer threads start so Ctrl-O and
+        # later Job calls do not begin halfway through the command.
+        job.append_stream(partial_stdout)
+        job.append_stream(partial_stderr)
 
         def drain_pipe(pipe: Any) -> None:
             if pipe is None:
@@ -315,19 +322,12 @@ class BashTool(Tool):
                 # instead of blocking until a full 4KB is buffered.
                 for chunk in iter(lambda: pipe.read1(4096), b""):
                     text = chunk.decode("utf-8", errors="replace")
-                    with buffer_lock:
-                        buffer.append(text)
-                        # Trim from the front once we exceed the cap, keeping the tail intact.
-                        total = sum(len(part) for part in buffer)
-                        while total > BackgroundJob.BUFFER_LIMIT and len(buffer) > 1:
-                            total -= len(buffer.pop(0))
+                    job.append_stream(text)
             except (OSError, ValueError):
                 return
 
         threading.Thread(target=drain_pipe, args=(stdout_pipe,), daemon=True).start()
         threading.Thread(target=drain_pipe, args=(stderr_pipe,), daemon=True).start()
-        partial_stdout = "".join(stdout_parts)
-        partial_stderr = "".join(stderr_parts)
         # Leads with status, not wait: this note is read right after backgrounding handed control
         # back, and waiting is what gives it away again. Getting on with other work is the point.
         note = (
@@ -594,12 +594,9 @@ class JobTool(Tool):
         return f"Killed {job.id} (status={job.status}, exit_code={job.exit_code})"
 
     def _resolve_job(self, payload: Json) -> BackgroundJob:
-        job_id = str(payload.get("job") or "").strip()
+        job_id = BackgroundJob.normalize_id(payload.get("job"))
         if not job_id:
             raise ToolError("job id required")
-        # Allow bare numeric IDs as a shorthand for the canonical "job.N" form.
-        if job_id not in self.session.jobs and not job_id.startswith("job.") and job_id.isdigit():
-            job_id = f"job.{job_id}"
         job = self.session.jobs.get(job_id)
         if job is None:
             raise ToolError(f"unknown job: {job_id!r}")

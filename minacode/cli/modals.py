@@ -8,7 +8,6 @@ without a CommandLoop instance.
 
 from __future__ import annotations
 
-import contextlib
 import re
 import shutil
 import threading
@@ -361,7 +360,7 @@ class OutputEntry:
     key: str
     name: str
     detail: str
-    view: ApprovalView
+    view: ApprovalView | Callable[[], ApprovalView]
     live: bool = False
     # The Bash result's verdict for the row's first column: "ok" (exit 0), "fail" (nonzero
     # exit), or "" when the entry is not a Bash result (a script or an order has no exit code
@@ -395,15 +394,13 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     closes the whole browser."""
     if loop.tui is None:
         return
-    # Built once, on the way in: a record with nothing to show is also a record with no view, so
-    # the same call decides whether to list it and what to open. Kept alongside its record rather
-    # than rebuilt on selection -- the bounding work is proportional to the stored result, and
-    # doing it twice for a multi-megabyte one would be paid on a keypress.
+    # Stored results are bounded once on the way in. Job logs are live, external state and can be
+    # much larger, so their view is deferred until its row is opened.
     entries: list[OutputEntry] = []
     if (running := running_script_entry(loop)) is not None:
         entries.append(running)
     for record in reversed(loop.session.tool_records):
-        view = record_view(loop, record)
+        view = (lambda record=record: job_view(loop, record)) if record.name == "Job" else record_view(loop, record)
         if view is not None:
             status = ""
             if record.name == "Bash":
@@ -457,34 +454,36 @@ def delegate_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView |
     return ApprovalView(f"order · {record.key}", view.text, view.lexer, rows, result)
 
 
-def job_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
-    """The stored Job call as the job's full log, when the job is still around; its return
+def job_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView:
+    """The stored Job call as a bounded job-log snapshot, when available; its return
     value otherwise.
 
     A Job start/status/wait writes the process output to a session log (a temp file for
     ``Job start``, an in-memory tail for a Bash call promoted to a job), and the record keeps
-    only the tool's short return value. The browser shows the real log while the job still
+    only the tool's short return value. The browser shows a bounded log while the job still
     exists in ``session.jobs``; after a resume that table is gone, and a ``kill`` deletes the
     log file, so those records fall back to the return value like any other call."""
 
     payload = next((arg for arg in record.args if isinstance(arg, dict)), {})
     action = str(payload.get("action") or "")
-    job_id = str(payload.get("job") or "").strip()
-    if job_id and not job_id.startswith("job.") and job_id.isdigit():
-        job_id = f"job.{job_id}"
+    job_id = BackgroundJob.normalize_id(payload.get("job"))
     if not job_id and action == "start":
         match = re.search(r"\bjob\.\d+\b", record.output)
         if match is not None:
             job_id = match.group(0)
     job = loop.session.jobs.get(job_id) if job_id else None
     result, note = tooloutput.viewer_text(record.output)
+    fallback_rows = [("key", record.key)]
+    if note:
+        fallback_rows.append(("shown", note))
+    fallback = ApprovalView(f"job · {record.key}", result, "", fallback_rows)
     if job is None:
-        rows = [("key", record.key)]
-        if note:
-            rows.append(("shown", note))
-        return ApprovalView(f"job · {record.key}", result, "", rows)
+        return fallback
     job.update_status()
-    log = _job_log(job)
+    snapshot = job.log_snapshot(2 * 1024 * 1024)
+    if snapshot is None:
+        return fallback
+    log, storage_bounded = snapshot
     bounded, log_note = tooloutput.viewer_text(log)
     rows = [("key", record.key), ("job", job.id), ("status", job.status)]
     if job.exit_code is not None:
@@ -494,21 +493,9 @@ def job_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None
     for extra in (log_note, note):
         if extra:
             rows.append(("shown", extra))
+    if storage_bounded:
+        rows.append(("shown", "job log was bounded"))
     return ApprovalView(f"job · {record.key}", bounded, "bash", rows, result)
-
-
-def _job_log(job: BackgroundJob) -> str:
-    """The job's merged stdout+stderr in full: the memory tail for a promoted Bash call, the
-    log file for one started via ``Job(start)``."""
-
-    if job.stream_buffer is not None:
-        with job.stream_lock or contextlib.nullcontext():
-            return "".join(job.stream_buffer)
-    try:
-        with open(job.log_path, "rb") as file:
-            return file.read().decode("utf-8", errors="replace")
-    except OSError:
-        return ""
 
 
 def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: ChoiceViewState | None = None) -> tuple[ApprovalView | None, ChoiceViewState]:
@@ -570,7 +557,10 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: Choi
         result = state.handle_key(key, data)
         if result is SELECTION_BACK:
             return None
-        return entries[int(result)].view if isinstance(result, str) else TUI_MODAL_PENDING
+        if not isinstance(result, str):
+            return TUI_MODAL_PENDING
+        view = entries[int(result)].view
+        return view() if callable(view) else view
 
     picked = loop.tui.show_modal(fragments, handle_key)
     return (picked if isinstance(picked, ApprovalView) else None), state

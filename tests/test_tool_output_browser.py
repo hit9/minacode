@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import time
 
 from prompt_toolkit.utils import get_cwidth
 from test_command_ui import ModalHarness
@@ -13,7 +14,7 @@ from minacode.cli.modals import job_view, tool_output_viewer
 from minacode.engine import Agent
 from minacode.session import Session
 from minacode.session.jobs import BackgroundJob
-from minacode.tools import Tool, tooloutput
+from minacode.tools import BashTool, JobTool, Tool, tooloutput
 
 
 def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_opens_full_output(tmp_path, monkeypatch):
@@ -478,3 +479,68 @@ def test_tool_output_browser_job_start_record_links_to_the_job_it_started(tmp_pa
 
     assert view is not None
     assert "started output" in view.text
+
+
+def test_job_view_falls_back_when_a_known_jobs_log_was_removed(tmp_path):
+    command_loop = loop(tmp_path)
+    job = _finished_job(tmp_path, "job.1", "finished task", "finished output\n")
+    command_loop.session.jobs[job.id] = job
+    os.unlink(job.log_path)
+    command_loop.session.store_tool_result("Job", [{"action": "kill", "job": job.id}], "Killed job.1 (status=done, exit_code=0)")
+
+    view = job_view(command_loop, command_loop.session.tool_records[-1])
+
+    assert view.text == "Killed job.1 (status=done, exit_code=0)"
+    assert view.result == ""
+
+
+def test_promoted_bash_job_view_includes_output_from_before_and_after_promotion(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.settings.bash_wait_timeout = 0.03
+
+    promoted = BashTool(command_loop.session, ["printf early; sleep 0.08; printf late"]).call()
+    job = command_loop.session.jobs["job.1"]
+    status = JobTool(command_loop.session, [{"action": "wait", "job": job.id, "timeout": 2}]).call()
+    # The process can exit just before its drainer consumes EOF. Wait for that observable state
+    # instead of relying on one scheduler-sized sleep.
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        snapshot = job.log_snapshot(BackgroundJob.BUFFER_LIMIT)
+        if snapshot is not None and "late" in snapshot[0]:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("background drainer did not capture the completed output")
+    command_loop.session.store_tool_result("Job", [{"action": "wait", "job": job.id}], status)
+
+    view = job_view(command_loop, command_loop.session.tool_records[-1])
+
+    assert "early" in promoted
+    assert "early" in view.text
+    assert "late" in view.text
+
+
+def test_disk_job_log_snapshot_reads_both_ends_with_a_fixed_bound(tmp_path):
+    job = _finished_job(tmp_path, "job.1", "large task", "0123456789")
+
+    snapshot = job.log_snapshot(6)
+
+    assert snapshot is not None
+    text, bounded = snapshot
+    assert text.startswith("012") and text.endswith("789")
+    assert "middle of job log omitted" in text
+    assert bounded is True
+
+
+def test_tool_output_browser_defers_job_log_read_until_the_row_opens(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    job = _finished_job(tmp_path, "job.1", "large task", "output")
+    command_loop.session.jobs[job.id] = job
+    command_loop.session.store_tool_result("Job", [{"action": "status", "job": job.id}], "Job: job.1\nStatus: done")
+    reads = []
+    monkeypatch.setattr(job, "log_snapshot", lambda _limit: reads.append(True) or ("output", False))
+    command_loop.tui = ModalHarness(["q"])
+
+    tool_output_viewer(command_loop)
+
+    assert reads == []

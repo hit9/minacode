@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `Ctrl-O` lists `Job` calls and opens the associated background process log while that job is
+  available in the current session. The stored tool result remains available after a resume or
+  after the log is removed.
+- `/catalog` completes its `status` and `sync` subcommands, and its status table points to the
+  manual sync command.
+
+### Changed
+
+- Read-only viewers leave a blank row around section rules so headers, content, and returned
+  results remain visually distinct.
+
 ## 0.35.0 - 2026-08-29
 
 ### Added

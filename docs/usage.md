@@ -53,14 +53,16 @@ While Bash runs, its live output stays above the `working` divider. When the com
 finishes, up to three lines from each stream stay in the transcript, and the complete result
 is stored under its `tr.N` key.
 
-Press `Ctrl-O` to browse the 50 most recent results, newest first: `j`/`k` or the arrows
+Press `Ctrl-O` to browse stored results, newest first: `j`/`k` or the arrows
 select, `/` searches, `Enter` opens, and `Ctrl-O` or `q` closes. Long lists scroll inside a window
 about ten rows tall, and a counter under it says which rows you are looking at. Opening one shows
 what was run above what it returned, in a read-only scrolling viewer — a Bash command with both
-its streams, a `ToolScript` with its complete script and result, or a delegation order with the
-worker's answer below it. For a script this is the only way to read it under `--yolo`, where no
-confirmation prompt stops to offer `v`; for an order it is where you judge the answer against
-what was actually asked, since the transcript keeps only the `Delegate send` line.
+its streams, a `ToolScript` with its complete script and result, a background `Job` with its log,
+or a delegation order with the worker's answer below it. For a script this is the only way to read
+it under `--yolo`, where no confirmation prompt stops to offer `v`; for an order it is where you
+judge the answer against what was actually asked, since the transcript keeps only the `Delegate
+send` line. A Job log is available while that job remains in the current session; after a resume
+or after the log is removed, the viewer shows the stored Job result instead.
 
 A `ToolScript` that is **running right now** leads the list, marked `running` instead of a `tr.N`
 key. A long batch is exactly when its script is worth reading, and until it returns there is no
@@ -68,9 +70,10 @@ stored result to open. It leaves the list when the batch finishes and its real e
 
 Very large results are bounded rather than rendered whole: the viewer keeps the head and tail of
 a long result and clips individual lines past ~1000 characters, and the header says so whenever
-it did. Nothing is lost — the complete result stays under its `tr.N` key.
+it did. Stored tool results remain complete under their `tr.N` keys; live Job logs are read through
+a separate fixed-size snapshot.
 
-<div class="term-shot" role="img" aria-label="A completed Bash command with bounded output, followed by the Ctrl-O list of recent results — a running ToolScript at the top marked running in magenta, then stored entries whose dim tr.N key, green tool name and plain arguments are coloured the way the transcript colours the same call, with the selected row highlighted whole — and the read-only viewer one of them opens, showing the command above its output."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O for more</span><span class="fs-dim">    │ stdout:</span><span class="fs-output">    │   708 passed in 14.84s</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-divider">──── Tool output · latest 4 ────────────────</span><span><span class="fs-i fs-dim">   1. </span><span class="fs-i fs-working">running  </span><span class="fs-i fs-tool">ToolScript </span><span class="fs-i">call 24 lines (938 chars)</span></span><span class="fs-sel">&gt;  2. tr.18  Bash pytest -q</span><span><span class="fs-i fs-dim">   3. tr.17  </span><span class="fs-i fs-tool">Bash </span><span class="fs-i">git diff --check</span></span><span><span class="fs-i fs-dim">   4. tr.16  </span><span class="fs-i fs-tool">Bash </span><span class="fs-i">git status --short</span></span><span> </span><span class="fs-divider">  Output · tr.18 · read-only</span><span class="fs-dim">  key   tr.18</span><span class="fs-dim">  exit  0</span><span class="fs-divider">  ──────────────────────────────────────────</span><span class="fs-output">  1  pytest -q</span><span class="fs-divider">  ── result ─────────────────────────────────</span><span class="fs-dim">  stdout:</span><span class="fs-dim">    708 passed in 14.84s</span><span class="fs-dim"> </span><span class="fs-dim">  ↑/↓ scroll · g/G top/bottom · Esc/q close</span></div>
+<div class="term-shot" role="img" aria-label="A completed Bash command with bounded output, followed by the Ctrl-O list of recent results — a running ToolScript at the top marked running in magenta, then stored entries whose dim tr.N key, green tool name and plain arguments are coloured the way the transcript colours the same call, with the selected row highlighted whole — and the read-only viewer one of them opens, showing the command above its output."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O for more</span><span class="fs-dim">    │ stdout:</span><span class="fs-output">    │   708 passed in 14.84s</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-divider">──── Tool output · latest 4 ────────────────</span><span><span class="fs-i fs-dim">   1. </span><span class="fs-i fs-working">running  </span><span class="fs-i fs-tool">ToolScript </span><span class="fs-i">call 24 lines (938 chars)</span></span><span class="fs-sel">&gt;  2. tr.18  Bash pytest -q</span><span><span class="fs-i fs-dim">   3. tr.17  </span><span class="fs-i fs-tool">Bash </span><span class="fs-i">git diff --check</span></span><span><span class="fs-i fs-dim">   4. tr.16  </span><span class="fs-i fs-tool">Bash </span><span class="fs-i">git status --short</span></span><span> </span><span class="fs-divider">  Output · tr.18 · read-only</span><span class="fs-dim">  key   tr.18</span><span class="fs-dim">  exit  0</span><span> </span><span class="fs-divider">  ──────────────────────────────────────────</span><span> </span><span class="fs-output">  1  pytest -q</span><span> </span><span class="fs-divider">  ── result ─────────────────────────────────</span><span> </span><span class="fs-dim">  stdout:</span><span class="fs-dim">    708 passed in 14.84s</span><span class="fs-dim"> </span><span class="fs-dim">  ↑/↓ scroll · g/G top/bottom · Esc/q close</span></div>
 
 ## Status bar
 
@@ -160,8 +163,8 @@ Mentions are expanded in follow-ups queued while the agent is working, too.
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history; `Enter` puts the match in the input to edit, a second
   `Enter` sends it
-- `Ctrl-O` — browse recent Bash outputs, ToolScript scripts, and delegation orders in full; press
-  it again to close
+- `Ctrl-O` — browse recent Bash outputs, ToolScript scripts, background Job logs, and delegation
+  orders; press it again to close
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to
   vim), as a temporary Markdown file
 
