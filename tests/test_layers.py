@@ -33,53 +33,53 @@ import pathlib
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-MINACODE = REPO / "minacode"
+WIZOLT = REPO / "wizolt"
 
 # Module prefix -> layer number (larger = lower). Same-layer allowed; a source may only import
 # targets whose layer is >= its own.
 LAYERS = {
-    "minacode.__init__": 0,
-    "minacode": 100,
-    "minacode.__main__": 0,
-    "minacode.cli": 1,
-    "minacode.tui": 2,
-    "minacode.cli.hints": 1,
-    "minacode.cli.update": 1,
-    "minacode.tui.app": 2,
-    "minacode.tui.views": 2,
-    "minacode.render": 2,
-    "minacode.engine": 3,
-    "minacode.context": 4,
-    "minacode.runner": 4,
-    "minacode.compaction": 4,
-    "minacode.vision": 4,
-    "minacode.model": 5,
-    "minacode.model.chat": 5,
-    "minacode.model.responses": 5,
-    "minacode.model.anthropic": 5,
-    "minacode.model.client": 5,
-    "minacode.model.resilience": 5,
-    "minacode.tools": 6,
-    "minacode.mcp": 6,
-    "minacode.mcp.config": 6,
-    "minacode.mcp.tokens": 6,
-    "minacode.mcp.rendering": 6,
-    "minacode.mcp.manager": 6,
-    "minacode.skill": 6,
-    "minacode.mentions": 6,
-    "minacode.builtin_skills": 6,
-    "minacode.session": 7,
-    "minacode.image": 8,
-    "minacode.base": 9,
-    "minacode.config": 9,
-    "minacode.providers": 9,
-    "minacode.providers.catalog": 10,
-    "minacode.providers.compat": 9,
-    "minacode.providers.schema": 11,
-    "minacode.providers.sync": 9,
+    "wizolt.__init__": 0,
+    "wizolt": 100,
+    "wizolt.__main__": 0,
+    "wizolt.cli": 1,
+    "wizolt.tui": 2,
+    "wizolt.cli.hints": 1,
+    "wizolt.cli.update": 1,
+    "wizolt.tui.app": 2,
+    "wizolt.tui.views": 2,
+    "wizolt.render": 2,
+    "wizolt.engine": 3,
+    "wizolt.context": 4,
+    "wizolt.runner": 4,
+    "wizolt.compaction": 4,
+    "wizolt.vision": 4,
+    "wizolt.model": 5,
+    "wizolt.model.chat": 5,
+    "wizolt.model.responses": 5,
+    "wizolt.model.anthropic": 5,
+    "wizolt.model.client": 5,
+    "wizolt.model.resilience": 5,
+    "wizolt.tools": 6,
+    "wizolt.mcp": 6,
+    "wizolt.mcp.config": 6,
+    "wizolt.mcp.tokens": 6,
+    "wizolt.mcp.rendering": 6,
+    "wizolt.mcp.manager": 6,
+    "wizolt.skill": 6,
+    "wizolt.mentions": 6,
+    "wizolt.builtin_skills": 6,
+    "wizolt.session": 7,
+    "wizolt.image": 8,
+    "wizolt.base": 9,
+    "wizolt.config": 9,
+    "wizolt.providers": 9,
+    "wizolt.providers.catalog": 10,
+    "wizolt.providers.compat": 9,
+    "wizolt.providers.schema": 11,
+    "wizolt.providers.sync": 9,
 }
 # Leaves: any layer may depend on them; their own dependencies are not checked.
-LEAVES = ("minacode.prompts",)
+LEAVES = ("wizolt.prompts",)
 
 
 def layer_of(module: str) -> int | None:
@@ -91,8 +91,8 @@ def layer_of(module: str) -> int | None:
     return best[1] if best else None
 
 
-def module_level_minacode_imports(path: pathlib.Path) -> list[str]:
-    """Module-level `import minacode.x` / `from minacode.x import ...` targets."""
+def module_level_wizolt_imports(path: pathlib.Path) -> list[str]:
+    """Module-level `import wizolt.x` / `from wizolt.x import ...` targets."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
@@ -100,11 +100,11 @@ def module_level_minacode_imports(path: pathlib.Path) -> list[str]:
     targets: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and isinstance(node._parent, ast.Module):
-            if node.module and node.module.startswith("minacode"):
+            if node.module and node.module.startswith("wizolt"):
                 targets.append(node.module)
         elif isinstance(node, ast.Import) and isinstance(node._parent, ast.Module):
             for alias in node.names:
-                if alias.name.startswith("minacode"):
+                if alias.name.startswith("wizolt"):
                     targets.append(alias.name)
     return targets
 
@@ -118,8 +118,8 @@ def _annotate(tree: ast.AST) -> ast.AST:
 
 def all_sources() -> dict[str, pathlib.Path]:
     return {
-        "minacode." + path.relative_to(MINACODE).as_posix()[:-3].replace("/", "."): path
-        for path in MINACODE.rglob("*.py")
+        "wizolt." + path.relative_to(WIZOLT).as_posix()[:-3].replace("/", "."): path
+        for path in WIZOLT.rglob("*.py")
     }
 
 
@@ -135,7 +135,7 @@ def test_module_level_imports_stay_within_or_below_layer(module: str):
     if any(module == leaf or module.startswith(leaf + ".") for leaf in LEAVES):
         return  # leaves may import anything
     source = source_layer(module)
-    for target in module_level_minacode_imports(path):
+    for target in module_level_wizolt_imports(path):
         if any(target == leaf or target.startswith(leaf + ".") for leaf in LEAVES):
             continue
         target_layer = layer_of(target)
@@ -154,8 +154,8 @@ def test_every_subpackage_is_declared_for_distribution():
 
     declared = set(tomllib.loads((REPO / "pyproject.toml").read_text())["tool"]["setuptools"]["packages"])
     found = {
-        "minacode." + path.parent.relative_to(MINACODE).as_posix().replace("/", ".")
-        for path in MINACODE.rglob("__init__.py")
-        if path.parent != MINACODE
-    } | {"minacode"}
+        "wizolt." + path.parent.relative_to(WIZOLT).as_posix().replace("/", ".")
+        for path in WIZOLT.rglob("__init__.py")
+        if path.parent != WIZOLT
+    } | {"wizolt"}
     assert found == declared, f"pyproject packages out of sync: missing {sorted(found - declared)}, stale {sorted(declared - found)}"

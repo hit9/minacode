@@ -4,12 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import minacode.__main__ as cli
-from minacode.__main__ import main
-from minacode.base import (
+import wizolt.__main__ as cli
+from wizolt.__main__ import main
+from wizolt.base import (
     ConfigError,
 )
-from minacode.config import (
+from wizolt.config import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_OUTPUT_RESERVE_TOKENS,
     Config,
@@ -17,8 +17,28 @@ from minacode.config import (
     ProviderConfig,
     RuntimeSettings,
 )
-from minacode.providers.compat import bundled_policy
-from minacode.session import Session
+from wizolt.providers.compat import bundled_policy
+from wizolt.session import Session
+
+
+def test_default_user_paths_prefer_wizolt_then_minacode_then_nanocode(isolate_home):
+    def config_at(directory: str):
+        path = isolate_home / directory / "config.toml"
+        path.parent.mkdir()
+        path.write_text("[provider]\n", encoding="utf-8")
+        return path
+
+    nanocode = config_at(".nanocode")
+    assert ConfigFile.resolve_path(None) == str(nanocode)
+    assert Config.data_dir_from({}) == "~/.nanocode"
+
+    minacode = config_at(".minacode")
+    assert ConfigFile.resolve_path(None) == str(minacode)
+    assert Config.data_dir_from({}) == "~/.minacode"
+
+    wizolt = config_at(".wizolt")
+    assert ConfigFile.resolve_path(None) == str(wizolt)
+    assert Config.data_dir_from({}) == "~/.wizolt"
 
 
 @pytest.mark.parametrize("flag", ["-c", "--last", "--latest"])

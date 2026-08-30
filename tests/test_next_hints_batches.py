@@ -1,14 +1,14 @@
 """next hints batches (split from tests/test_agent_turn.py)."""
 from agent_harness import call, session
 
-from minacode.base import (
+from wizolt.base import (
     LogBlock,
     ToolCall,
 )
-from minacode.config import ProviderConfig
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.skill import SkillLibrary
+from wizolt.config import ProviderConfig
+from wizolt.engine import Agent
+from wizolt.model import ModelClient
+from wizolt.skill import SkillLibrary
 
 
 def test_terminal_next_hints_recognizes_all_next_hints_batch(tmp_path):

@@ -5,13 +5,13 @@ from types import SimpleNamespace
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
-from minacode.base import LogEdge, LogRole, ToolCall, ToolError
-from minacode.config import Config
-from minacode.context import ContextManager
-from minacode.render import UiPrinter
-from minacode.runner import ToolRunner
-from minacode.session import Session, bootstrap_features
-from minacode.tools import MCPTool, ReadTool, Tool, ToolScript, toolblocks, tooloutput
+from wizolt.base import LogEdge, LogRole, ToolCall, ToolError
+from wizolt.config import Config
+from wizolt.context import ContextManager
+from wizolt.render import UiPrinter
+from wizolt.runner import ToolRunner
+from wizolt.session import Session, bootstrap_features
+from wizolt.tools import MCPTool, ReadTool, Tool, ToolScript, toolblocks, tooloutput
 
 OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
@@ -353,7 +353,7 @@ class TestScriptFailures:
         assert "ToolScript call 2 lines (31 chars)" in content
 
     def test_infinite_loop_hits_time_budget(self, tmp_path, monkeypatch):
-        import minacode.tools.toolscript as toolscript_module
+        import wizolt.tools.toolscript as toolscript_module
 
         monkeypatch.setattr(toolscript_module, "SCRIPT_TIME_LIMIT", 0.1)
         s = _mcp_session(tmp_path)

@@ -3,10 +3,10 @@ import pytest
 from catalog_harness import reasoning_choices, resolve
 from test_core_logic import session
 
-from minacode.config import (
+from wizolt.config import (
     ProviderConfig,
 )
-from minacode.model import ModelClient
+from wizolt.model import ModelClient
 
 
 @pytest.mark.parametrize("model", ("o3", "o4-mini", "gpt-5.6"))
@@ -161,7 +161,7 @@ def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
     assert resolved.chat_reasoning == "reasoning_effort"
     assert resolved.prompt_cache_key is True
     assert resolved.reasoning_history == "all"
-    assert client.prompt_cache_key(provider, None).startswith("minacode-")
+    assert client.prompt_cache_key(provider, None).startswith("wizolt-")
 
     params = {}
     client.apply_provider_params(params, provider)
@@ -203,7 +203,7 @@ def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
     assert resolved.chat_reasoning == "reasoning_effort"
     assert resolved.prompt_cache_key is True
     assert resolved.reasoning_history == "all"
-    assert client.prompt_cache_key(provider, None).startswith("minacode-")
+    assert client.prompt_cache_key(provider, None).startswith("wizolt-")
 
     params = {}
     client.apply_provider_params(params, provider)

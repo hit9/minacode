@@ -1,7 +1,7 @@
 # Configuration
 
-minacode reads a single TOML file, `~/.minacode/config.toml` by default. Generate a
-commented starter with `minacode --init-config`, or point at another file with
+wizolt reads a single TOML file, `~/.wizolt/config.toml` by default. Generate a
+commented starter with `wizolt --init-config`, or point at another file with
 `--config <path>`.
 
 <span class="marker">Only the `[provider]` block is required.</span> Every other key falls back to
@@ -10,7 +10,7 @@ at any time with `/config`.
 
 ## Providers
 
-minacode supports OpenAI-compatible Chat Completions and Responses APIs, plus the Anthropic
+wizolt supports OpenAI-compatible Chat Completions and Responses APIs, plus the Anthropic
 Messages API. Define one or more `[provider.<name>]` blocks and select one with
 `[provider] active`:
 
@@ -24,10 +24,10 @@ key = "sk-..."
 model = "deepseek-v4-flash"
 ```
 
-These three fields are enough for most endpoints. minacode selects the usual protocol and applies
+These three fields are enough for most endpoints. wizolt selects the usual protocol and applies
 only necessary, documented compatibility adjustments. Explicit settings always take precedence.
 Use `/config` to inspect the result. [Compatibility catalog](catalog.md) explains which provider
-and model facts minacode maintains, how they update, and what happens to unknown endpoints.
+and model facts wizolt maintains, how they update, and what happens to unknown endpoints.
 
 Define additional blocks to use more providers. Switch between them with `/provider [NAME]`, and
 switch the active model with `/model [MODEL]`.
@@ -64,7 +64,7 @@ Most users can leave these unset.
 | `strict_tools` | `false` | Request strict function schemas where supported; toggle with `/strict` |
 | `headers` | `{}` | Extra HTTP headers sent with every request to this entry; see below |
 | `omit_body` | `[]` | Request fields this endpoint rejects; see below |
-| `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body. Fields inside an object minacode also manages are merged rather than replacing it, so `extra_body.reasoning.context` reaches a Responses host without dropping the resolved effort |
+| `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body. Fields inside an object wizolt also manages are merged rather than replacing it, so `extra_body.reasoning.context` reaches a Responses host without dropping the resolved effort |
 | `builtin_tools` | `[]` | Tools the provider runs itself, passed through verbatim; see below |
 | `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
 | `reasoning_history` | `auto` | Reasoning replay policy on Chat, Responses, and Anthropic: catalog-selected by default; `all`, `current_turn`, or `tool_calls` explicitly overrides it |
@@ -89,7 +89,7 @@ list. `/config` lists the headers in effect.
 
 ### Fields an endpoint rejects
 
-Some endpoints answer `400` for a field minacode sends. Name it in `omit_body` and it is left out:
+Some endpoints answer `400` for a field wizolt sends. Name it in `omit_body` and it is left out:
 
 ```toml
 [provider.gw]
@@ -110,7 +110,7 @@ ten minutes by default. Reaching the total limit cancels the request without aut
 set it to `0` only when deliberately allowing unbounded generations.
 
 `/reason` offers the levels the active model documents, and sends the one you pick. DeepSeek
-models offer `off, low, high, max`; a model minacode has no evidence about keeps the full scale
+models offer `off, low, high, max`; a model wizolt has no evidence about keeps the full scale
 (`minimal, low, medium, high, xhigh, max`). Unknown OpenAI-compatible endpoints and model names
 stay on the generic path rather than an allowlist; set `api` and `chat_reasoning` explicitly if
 automatic selection is wrong. `/config` lists the levels in `provider.supported_reasoning`, while
@@ -131,7 +131,7 @@ Reasoning effort
   │ https://api-docs.deepseek.com/guides/thinking_mode/
 ```
 
-Switching model or provider can leave an effort the new model has no level for. minacode moves it
+Switching model or provider can leave an effort the new model has no level for. wizolt moves it
 to the nearest one and says so once:
 
 ```
@@ -140,7 +140,7 @@ Reasoning medium is not offered by deepseek-v4-flash, using high
 
 ### Effort levels a model accepts
 
-When minacode's list is wrong for your model, say what the model accepts. Write the levels weakest
+When wizolt's list is wrong for your model, say what the model accepts. Write the levels weakest
 first, under a model name or a glob:
 
 ```toml
@@ -148,9 +148,9 @@ first, under a model name or a glob:
 "gpt-5.6*" = { reasoning = ["low", "medium", "high", "ultra"] }
 ```
 
-Those levels become what `/reason` offers for models the glob matches, replacing minacode's own.
-They can include names minacode does not know — `ultra` above — since they are sent as written.
-Each list must contain unique levels and must not include `off`; minacode adds `off` unless the
+Those levels become what `/reason` offers for models the glob matches, replacing wizolt's own.
+They can include names wizolt does not know — `ultra` above — since they are sent as written.
+Each list must contain unique levels and must not include `off`; wizolt adds `off` unless the
 catalog documents that the model always reasons. Worker and compaction reasoning overrides use
 the scale declared for their effective model too.
 
@@ -180,9 +180,9 @@ builtin_tools = [{ type = "web_search" }, { type = "web_extractor" }]
 One provider configures search elsewhere, through [`extra_body`](#optional-provider-settings):
 Qwen's Chat Completions endpoint takes `enable_search`. DeepSeek has no web search.
 
-Builtin tools only work with the APIs shown in the table. If you switch to another API, minacode
+Builtin tools only work with the APIs shown in the table. If you switch to another API, wizolt
 keeps the setting but does not send those tools; switching back enables them again. Use `/config`
-to check whether they are active. If minacode reports an unsupported entry, compare it with the
+to check whether they are active. If wizolt reports an unsupported entry, compare it with the
 example for your provider.
 
 ## Vision model
@@ -199,7 +199,7 @@ key = "sk-..."
 model = "deepseek-v4-flash-vision-exp"
 ```
 
-An attached image is first sent to the active model unless minacode knows it rejects images:
+An attached image is first sent to the active model unless wizolt knows it rejects images:
 documented text-only families from a static catalog, or the same model returning HTTP 400 for an
 image in this session. In those cases `[vision]` describes the image once and its text replaces
 the raw image, and `ViewImage` falls back the same way. Each fallback description costs one
@@ -314,7 +314,7 @@ so each row can be read against one model's price.
 
 ```toml
 [paths]
-data_dir = "~/.minacode"   # sessions, input history, OAuth tokens, user skills, update cache
+data_dir = "~/.wizolt"   # sessions, input history, OAuth tokens, user skills, update cache
 ```
 
 Sessions live under `<data_dir>/projects/<project>/`, one directory per working directory. Each

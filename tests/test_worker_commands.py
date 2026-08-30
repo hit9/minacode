@@ -5,12 +5,12 @@ import pytest
 from agent_harness import session
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session, _worker_history_for_compaction
 
-from minacode.cli.worker import worker_command
-from minacode.prompts import WORKER_PROMPT
+from wizolt.cli.worker import worker_command
+from wizolt.prompts import WORKER_PROMPT
 
 
 def test_worker_config_parses_model_and_reasoning(tmp_path):
-    from minacode.config import (
+    from wizolt.config import (
         Config,
     )
 
@@ -30,8 +30,8 @@ def test_worker_config_parses_model_and_reasoning(tmp_path):
     assert plain.worker_model == "" and plain.worker_reasoning == "" and plain.worker_api == ""
 
 def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
-    from minacode.base import ConfigError
-    from minacode.config import (
+    from wizolt.base import ConfigError
+    from wizolt.config import (
         Config,
     )
 
@@ -39,8 +39,8 @@ def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
         Config.from_dict({"worker": {"reasoning": "turbo"}, "provider": {"default": {}}})
 
 def test_worker_config_rejects_invalid_worker_api(tmp_path):
-    from minacode.base import ConfigError
-    from minacode.config import (
+    from wizolt.base import ConfigError
+    from wizolt.config import (
         Config,
     )
 
@@ -50,10 +50,10 @@ def test_worker_config_rejects_invalid_worker_api(tmp_path):
 def test_worker_provider_config_applies_api_override(tmp_path):
     """worker_provider_config folds an explicit worker.api into the detached entry; an empty
     worker_api inherits the entry's own protocol (the worker never shares the parent's object)."""
-    from minacode.config import (
+    from wizolt.config import (
         Config,
     )
-    from minacode.tools.delegate import worker_provider_config
+    from wizolt.tools.delegate import worker_provider_config
 
     config = Config.from_dict(
         {
@@ -74,13 +74,13 @@ def test_worker_provider_config_applies_api_override(tmp_path):
     assert entry.api == "auto"
 
 def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
-    from minacode.cli import CommandLoop
-    from minacode.config import (
+    from wizolt.cli import CommandLoop
+    from wizolt.config import (
         ProviderConfig,
     )
-    from minacode.engine import Agent
-    from minacode.session import Session
-    from minacode.tools import Tool
+    from wizolt.engine import Agent
+    from wizolt.session import Session
+    from wizolt.tools import Tool
 
     parent = session(tmp_path)
     parent.config.providers["alt"] = ProviderConfig(model="m")
@@ -122,11 +122,11 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     assert "Delegate" in names(fresh)
 
 def test_worker_provider_off_selects_literal_off_entry(tmp_path):
-    from minacode.cli import CommandLoop
-    from minacode.config import (
+    from wizolt.cli import CommandLoop
+    from wizolt.config import (
         ProviderConfig,
     )
-    from minacode.engine import Agent
+    from wizolt.engine import Agent
 
     parent = session(tmp_path)
     parent.config.providers["off"] = ProviderConfig(model="m")
@@ -137,8 +137,8 @@ def test_worker_provider_off_selects_literal_off_entry(tmp_path):
     assert parent.config.worker_provider == "off"
 
 def test_worker_model_and_reason_overrides(tmp_path):
-    from minacode.cli import CommandLoop
-    from minacode.engine import Agent
+    from wizolt.cli import CommandLoop
+    from wizolt.engine import Agent
 
     parent = session(tmp_path)
     agent = Agent(parent, output_fn=lambda text: None)
@@ -165,10 +165,10 @@ def test_worker_model_and_reason_overrides(tmp_path):
     assert worker_command(loop, "reason a b") == "Usage: /worker reason [EFFORT]"
 
 def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkeypatch):
-    from minacode.config import (
+    from wizolt.config import (
         ProviderConfig,
     )
-    from minacode.session import SessionSnapshotStore
+    from wizolt.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["alt"] = ProviderConfig(model="m")
@@ -178,7 +178,7 @@ def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkey
     parent.messages.append({"role": "user", "content": "parent request"})
     parent.save_snapshot()
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="o")
 
@@ -205,13 +205,13 @@ def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkey
     assert fresh.worker.config.provider.model == "resumed-model"
 
 def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
-    from minacode.cli import CommandLoop
-    from minacode.engine import Agent
+    from wizolt.cli import CommandLoop
+    from wizolt.engine import Agent
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["default"].model = "parent-model"
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="o")
 
@@ -229,16 +229,16 @@ def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
     assert parent.config.providers["default"].model == "parent-model"
 
 def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
-    from minacode.cli import CommandLoop
-    from minacode.config import (
+    from wizolt.cli import CommandLoop
+    from wizolt.config import (
         ProviderConfig,
     )
-    from minacode.engine import Agent
+    from wizolt.engine import Agent
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["alt"] = ProviderConfig(model="m")
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="o")
 
@@ -253,13 +253,13 @@ def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     assert parent.config.providers["alt"].model == "m"  # untouched
 
 def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import LogBlock, LogRole, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "the worker answer"}, [], "the worker answer")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
@@ -280,13 +280,13 @@ def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch)
     assert any(item.label == "stored" for item, _ in finish.walk())
 
 def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import LogBlock, LogRole, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "the worker answer"}, [], "the worker answer")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
@@ -308,13 +308,13 @@ def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatc
     assert not any(item.label == "done" and item.text.startswith("steps ") for item, _ in finish.walk())
 
 def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypatch):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "the worker answer"}, [], "the worker answer")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
@@ -326,14 +326,14 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     assert done[0].startswith("worker done · fix /status blank line · steps 1")
 
 def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import LogBlock, LogRole, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     answer = "\n".join(f"report line {i}" for i in range(40))
     model = FakeModelClient([({"role": "assistant", "content": answer}, [], answer)])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
@@ -354,13 +354,13 @@ def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_
     assert "report line 20" not in rendered  # the folded preview only carries the head and tail
 
 def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import LogBlock, LogRole, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "the report"}, [], "the report")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     answers = []
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
@@ -373,10 +373,10 @@ def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, m
     assert not auto  # nothing on the plain output channel carries the final report
 
 def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
-    from minacode.base import LogBlock, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.session import Session
+    from wizolt.base import LogBlock, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -395,10 +395,10 @@ def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     assert "worker context cleared" in str(finish)
 
 def test_delegate_reset_finish_worker_rule_label(tmp_path):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.session import Session
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -415,14 +415,14 @@ def test_delegate_reset_finish_worker_rule_label(tmp_path):
     # Reset is a one-shot tool call, not a delegation bracket: no full-width worker_rule rule
     # fires; the reset shows as an ordinary tool root with a plain done child.
     assert labels == [], "reset must not emit a worker_rule divider"
-    from minacode.base import LogBlock
+    from wizolt.base import LogBlock
 
     done = [item for block in outputs if isinstance(block, LogBlock) for item, _ in block.walk() if item.label == "done"]
     assert done, "reset should keep its ordinary tool root with a done child"
     assert "worker context cleared" in next(item.text for block in outputs if isinstance(block, LogBlock) for item, _ in block.walk() if item.label == "done")
 
 def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
-    from minacode.tools.delegate import _worker_stream
+    from wizolt.tools.delegate import _worker_stream
 
     calls: list[tuple[str, str]] = []
 
@@ -441,7 +441,7 @@ def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
     assert all(kind != "output_done" for kind, _ in calls)
 
 def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
-    from minacode.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
+    from wizolt.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
 
     parent = _delegate_session(tmp_path)
     # A real delegation first: the worker is spawned through DelegateTool._send and keeps its
@@ -449,7 +449,7 @@ def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
     # overruns it: 40k context -> 19_520 request budget (16_384 output reserve + 4_096 safety).
     parent.settings.max_context_tokens = 40_000
     model = FakeModelClient([({"role": "assistant", "content": "answer one"}, [], "answer one")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="order one")
     worker = _worker_history_for_compaction(parent)
@@ -477,8 +477,8 @@ def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
     assert worker.usage.last_prompt_budget == 0
 
 def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, monkeypatch):
-    from minacode.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
-    from minacode.session import SessionSnapshotStore
+    from wizolt.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
+    from wizolt.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
     parent.settings.max_context_tokens = 40_000
@@ -488,7 +488,7 @@ def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, mon
             ({"role": "assistant", "content": "answer two"}, [], "answer two"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="order one")
     worker = _worker_history_for_compaction(parent)

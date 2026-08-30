@@ -5,7 +5,7 @@ import shutil
 import code_symbol_index as csi
 import pytest
 
-from minacode.base import (
+from wizolt.base import (
     LogBlock,
     LogEdge,
     LogLine,
@@ -13,14 +13,14 @@ from minacode.base import (
     ToolCall,
     ToolError,
 )
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
-from minacode.context import ContextManager
-from minacode.render import UiPrinter
-from minacode.runner import ToolRunner
-from minacode.session import HistorySegment, Session
-from minacode.tools import (
+from wizolt.context import ContextManager
+from wizolt.render import UiPrinter
+from wizolt.runner import ToolRunner
+from wizolt.session import HistorySegment, Session
+from wizolt.tools import (
     TOOL_REGISTRY,
     TOOLS,
     BashTool,
@@ -172,7 +172,7 @@ def test_note_validation_errors_are_actionable(tmp_path, payload, message):
 
 def test_reading_a_materialized_tool_output_needs_no_confirmation(tmp_path):
     """The marker of a truncated result hands the model an absolute path outside the workspace, so
-    the out-of-workspace prompt would stop the model from reading a file minacode itself wrote and
+    the out-of-workspace prompt would stop the model from reading a file wizolt itself wrote and
     told it to read. Assets are exempt; anything else outside the workspace still asks."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -482,7 +482,7 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[1, 0]]}]
     assert tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
     assert tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
-    assert ReadTool(Session(cwd="."), [{"path": "minacode.py"}]).targets()[0][1] == [(1, 0)]
+    assert ReadTool(Session(cwd="."), [{"path": "wizolt.py"}]).targets()[0][1] == [(1, 0)]
     assert tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
     assert tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
     assert tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
@@ -694,12 +694,12 @@ def test_uiprinter_renders_stored_result_dim():
 
 
 def test_uiprinter_renders_tool_root_without_generic_prefix():
-    block = LogBlock([LogLine("Read", "minacode.py 0:100 → tr.6 [auto]", LogRole.TOOL)])
+    block = LogBlock([LogLine("Read", "wizolt.py 0:100 → tr.6 [auto]", LogRole.TOOL)])
     segments = UiPrinter(output_fn=lambda text: None).log_segments(block)
     text = "".join(value for _, value in segments)
 
-    assert text == "  Read  minacode.py 0:100 → tr.6 [auto]\n"
-    assert any(style == "fg:default" and "minacode.py 0:100 → tr.6 [auto]" in value for style, value in segments)
+    assert text == "  Read  wizolt.py 0:100 → tr.6 [auto]\n"
+    assert any(style == "fg:default" and "wizolt.py 0:100 → tr.6 [auto]" in value for style, value in segments)
 
 
 def test_mixed_batch_whitelisted_tool_runs_and_excluded_rejected(tmp_path):

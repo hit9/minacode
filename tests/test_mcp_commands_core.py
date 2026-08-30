@@ -7,21 +7,21 @@ from typing import ClassVar
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
-import minacode.cli.commands as commands_mod
-from minacode.base import SELECTION_BACK
-from minacode.cli import CommandCompleter, CommandLoop
-from minacode.cli.commands import mcp_command
-from minacode.cli.modals import mcp_manager
-from minacode.cli.update import UpdateChecker
-from minacode.config import (
+import wizolt.cli.commands as commands_mod
+from wizolt.base import SELECTION_BACK
+from wizolt.cli import CommandCompleter, CommandLoop
+from wizolt.cli.commands import mcp_command
+from wizolt.cli.modals import mcp_manager
+from wizolt.cli.update import UpdateChecker
+from wizolt.config import (
     Config,
 )
-from minacode.engine import Agent
-from minacode.mcp import MCPManager
-from minacode.render import UiPrinter
-from minacode.session import Session, SessionSnapshotStore, bootstrap_features
-from minacode.tools import CodeIndex
-from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState
+from wizolt.engine import Agent
+from wizolt.mcp import MCPManager
+from wizolt.render import UiPrinter
+from wizolt.session import Session, SessionSnapshotStore, bootstrap_features
+from wizolt.tools import CodeIndex
+from wizolt.tui import TUI_MODAL_PENDING, ChoiceViewState
 
 
 class TestMCPCommands:

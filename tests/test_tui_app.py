@@ -2,7 +2,7 @@
 
 import threading
 
-from minacode.tui import TuiApp
+from wizolt.tui import TuiApp
 
 
 class _StubJob:

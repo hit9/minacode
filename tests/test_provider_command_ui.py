@@ -9,13 +9,13 @@ from catalog_harness import resolve
 from test_command_ui import ModalHarness, diff_loop
 from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, wait_until
 
-import minacode.cli.commands as commands_mod
-import minacode.cli.modals as modals_mod
-from minacode.base import (
+import wizolt.cli.commands as commands_mod
+import wizolt.cli.modals as modals_mod
+from wizolt.base import (
     SELECTION_BACK,
 )
-from minacode.cli import COMMANDS, QUEUE_SAFE_COMMANDS, CommandCompleter, CommandLoop
-from minacode.cli.commands import (
+from wizolt.cli import COMMANDS, QUEUE_SAFE_COMMANDS, CommandCompleter, CommandLoop
+from wizolt.cli.commands import (
     SET_KEYS,
     api,
     catalog_command,
@@ -29,14 +29,14 @@ from minacode.cli.commands import (
     set_value,
     strict,
 )
-from minacode.cli.modals import choice_application, diff_viewer, select_choice
-from minacode.config import (
+from wizolt.cli.modals import choice_application, diff_viewer, select_choice
+from wizolt.config import (
     PROVIDER_API_CHOICES,
     ProviderConfig,
 )
-from minacode.providers.schema import CatalogSyncError
-from minacode.providers.sync import CatalogRuntime
-from minacode.tui import TUI_MODAL_PENDING, DiffViewState, TabbedViewState, TuiApp
+from wizolt.providers.schema import CatalogSyncError
+from wizolt.providers.sync import CatalogRuntime
+from wizolt.tui import TUI_MODAL_PENDING, DiffViewState, TabbedViewState, TuiApp
 
 
 def test_catalog_command_reports_the_selected_snapshot_and_is_not_queue_safe(tmp_path):
@@ -244,7 +244,7 @@ def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
     assert reason(command_loop, "ultra") == "Set provider.reasoning = ultra"
     assert resolve(command_loop.session.config.provider).reasoning_effort == "ultra"
     assert reason(command_loop, "elsewhere").startswith("Usage: /reason ")
-    # A level minacode knows but this model does not is refused like any other unavailable one.
+    # A level wizolt knows but this model does not is refused like any other unavailable one.
     assert reason(command_loop, "medium").startswith("Usage: /reason ")
 
 
@@ -329,8 +329,8 @@ def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_
 
 
 def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch):
-    """The picker is the model's scale, not minacode's."""
-    import minacode.cli.modals as modals_mod
+    """The picker is the model's scale, not wizolt's."""
+    import wizolt.cli.modals as modals_mod
 
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
@@ -359,7 +359,7 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
 
 
 def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
-    import minacode.cli.modals as modals_mod
+    import wizolt.cli.modals as modals_mod
 
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True

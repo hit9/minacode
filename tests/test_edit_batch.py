@@ -4,11 +4,11 @@ import re
 import pytest
 from test_edit_tool import anchor, session
 
-from minacode.base import ToolCall, ToolError
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.tools import CodeIndex, EditTool, ReadTool
-from minacode.tools.files import Edit
+from wizolt.base import ToolCall, ToolError
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.tools import CodeIndex, EditTool, ReadTool
+from wizolt.tools.files import Edit
 
 
 def test_tool_runner_batch_edit_rejects_anchor_for_line_changed_in_batch(tmp_path, monkeypatch):
@@ -319,7 +319,7 @@ def test_edit_warnings_do_not_affect_apply(tmp_path):
 def test_duplicate_lines_rule_branches():
     """_duplicate_lines only fires on pairs that are new in `after` and neither blank nor existing
     in `before`; it returns the warning object or None, never raising."""
-    from minacode.tools.files import _duplicate_lines
+    from wizolt.tools.files import _duplicate_lines
 
     # ① an edit introducing adjacent identical non-blank lines reports duplicate-lines.
     warning = _duplicate_lines("a\nb\n", "a\nb\nb\n")

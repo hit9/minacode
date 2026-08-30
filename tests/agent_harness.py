@@ -1,18 +1,18 @@
 """Shared harness for the agent test modules: an isolated session, a tool-call factory, and
 the user-input queue helpers."""
 
-from minacode.base import (
+from wizolt.base import (
     ToolCall,
 )
-from minacode.config import (
+from wizolt.config import (
     Config,
     ProviderConfig,
 )
-from minacode.session import Session, bootstrap_features
+from wizolt.session import Session, bootstrap_features
 
 
 def session(tmp_path):
-    # Isolate the data dir so tests never read the developer's real ~/.minacode (sessions, skills).
+    # Isolate the data dir so tests never read the developer's real ~/.wizolt (sessions, skills).
     config = Config()
     config.data_dir = str(tmp_path / "data")
     session = Session(cwd=str(tmp_path), config=config)

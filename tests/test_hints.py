@@ -1,13 +1,13 @@
-"""Unit tests for the idle-input hint mechanism (minacode/cli/hints.py)."""
+"""Unit tests for the idle-input hint mechanism (wizolt/cli/hints.py)."""
 
-from minacode.cli.hints import HINTS, Context, HintPicker
+from wizolt.cli.hints import HINTS, Context, HintPicker
 
 DIFF = "/diff reviews recent edits"
 SESSIONS = "/sessions resumes a past session"
 SKILL = "$skill loads a skill inline"
 MCP = "@server.tool mentions an MCP tool"
 IMAGE = "Paste an image path to attach it"
-MINACODE_HELP = "Questions about minacode? Just ask"
+WIZOLT_HELP = "Questions about wizolt? Just ask"
 PS = "/ps lists background jobs"
 
 
@@ -93,8 +93,8 @@ def test_image_hint_is_always_available():
     assert IMAGE in _pool_for(Context(early=False, edited_round=None))
 
 
-def test_minacode_help_hint_is_always_available():
-    assert MINACODE_HELP in _pool_for(Context(early=False, edited_round=None))
+def test_wizolt_help_hint_is_always_available():
+    assert WIZOLT_HELP in _pool_for(Context(early=False, edited_round=None))
 
 
 def test_ps_hint_only_while_jobs_running_and_weighted():

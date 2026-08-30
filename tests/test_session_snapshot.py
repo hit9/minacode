@@ -4,8 +4,8 @@ import json
 
 from test_session_persistence import log_path, read_jsonl, read_lines, session_with_data_dir
 
-from minacode.base import SESSION_EVENT_KEY
-from minacode.session import Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
+from wizolt.base import SESSION_EVENT_KEY
+from wizolt.session import Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
 
 
 def test_transcript_diff_preview_is_bounded(tmp_path):

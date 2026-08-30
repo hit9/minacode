@@ -6,21 +6,21 @@ from types import SimpleNamespace
 import code_symbol_index as csi
 from test_core_logic import data_session, session
 
-import minacode.cli.update as update_module
-from minacode.base import (
+import wizolt.cli.update as update_module
+from wizolt.base import (
     HTTP_USER_AGENT,
     ToolCall,
     UpdateStatus,
     __version__,
 )
-from minacode.cli import CommandLoop
-from minacode.cli.update import UpdateChecker
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.render import StatusBar
-from minacode.runner import ToolRunner
-from minacode.session import SessionSnapshotStore
-from minacode.tools import CodeIndex
+from wizolt.cli import CommandLoop
+from wizolt.cli.update import UpdateChecker
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.render import StatusBar
+from wizolt.runner import ToolRunner
+from wizolt.session import SessionSnapshotStore
+from wizolt.tools import CodeIndex
 
 
 def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
@@ -182,13 +182,13 @@ def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch)
     s.update.latest = "999.0.0"
     emitted = []
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
-    monkeypatch.setattr(UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "minacode"])
+    monkeypatch.setattr(UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "wizolt"])
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
     monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
 
     CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=emitted.append).start_session()
 
-    assert any("upgrade with `uv tool upgrade minacode`" in line for line in emitted)
+    assert any("upgrade with `uv tool upgrade wizolt`" in line for line in emitted)
 
 def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
     s = session(tmp_path)

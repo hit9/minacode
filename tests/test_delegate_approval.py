@@ -2,11 +2,11 @@
 from agent_harness import session
 from test_worker_handoff import FakeModelClient, _delegate_session
 
-from minacode.tools import TOOL_REGISTRY
+from wizolt.tools import TOOL_REGISTRY
 
 
 def test_delegate_send_is_confirmed_even_under_yolo(tmp_path):
-    from minacode.tools import DelegateTool
+    from wizolt.tools import DelegateTool
 
     s = session(tmp_path)
     s.settings.yolo = True
@@ -20,14 +20,14 @@ def test_delegate_send_is_confirmed_even_under_yolo(tmp_path):
         assert other.always_confirms() is False, action
 
     # Every other mutating tool keeps yolo's meaning: only Delegate opts out.
-    from minacode.tools import EditTool
+    from wizolt.tools import EditTool
 
     assert EditTool(s, ["a.py", []]).always_confirms() is False
 
 
 def test_spawned_worker_reuses_the_parent_catalog(tmp_path):
-    from minacode.providers.sync import CatalogRuntime
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.providers.sync import CatalogRuntime
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     parent.catalog = CatalogRuntime(parent.config.data_dir)
@@ -37,10 +37,10 @@ def test_spawned_worker_reuses_the_parent_catalog(tmp_path):
     assert worker.catalog is parent.catalog
 
 def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     for answer, expected in [("y", (True, "")), ("", (True, "")), ("n", (False, "")), ("a", (False, "a"))]:
@@ -60,12 +60,12 @@ def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
 def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.base import LogRole, ToolCall
-    from minacode.config import (
+    from wizolt.base import LogRole, ToolCall
+    from wizolt.config import (
         ProviderConfig,
     )
-    from minacode.tools import EditTool, toolblocks
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.tools import EditTool, toolblocks
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["fast"] = ProviderConfig(model="worker-model", reasoning="high", api="responses")
@@ -124,14 +124,14 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
 def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tmp_path):
     from dataclasses import replace
 
-    from minacode.base import LogBlock, ToolCall
-    from minacode.config import (
+    from wizolt.base import LogBlock, ToolCall
+    from wizolt.config import (
         ProviderConfig,
     )
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.session import Session
-    from minacode.tools.delegate import DelegateTool, refresh_worker_entry
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.session import Session
+    from wizolt.tools.delegate import DelegateTool, refresh_worker_entry
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["alt"] = ProviderConfig(model="alt-model", reasoning="low", api="anthropic")
@@ -193,10 +193,10 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     assert parent.config.worker_api == "responses"  # untouched without a picker
 
 def test_delegate_view_opens_viewer_then_approves(tmp_path):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     order_lines = [f"line {i}" for i in range(1, 16)]
@@ -220,10 +220,10 @@ def test_delegate_view_opens_viewer_then_approves(tmp_path):
 def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
     """`c` then `v`: the viewer reports the configuration the send would run under, so it has to
     read that configuration when the key is pressed, not as it stood when the prompt was drawn."""
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     args = {"action": "send", "order": "do the thing"}
@@ -239,10 +239,10 @@ def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
     assert seen and seen[0]["model"] == "chosen-in-the-c-cycle"
 
 def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
-    from minacode.base import LogBlock, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import LogBlock, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     order_lines = [f"line {i}" for i in range(1, 16)]
@@ -258,10 +258,10 @@ def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
     assert all(line in texts for line in order_lines)  # nothing dropped, unlike the brief excerpt
 
 def test_delegate_view_empty_order_is_noop(tmp_path):
-    from minacode.base import LogBlock, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import LogBlock, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     args = {"action": "send", "order": ""}
@@ -278,9 +278,9 @@ def test_delegate_view_empty_order_is_noop(tmp_path):
     assert not any(isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk()) for out in outputs)
 
 def test_delegate_approval_legend_mentions_view(tmp_path):
-    from minacode.base import LogRole
-    from minacode.tools import toolblocks
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import LogRole
+    from wizolt.tools import toolblocks
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     children = toolblocks.delegate_approval_children(DelegateTool(parent, [{"action": "send", "order": "o"}]))
@@ -293,10 +293,10 @@ def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
     # confirm() must read that as a plain refusal: not "" (the default approve) and not a reason,
     # which would reach the model as text the user never typed. Holds for every tool, not just
     # Delegate, so check the Delegate prompt and an ordinary one.
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     args = {"action": "send", "order": "o"}
@@ -309,10 +309,10 @@ def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
 def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
     # `v` and `c` come back to the same prompt, and each redraw used to stack another full copy of
     # the brief in the transcript. It is printed once; the side trips report themselves.
-    from minacode.base import LogBlock, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import LogBlock, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     args = {"action": "send", "order": "line one\nline two", "title": "fix things"}
@@ -328,11 +328,11 @@ def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
     assert len(briefs) == 1
 
 def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_path):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools import toolblocks
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
+    from wizolt.tools import toolblocks
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     declared = []
@@ -376,9 +376,9 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
         assert typed.confirm(ToolCall("bash-1", "Bash", ["rm -rf build"]), bash) == ((True, "") if answer == "" else (False, ""))
 
 def test_delegate_legend_prints_only_without_an_action_row(tmp_path):
-    from minacode.base import LogEdge
-    from minacode.tools import toolblocks
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import LogEdge
+    from wizolt.tools import toolblocks
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     tool = DelegateTool(parent, [{"action": "send", "order": "o"}])
@@ -400,8 +400,8 @@ def test_delegate_legend_offers_only_the_actions_the_call_has(tmp_path):
     """The action row already hid `View order` when the send carries no order, but the legend -- the
     only guidance a headless run gets -- still advertised it, and typing `v` then re-asked in silence
     with nothing viewed. Both are built from one list of actions, so they cannot disagree."""
-    from minacode.tools import toolblocks
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.tools import toolblocks
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     orderless = DelegateTool(parent, [{"action": "send"}])
@@ -420,11 +420,11 @@ def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
 
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.base import ApprovalView
-    from minacode.cli.modals import approval_text_viewer
+    from wizolt.base import ApprovalView
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((60, 40))
-    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
@@ -444,13 +444,13 @@ def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     import os
     from types import SimpleNamespace
 
-    from minacode.base import ApprovalView
-    from minacode.cli.modals import approval_text_viewer
-    from minacode.tui import TUI_MODAL_PENDING
+    from wizolt.base import ApprovalView
+    from wizolt.cli.modals import approval_text_viewer
+    from wizolt.tui import TUI_MODAL_PENDING
 
     # Fixed terminal size keeps the viewport deterministic: 40 lines - 6 = 34 visible rows.
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(
@@ -502,11 +502,11 @@ def test_delegate_order_viewer_renders_markdown(monkeypatch):
     import os
     from types import SimpleNamespace
 
-    from minacode.base import ApprovalView
-    from minacode.cli.modals import approval_text_viewer
+    from wizolt.base import ApprovalView
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
@@ -527,15 +527,15 @@ def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     import os
     from types import SimpleNamespace
 
-    from minacode.base import ApprovalView
-    from minacode.cli.modals import approval_text_viewer
+    from wizolt.base import ApprovalView
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    order = "Touch these files:\nminacode/loop.py\nminacode/parser.py\nDo not touch tests."
+    order = "Touch these files:\nwizolt/loop.py\nwizolt/parser.py\nDo not touch tests."
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
     rows = [row.strip() for row in "".join(text for _, text in captured["fragments_fn"]()).splitlines()]
@@ -548,11 +548,11 @@ def test_delegate_order_viewer_field_header_alignment(monkeypatch):
 
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.base import ApprovalView
-    from minacode.cli.modals import approval_text_viewer
+    from wizolt.base import ApprovalView
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
@@ -569,11 +569,11 @@ def test_delegate_order_viewer_header_separator(monkeypatch):
 
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.base import ApprovalView
-    from minacode.cli.modals import approval_text_viewer
+    from wizolt.base import ApprovalView
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
@@ -593,11 +593,11 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
 
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.base import ApprovalView
-    from minacode.cli.modals import approval_text_viewer
+    from wizolt.base import ApprovalView
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((60, 40))
-    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
@@ -610,14 +610,14 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
 
 def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     parent.settings.yolo = True
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     prompts = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
 
@@ -626,13 +626,13 @@ def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatc
     assert len(prompts) == 1  # yolo alone does not skip a Delegate send
 
 def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "n", output_fn=lambda text: None)
 
     status, message, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))

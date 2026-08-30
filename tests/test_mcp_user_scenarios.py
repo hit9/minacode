@@ -8,14 +8,14 @@ import pytest
 from mcp_harness import _fake_resource
 from test_mcp_commands import oauth_store, oauth_value, put_oauth_state
 
-from minacode.cli import CommandLoop
-from minacode.cli.commands import mcp_command
-from minacode.config import (
+from wizolt.cli import CommandLoop
+from wizolt.cli.commands import mcp_command
+from wizolt.config import (
     Config,
 )
-from minacode.engine import Agent
-from minacode.render import StatusBar
-from minacode.session import Session, bootstrap_features
+from wizolt.engine import Agent
+from wizolt.render import StatusBar
+from wizolt.session import Session, bootstrap_features
 
 
 class TestMCPUserScenarios:

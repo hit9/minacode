@@ -5,23 +5,23 @@ from types import SimpleNamespace
 
 from agent_harness import session, session_with_provider
 
-from minacode.config import (
+from wizolt.config import (
     DEFAULT_OUTPUT_RESERVE_TOKENS,
     MIN_CONTEXT_SAFETY_TOKENS,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.prompts import (
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.prompts import (
     COMPACTION_SUMMARY_TITLE,
 )
-from minacode.session import AgentState
+from wizolt.session import AgentState
 
 
 def test_provider_context_limit_overrides_the_runtime_default(tmp_path):
     # Provider entries are effectively per-model, so a 1M-window model should not have to share one
     # global number with a 128K one. Unset (0) inherits, and the budget is resolved per call so
     # switching the active entry moves it.
-    from minacode.config import Config, request_budget_for
+    from wizolt.config import Config, request_budget_for
 
     config = Config.from_dict(
         {
@@ -64,7 +64,7 @@ def test_the_context_budget_has_exactly_one_definition():
     """
     import pathlib
 
-    root = pathlib.Path(__file__).resolve().parent.parent / "minacode"
+    root = pathlib.Path(__file__).resolve().parent.parent / "wizolt"
     callers = sorted(
         path.relative_to(root).as_posix()
         for path in root.rglob("*.py")
@@ -78,7 +78,7 @@ def test_the_context_budget_has_exactly_one_definition():
 def test_provider_context_limit_reaches_every_budget_reader(tmp_path):
     # End to end, through the real Agent: a provider-level limit must drive the compaction budget and
     # the budget recorded for the status row, with no path still reading the runtime default.
-    from minacode.config import Config, request_budget_for
+    from wizolt.config import Config, request_budget_for
 
     s = session(tmp_path)
     s.config = Config.from_dict({"provider": {"active": "wide", "wide": {"model": "m", "max_context_tokens": 1_048_576}}})
@@ -103,8 +103,8 @@ def test_provider_context_limit_shares_one_denominator_with_usage(tmp_path):
     # the bar reads 60% while the context manager is already compacting.
     from types import SimpleNamespace
 
-    from minacode.config import Config, request_budget_for
-    from minacode.model import ModelClient
+    from wizolt.config import Config, request_budget_for
+    from wizolt.model import ModelClient
 
     s = session(tmp_path)
     s.config = Config.from_dict({"provider": {"active": "big", "big": {"model": "wide", "max_context_tokens": 1_048_576}}})
@@ -155,7 +155,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert model.input is not None
     assert "old answer" in model.input
     assert "recent 7" in model.input  # this budget is 1 token, so the size bound collapses the tail
-    assert "Compact the minacode working context." in model.input  # the appended instruction
+    assert "Compact the wizolt working context." in model.input  # the appended instruction
     assert "tool kept" not in model.input  # the kept tail is not handed to the summarizer
     assert "\nrequest" not in model.input  # nor the turn message; "request" alone occurs in the system prompt
     assert s.state.summary == "compact summary"

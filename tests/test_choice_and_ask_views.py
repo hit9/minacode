@@ -1,12 +1,12 @@
 """choice and ask views (split from tests/test_ui_render.py)."""
-import minacode.render as render_module
-from minacode.base import (
+import wizolt.render as render_module
+from wizolt.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
 )
-from minacode.render import UiPrinter
-from minacode.tools import AskSpec
-from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState
+from wizolt.render import UiPrinter
+from wizolt.tools import AskSpec
+from wizolt.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState
 
 
 def test_choice_view_g_and_shift_g_jump_first_and_last():
@@ -243,7 +243,7 @@ def test_ask_view_notes_mode_opens_via_any_key_routing():
     assert state.notes_mode
 
 def test_ask_view_shift_tab_cycles_backwards():
-    from minacode.tui import TuiApp
+    from wizolt.tui import TuiApp
 
     assert "s-tab" in TuiApp.MODAL_KEYS  # the binding table must route it into the modal
     state = AskViewState.build([AskSpec("1?", choices=["A"]), AskSpec("2?", choices=["B"])])

@@ -3,8 +3,8 @@ factories, and the OAuth token-store helpers."""
 
 from types import SimpleNamespace
 
-from minacode.mcp import MCPToolInfo
-from minacode.session import Session, bootstrap_features
+from wizolt.mcp import MCPToolInfo
+from wizolt.session import Session, bootstrap_features
 
 # ---------------------------------------------------------------------------
 # Helpers

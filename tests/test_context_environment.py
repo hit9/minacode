@@ -6,15 +6,15 @@ from dataclasses import replace
 import pytest
 from agent_harness import session
 
-from minacode.base import (
+from wizolt.base import (
     MAX_AGENTS_MD_TOKENS,
 )
-from minacode.context import ContextManager
-from minacode.prompts import (
+from wizolt.context import ContextManager
+from wizolt.prompts import (
     SYSTEM_PROMPT,
 )
-from minacode.session import Session
-from minacode.skill import SkillLibrary
+from wizolt.session import Session
+from wizolt.skill import SkillLibrary
 
 
 def test_model_messages_are_ordered_context_messages(tmp_path):

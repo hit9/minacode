@@ -7,13 +7,13 @@ import time
 from prompt_toolkit.utils import get_cwidth
 from tui_harness import session
 
-from minacode.base import (
+from wizolt.base import (
     Text,
 )
-from minacode.config import (
+from wizolt.config import (
     request_budget_for,
 )
-from minacode.render import BashLivePreview, StatusBar, Theme
+from wizolt.render import BashLivePreview, StatusBar, Theme
 
 
 def test_bash_live_preview_status_shows_wait_countdown_when_deadline_set(monkeypatch):

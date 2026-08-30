@@ -7,16 +7,16 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from test_loop_commands import queued_texts
 
-from minacode.base import (
+from wizolt.base import (
     LogBlock,
     TurnBox,
     __version__,
 )
-from minacode.cli import CommandLoop
-from minacode.engine import Agent
-from minacode.render import UiPrinter
-from minacode.session import Session
-from minacode.tui import TuiApp
+from wizolt.cli import CommandLoop
+from wizolt.engine import Agent
+from wizolt.render import UiPrinter
+from wizolt.session import Session
+from wizolt.tui import TuiApp
 
 
 def test_ps_command_uses_markdown_renderer(tmp_path):
@@ -63,9 +63,9 @@ def test_turn_output_shares_one_column_and_session_chrome_does_not(tmp_path):
     margin = LogBlock.margin(TurnBox.CONTENT_LEVEL)
 
     loop.emit_turn("Cancelled")
-    loop.emit(f"minacode {__version__}. /help for commands.")
+    loop.emit(f"wizolt {__version__}. /help for commands.")
 
-    assert output == [f"{margin}Cancelled", f"minacode {__version__}. /help for commands."]
+    assert output == [f"{margin}Cancelled", f"wizolt {__version__}. /help for commands."]
 
 def test_tui_completion_applies_single_match():
     class OneCompletion(Completer):

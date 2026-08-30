@@ -2,14 +2,14 @@
 import pytest
 from test_tools import _q, session
 
-import minacode
-from minacode.base import (
+import wizolt
+from wizolt.base import (
     ToolCall,
     ToolError,
 )
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.tools import (
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.tools import (
     TOOL_REGISTRY,
     TOOLS,
     AskTool,
@@ -157,7 +157,7 @@ def test_ask_tool_registered():
     assert AskTool in TOOLS
     assert TOOL_REGISTRY["Ask"] is AskTool
     assert "Question" not in TOOL_REGISTRY
-    assert not hasattr(minacode, "QuestionTool")
+    assert not hasattr(wizolt, "QuestionTool")
 
 def test_ask_tool_schema():
     """params_schema requires a questions array of question objects, strict."""

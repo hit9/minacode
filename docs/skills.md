@@ -12,7 +12,7 @@ skills without bloating every request.
 A skill is a folder containing a `SKILL.md` file with `name` and `description` frontmatter:
 
 ```
-~/.minacode/skills/
+~/.wizolt/skills/
   release-notes/
     SKILL.md
     generate.py        # optional bundled script
@@ -29,34 +29,34 @@ description: Draft release notes from the git log since the last tag.
 3. If a bundled script is needed, run it with Bash — see paths below.
 ```
 
-minacode only sees the `name` and `description` until the skill is used — the full body loads
+wizolt only sees the `name` and `description` until the skill is used — the full body loads
 on demand.
 
 ### Where skills come from
 
-minacode discovers skills from three sources:
+wizolt discovers skills from three sources:
 
-- Builtin skills shipped with minacode
-- `.minacode/skills/` — project-local, checked in with the repo
-- `~/.minacode/skills/` — your personal skills, available everywhere (under
+- Builtin skills shipped with wizolt
+- `.wizolt/skills/` — project-local, checked in with the repo
+- `~/.wizolt/skills/` — your personal skills, available everywhere (under
   `<data_dir>/skills/` when `paths.data_dir` is customized)
 
 When names collide, project skills override user skills, and user skills override builtins.
 List what's available and which source won with `/skills`.
 
-Every installation includes **`minacode-help`**, a compact manual for installation,
+Every installation includes **`wizolt-help`**, a compact manual for installation,
 configuration, providers, commands, sessions, tools, safety, and troubleshooting. The agent can
-load it when a question concerns minacode, or you can request it explicitly with
-`$minacode-help`. If the manual does not settle the question, it directs the agent to inspect the
+load it when a question concerns wizolt, or you can request it explicitly with
+`$wizolt-help`. If the manual does not settle the question, it directs the agent to inspect the
 matching version's source code and tests.
 
 ## Using skills
 
-- **On demand** — minacode loads a skill itself when it's relevant to your request.
+- **On demand** — wizolt loads a skill itself when it's relevant to your request.
 - **Inline** — type `$name` in a message (Tab-completes) to load a skill yourself
   <span class="marker">for that turn</span>.
 
-```{figure} ../snapshots/minacode-skill-mention.png
+```{figure} ../snapshots/wizolt-skill-mention.png
 :alt: Using $skill mention to load a skill's instructions inline
 :width: 600px
 :align: center

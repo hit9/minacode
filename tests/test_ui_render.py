@@ -4,13 +4,13 @@ clipping, and choice-view state."""
 
 from prompt_toolkit.formatted_text import to_formatted_text
 
-import minacode.render as render_module
-from minacode.base import (
+import wizolt.render as render_module
+from wizolt.base import (
     LogBlock,
     LogLine,
     LogRole,
 )
-from minacode.render import UiPrinter
+from wizolt.render import UiPrinter
 
 # One small, lexer-exercising sample per language an agent routinely edits. `.yaml` and `.pl` are
 # the two that actually broke; the rest are here so the next style/lexer pairing that does the

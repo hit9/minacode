@@ -3,10 +3,10 @@ import shutil
 
 from prompt_toolkit.utils import get_cwidth
 
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole
-from minacode.render import UiPrinter
-from minacode.session import Session
-from minacode.tools import ReadTool
+from wizolt.base import LogBlock, LogEdge, LogLine, LogRole
+from wizolt.render import UiPrinter
+from wizolt.session import Session
+from wizolt.tools import ReadTool
 
 
 def session(tmp_path):

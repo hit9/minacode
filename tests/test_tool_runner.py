@@ -2,9 +2,9 @@
 
 from agent_harness import call, session
 
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.tools import toolblocks, tooloutput
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.tools import toolblocks, tooloutput
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -30,8 +30,8 @@ def test_rejected_and_failed_calls_collapse_a_multiline_display_to_one_line(tmp_
     # a successful call can print it. A rejection is meant to be a quiet one-liner and a failure
     # leads with a red tag, so neither may inherit those lines: a rejected Note used to dim its
     # entire body and bury the reason at the end of the last line.
-    from minacode.base import LogRole
-    from minacode.tools.toolblocks import ToolDisplay
+    from wizolt.base import LogRole
+    from wizolt.tools.toolblocks import ToolDisplay
 
     s = session(tmp_path)
     note = call("Note", [{"replace_plan": [f"Task {index}" for index in range(1, 11)]}])
@@ -85,7 +85,7 @@ def test_replayed_delegate_keeps_its_call_line(tmp_path):
     # full-width rule carries the call instead. Transcript replay wires no rule and passes no
     # output, so the rule never fired and the saved call rendered as an orphaned `stored tr.N`
     # under nothing. Replay takes the fallback root; the live path still hands its rule over.
-    from minacode.base import ToolCall
+    from wizolt.base import ToolCall
 
     s = session(tmp_path)
     delegate = ToolCall(id="", name="Delegate", args=[{"action": "send", "order": "do it"}])

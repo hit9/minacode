@@ -6,10 +6,10 @@ import pytest
 from catalog_harness import resolve
 from PIL import Image
 
-from minacode.base import ImageRouteNotice, ModelError, ModelRequestRetry, ToolCall
-from minacode.config import Config, ProviderConfig
-from minacode.engine import Agent
-from minacode.image import (
+from wizolt.base import ImageRouteNotice, ModelError, ModelRequestRetry, ToolCall
+from wizolt.config import Config, ProviderConfig
+from wizolt.engine import Agent
+from wizolt.image import (
     ATTACHMENT_VISION_OBSERVATION_PREFIX,
     FAILED_IMAGE_CONTEXT_PREFIX,
     IMAGE_TEXT_ONLY_KEY,
@@ -17,9 +17,9 @@ from minacode.image import (
     TOOL_IMAGE_OBSERVATION_PREFIX,
     ImageInputs,
 )
-from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION
-from minacode.providers.compat import bundled_policy
-from minacode.session import Session
+from wizolt.prompts import VISION_OBSERVE_DEFAULT_QUESTION
+from wizolt.providers.compat import bundled_policy
+from wizolt.session import Session
 
 VISION_TEXT = "vision observation text"
 

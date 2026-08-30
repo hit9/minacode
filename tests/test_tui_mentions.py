@@ -4,9 +4,9 @@ import time
 import pytest
 from tui_harness import run_interactive_tui, wait_until
 
-from minacode.cli import CommandCompleter
-from minacode.mentions import FilePick, active_mention
-from minacode.tui import TuiApp
+from wizolt.cli import CommandCompleter
+from wizolt.mentions import FilePick, active_mention
+from wizolt.tui import TuiApp
 
 
 def test_mention_opens_completions_while_typing(monkeypatch):
@@ -17,7 +17,7 @@ def test_mention_opens_completions_while_typing(monkeypatch):
         completer=CommandCompleter(
             mcp_servers=lambda: ("github", "gitlab", "playwright"),
             skills=lambda: ("release",),
-            files=lambda: (("minacode/tui.py", "minacode/tui.py"), ("minacode/hints.py", "minacode/hints.py")),
+            files=lambda: (("wizolt/tui.py", "wizolt/tui.py"), ("wizolt/hints.py", "wizolt/hints.py")),
         )
     )
 
@@ -44,7 +44,7 @@ def test_mention_opens_completions_while_typing(monkeypatch):
         wait_until(lambda: completions() == ["@mcp:github", "@mcp:gitlab"])
 
         pipe_input.send_text(" and @file:tu")
-        wait_until(lambda: completions() == ["@file:minacode/tui.py"])
+        wait_until(lambda: completions() == ["@file:wizolt/tui.py"])
 
         pipe_input.send_text(" and $")
         wait_until(lambda: completions() == ["@skill:release"])
@@ -146,13 +146,13 @@ def test_file_picker_opens_after_typing_without_tab(monkeypatch):
     queries = []
     app = TuiApp(
         file_picker_available_fn=lambda: True,
-        file_picker_fn=lambda query: (queries.append(query), FilePick("minacode/tui.py"))[1],
+        file_picker_fn=lambda query: (queries.append(query), FilePick("wizolt/tui.py"))[1],
     )
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         pipe_input.send_text("inspect @file:")
-        wait_until(lambda: app.input_buffer.text == "inspect @file:minacode/tui.py")
+        wait_until(lambda: app.input_buffer.text == "inspect @file:wizolt/tui.py")
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)

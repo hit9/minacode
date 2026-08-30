@@ -1,6 +1,6 @@
 # Context and caching
 
-Each request contains more than the latest message. minacode puts stable session context first,
+Each request contains more than the latest message. wizolt puts stable session context first,
 then sends one append-only conversation log. This keeps the agent informed while giving supported
 providers exact earlier user and tool boundaries to reuse.
 
@@ -28,7 +28,7 @@ with references to their first full copy instead of being sent in full again.
 
 ### Compaction
 
-As a request approaches `runtime.max_context_tokens`, minacode **compacts**: the older part of the
+As a request approaches `runtime.max_context_tokens`, wizolt **compacts**: the older part of the
 conversation is replaced by a short summary, and the most recent messages — about eight of them —
 are kept as they are. The session continues in the same turn, so a long task does not have to stop.
 
@@ -72,7 +72,7 @@ compaction runs on the model already shown.
 
 Compaction always makes room, even when the summary request fails: the same messages leave the
 context, with no summary written in their place. Work is not lost — the segment is still stored
-and the agent can still recall it — but the checkpoint carries less, so tell minacode what matters
+and the agent can still recall it — but the checkpoint carries less, so tell wizolt what matters
 if a long task continues past one.
 
 `/compact log` marks such a pass `no summary`, and `/compact` reports the reason on the spot. The
@@ -122,7 +122,7 @@ starts a new one. Appending to the conversation, including Note updates and resu
 not.
 
 Support differs by provider. OpenAI-compatible endpoints may match prefixes on their own, all the
-way through the conversation. Anthropic caches only what it is told to, and minacode marks the
+way through the conversation. Anthropic caches only what it is told to, and wizolt marks the
 instructions and tools — so there the conversation itself is processed again each turn.
 
 ### Checking the hit rate

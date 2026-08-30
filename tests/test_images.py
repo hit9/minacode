@@ -9,17 +9,17 @@ from PIL import Image
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 
-import minacode.cli.loop as loop_module
-import minacode.tui as tui_module
-from minacode.base import ModelError, ToolCall, ToolError
-from minacode.cli import CommandLoop
-from minacode.config import (
+import wizolt.cli.loop as loop_module
+import wizolt.tui as tui_module
+from wizolt.base import ModelError, ToolCall, ToolError
+from wizolt.cli import CommandLoop
+from wizolt.config import (
     Config,
     ProviderConfig,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.image import (
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.image import (
     IMAGE_MARKER,
     IMAGE_REFS_KEY,
     IMAGE_TEXT_ONLY_KEY,
@@ -29,11 +29,11 @@ from minacode.image import (
     ImageRef,
     UserInput,
 )
-from minacode.model import ModelClient
-from minacode.runner import ToolRunner
-from minacode.session import Session, SessionSnapshotStore
-from minacode.tools import ViewImageTool
-from minacode.tui import TuiApp
+from wizolt.model import ModelClient
+from wizolt.runner import ToolRunner
+from wizolt.session import Session, SessionSnapshotStore
+from wizolt.tools import ViewImageTool
+from wizolt.tui import TuiApp
 
 
 def image_file(path, *, size=(32, 24), image_format="PNG", color=(12, 34, 56)):

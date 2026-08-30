@@ -1,17 +1,17 @@
-# minacode
+# wizolt
 
 A terminal coding agent
 
-minacode works in your terminal: you describe a task, and it reads code, edits files, runs
+wizolt works in your terminal: you describe a task, and it reads code, edits files, runs
 commands, and reports back. It keeps <span class="marker">stable prompt prefixes</span> so
 supported providers can reuse work, maintains a searchable code index, runs background jobs,
 tracks its own working notes, and <span class="marker">resumes where you left off</span>.
 
-minacode is the former nanocode, renamed once it outgrew both the single file and the small size
-that made it *nano*.
+Wizolt is the former minacode, which began as the single-file nanocode. The project history remains
+continuous across those names.
 
-```{figure} ../snapshots/minacode1.gif
-:alt: minacode editing code and running tools in one interactive session
+```{figure} ../snapshots/wizolt1.gif
+:alt: wizolt editing code and running tools in one interactive session
 :width: 600px
 :align: center
 
@@ -20,7 +20,7 @@ Editing code and running tools in one interactive session.
 
 ```{admonition} Use at your own risk
 :class: warning
-minacode edits files and runs shell commands in the directory where you start it. It has
+wizolt edits files and runs shell commands in the directory where you start it. It has
 **no sandbox of its own**. Run it inside a container, VM, or another isolated environment
 when you need isolation. See [Safety](safety.md).
 ```
@@ -28,18 +28,18 @@ when you need isolation. See [Safety](safety.md).
 ## Install and run
 
 ```sh
-uv tool install minacode
-minacode --init-config          # write ~/.minacode/config.toml
+uv tool install wizolt
+wizolt --init-config          # write ~/.wizolt/config.toml
 # add your provider's url, key, and model to that file
-minacode
+wizolt
 ```
 
 Full walkthrough: [Getting started](getting-started.md).
 
 ## What it does
 
-```{figure} ../snapshots/minacode2.gif
-:alt: minacode working through a repository task
+```{figure} ../snapshots/wizolt2.gif
+:alt: wizolt working through a repository task
 :width: 600px
 :align: center
 
@@ -58,7 +58,7 @@ Working through a repository task in an interactive session.
 | **[Configuration](configuration.md)** | Providers, runtime settings, and data location. |
 | **[Compatibility catalog](catalog.md)** | How documented provider/model exceptions are selected, updated, and overridden. |
 | **[Context](context.md)** | How the window is filled, summarized when it fills up, and reused by the provider's cache. |
-| **[Safety](safety.md)** | What minacode can reach, and how to keep that bounded. |
+| **[Safety](safety.md)** | What wizolt can reach, and how to keep that bounded. |
 | **[Troubleshooting](troubleshooting.md)** | What a symptom means and what to do about it. |
 
 ```{toctree}

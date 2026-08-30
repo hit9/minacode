@@ -4,14 +4,14 @@ from typing import ClassVar
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
-from minacode.base import ToolCall, ToolError
-from minacode.config import (
+from wizolt.base import ToolCall, ToolError
+from wizolt.config import (
     Config,
 )
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.session import Session, bootstrap_features
-from minacode.tools import MCPTool
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.session import Session, bootstrap_features
+from wizolt.tools import MCPTool
 
 
 class TestMCPToolConfirmation:

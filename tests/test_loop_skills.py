@@ -1,4 +1,5 @@
 """loop skills (split from tests/test_loop_commands.py)."""
+
 import os
 import tomllib
 
@@ -6,22 +7,22 @@ import pytest
 from agent_harness import session
 from test_loop_commands import _write_skill
 
-from minacode.base import (
+from wizolt.base import (
     ToolError,
     TurnBox,
 )
-from minacode.cli import CommandLoop
-from minacode.cli.commands import (
+from wizolt.cli import CommandLoop
+from wizolt.cli.commands import (
     skills_command,
     status,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.prompts import SYSTEM_PROMPT
-from minacode.render import StatusBar
-from minacode.session import Session
-from minacode.skill import SkillLibrary
-from minacode.tools import SkillTool, Tool
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.prompts import SYSTEM_PROMPT
+from wizolt.render import StatusBar
+from wizolt.session import Session
+from wizolt.skill import SkillLibrary
+from wizolt.tools import SkillTool, Tool
 
 
 def test_skill_library_index_and_lookup(tmp_path):
@@ -34,19 +35,36 @@ def test_skill_library_index_and_lookup(tmp_path):
     assert s.skills.get("Release-Notes").name == "release-notes"  # case-insensitive
     assert s.skills.get("missing") is None
 
-def test_builtin_minacode_help_uses_normal_skill_paths(tmp_path):
+
+def test_builtin_wizolt_help_uses_normal_skill_paths(tmp_path):
     s = session(tmp_path)
 
-    skill = s.skills.get("minacode-help")
+    skill = s.skills.get("wizolt-help")
     assert skill is not None
     assert skill.source == "builtin"
-    assert "troubleshoot minacode" in skill.description
-    assert "- minacode-help:" in s.skills.index()
-    body = SkillTool(s, ["minacode-help"]).call()
+    assert "troubleshoot wizolt" in skill.description
+    assert "- wizolt-help:" in s.skills.index()
+    body = SkillTool(s, ["wizolt-help"]).call()
     assert "## Inspect the implementation" in body
     assert "### Provider-side tools and web search" in body
     assert all(term in body for term in ("builtin_tools", "$web_search", "pause_turn", "OpenRouter"))
-    assert "## Configure providers" in s.skills.resolve_mentions("help with $minacode-help")
+    assert "## Configure providers" in s.skills.resolve_mentions("help with $wizolt-help")
+
+
+def test_project_skills_prefer_wizolt_and_fall_back_to_minacode(tmp_path):
+    legacy = tmp_path / ".minacode" / "skills" / "guide"
+    legacy.mkdir(parents=True)
+    (legacy / "SKILL.md").write_text("---\nname: guide\ndescription: legacy\n---\nlegacy body\n", encoding="utf-8")
+
+    skill = session(tmp_path).skills.get("guide")
+    assert skill is not None
+    assert skill.description == "legacy"
+
+    _write_skill(tmp_path, "guide", "current", "current body")
+    skill = session(tmp_path).skills.get("guide")
+    assert skill is not None
+    assert skill.description == "current"
+
 
 def test_every_builtin_skill_is_declared_as_package_data(tmp_path):
     """A builtin skill only exists for installed users if the wheel carries its SKILL.md.
@@ -54,33 +72,35 @@ def test_every_builtin_skill_is_declared_as_package_data(tmp_path):
     Running from a checkout hides an omission completely, so the packaging declaration is checked
     here rather than discovered as a missing skill after release."""
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    builtin_root = os.path.join(repo_root, "minacode", "builtin_skills")
+    builtin_root = os.path.join(repo_root, "wizolt", "builtin_skills")
     with open(os.path.join(repo_root, "pyproject.toml"), "rb") as handle:
         packaging = tomllib.load(handle)["tool"]["setuptools"]
-    patterns = packaging["package-data"]["minacode"]
+    patterns = packaging["package-data"]["wizolt"]
 
-    assert "minacode.builtin_skills" in packaging["packages"]
+    assert "wizolt.builtin_skills" in packaging["packages"]
     assert "builtin_skills/*/SKILL.md" in patterns
     for entry in sorted(os.listdir(builtin_root)):
         if os.path.isdir(os.path.join(builtin_root, entry)) and entry != "__pycache__":
             assert os.path.isfile(os.path.join(builtin_root, entry, "SKILL.md")), entry
 
+
 def test_skill_project_overrides_user_and_user_overrides_builtin(tmp_path):
-    user_skill = tmp_path / "data" / "skills" / "minacode-help"
+    user_skill = tmp_path / "data" / "skills" / "wizolt-help"
     user_skill.mkdir(parents=True)
-    (user_skill / "SKILL.md").write_text("---\nname: minacode-help\ndescription: user version\n---\nuser body\n", encoding="utf-8")
+    (user_skill / "SKILL.md").write_text("---\nname: wizolt-help\ndescription: user version\n---\nuser body\n", encoding="utf-8")
 
     user_session = session(tmp_path)
-    skill = user_session.skills.get("minacode-help")
+    skill = user_session.skills.get("wizolt-help")
     assert skill.source == "user"
     assert skill.description == "user version"
 
-    _write_skill(tmp_path, "minacode-help", "project version", "project body")
+    _write_skill(tmp_path, "wizolt-help", "project version", "project body")
 
     project_session = session(tmp_path)
-    skill = project_session.skills.get("minacode-help")
+    skill = project_session.skills.get("wizolt-help")
     assert skill.source == "project"
     assert skill.description == "project version"
+
 
 def test_skill_tool_expands_skill_dir(tmp_path):
     folder = _write_skill(tmp_path, "build", "build it", 'Run python "{skill_dir}/scripts/go.py".', scripts={"go.py": "print(1)"})
@@ -91,6 +111,7 @@ def test_skill_tool_expands_skill_dir(tmp_path):
     assert f'python "{folder}/scripts/go.py"' in output
     assert "{skill_dir}" not in output
 
+
 def test_skill_tool_unknown_lists_available(tmp_path):
     _write_skill(tmp_path, "known", "known skill", "body")
     s = session(tmp_path)
@@ -98,6 +119,7 @@ def test_skill_tool_unknown_lists_available(tmp_path):
         SkillTool(s, ["nope"]).call()
     assert "unknown skill 'nope'" in str(excinfo.value)
     assert "known" in str(excinfo.value)
+
 
 def test_skill_mentions_inject_body(tmp_path):
     _write_skill(tmp_path, "triage", "triage a bug", "Reproduce first.")
@@ -110,6 +132,7 @@ def test_skill_mentions_inject_body(tmp_path):
     # a bare word without $ is not a mention; an unknown $token is ignored
     assert s.skills.resolve_mentions("triage this") == ""
     assert s.skills.resolve_mentions("$unknown") == ""
+
 
 def test_skill_tool_absent_only_when_no_skills(tmp_path):
     _write_skill(tmp_path, "available", "available skill", "body")
@@ -127,16 +150,18 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     assert not any(t["function"]["name"] == "Skill" for t in tools)
     assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(SYSTEM_PROMPT))
 
+
 def test_skills_command_lists_installed(tmp_path):
     base = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
     assert "### Skills · 1" in skills_command(base, "")
-    assert "| `minacode-help` | builtin |" in skills_command(base, "")
+    assert "| `wizolt-help` | builtin |" in skills_command(base, "")
 
     _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
     output = skills_command(loop, "")
     assert "| skill | source | description |" in output
     assert "| `release-notes` | project | Draft a CHANGELOG entry. |" in output
+
 
 def test_skill_loads_dedup_on_repeat(tmp_path):
     _write_skill(tmp_path, "guide", "a guide", "FULL GUIDE INSTRUCTIONS")
@@ -149,6 +174,7 @@ def test_skill_loads_dedup_on_repeat(tmp_path):
     assert "FULL GUIDE INSTRUCTIONS" not in deduped[1]["content"]  # repeat collapsed
     assert "repeat load of skill guide" in deduped[1]["content"]
     assert "tr.1" in deduped[1]["content"]
+
 
 def test_status_and_bar_show_skill_count(tmp_path):
     _write_skill(tmp_path, "one", "d1", "b")
@@ -173,6 +199,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     bar_text = " | ".join(text for text, _ in StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
+
 def test_status_shows_agents_md_state(tmp_path):
     # No candidate file in cwd: still on, but nothing loaded.
     s = session(tmp_path)
@@ -189,6 +216,7 @@ def test_status_shows_agents_md_state(tmp_path):
     # Disabled at runtime: reports off.
     loaded.settings.agents_md = False
     assert "agents_md off" in status(loaded_loop, "")
+
 
 def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     s = session(tmp_path)
@@ -207,6 +235,7 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     assert s.state.context_percent > persisted_percent
     context_row = next(line for line in rendered.splitlines() if line.startswith("| context |"))
     assert f"`{s.state.context_percent}%`" in context_row
+
 
 def test_status_context_row_uses_last_real_tokens_when_available(tmp_path):
     s = session(tmp_path)
@@ -228,6 +257,7 @@ def test_status_context_row_uses_last_real_tokens_when_available(tmp_path):
     s.config.provider.max_tokens = 60_000
     assert "`~20.0K / 80.0K`" in context_row()
 
+
 def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
     s = session(tmp_path)
     s.usage.last_cached_prompt_tokens = 76_000
@@ -244,6 +274,7 @@ def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
     assert "last `99.9%` (w 1.2K); session `83.4%` (w 4.5K)" in cache_row
     assert "76.1K" not in cache_row
 
+
 def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     plain = []
@@ -259,8 +290,9 @@ def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     assert rich[0][0].count("| --- | --- |") == 1
     assert rich[0][1] == {"rule": False, "compact": True, "indent": TurnBox.CONTENT_LEVEL}
 
+
 def test_session_from_config_file_theme_param(tmp_path):
-    cfg = tmp_path / "minacode.toml"
+    cfg = tmp_path / "wizolt.toml"
     cfg.write_text('[runtime]\ntheme = "light"\n')
     s = Session.from_config_file(path=str(cfg), theme="dark")
     assert s.settings.theme == "dark"

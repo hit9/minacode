@@ -5,11 +5,11 @@ import pytest
 from model_harness import _AnthropicMockClientFactory, _MockClientFactory, _session
 from test_builtin_tools import FUNCTION_TOOL, WEB_SEARCH, _chat_body, _responses_body
 
-from minacode.base import (
+from wizolt.base import (
     ModelError,
 )
-from minacode.context import ContextManager
-from minacode.model import ModelClient, responses
+from wizolt.context import ContextManager
+from wizolt.model import ModelClient, responses
 
 
 def test_aliyun_chat_keeps_responses_builtin_tools_inactive(tmp_path, monkeypatch):

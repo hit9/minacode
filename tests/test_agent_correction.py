@@ -3,15 +3,15 @@ import pytest
 from agent_harness import call, session
 from test_agent_turn import _correction
 
-import minacode.engine as engine_module
-from minacode.base import (
+import wizolt.engine as engine_module
+from wizolt.base import (
     SESSION_EVENT_KEY,
     MalformedToolCallError,
     ModelError,
 )
-from minacode.engine import Agent
-from minacode.prompts import FAILED_TURN_MARKER, SYSTEM_PROMPT
-from minacode.session import Session, SessionSnapshotCodec
+from wizolt.engine import Agent
+from wizolt.prompts import FAILED_TURN_MARKER, SYSTEM_PROMPT
+from wizolt.session import Session, SessionSnapshotCodec
 
 
 def test_agent_rejects_empty_final_response(tmp_path):

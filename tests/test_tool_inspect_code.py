@@ -6,15 +6,15 @@ import code_symbol_index as csi
 import pytest
 from test_tools import session
 
-from minacode.base import (
+from wizolt.base import (
     LogBlock,
     LogEdge,
     LogLine,
     LogRole,
     ToolError,
 )
-from minacode.render import UiPrinter
-from minacode.tools import (
+from wizolt.render import UiPrinter
+from wizolt.tools import (
     CodeIndex,
     InspectCodeTool,
 )

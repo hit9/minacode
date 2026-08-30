@@ -4,12 +4,12 @@ import re
 
 from agent_harness import call, session
 
-from minacode.base import (
+from wizolt.base import (
     MAX_TOOL_OUTPUT_TOKENS,
 )
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.tools import ReadTool
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.tools import ReadTool
 
 
 def test_session_tool_result_store_prunes_old_records(tmp_path):

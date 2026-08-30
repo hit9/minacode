@@ -3,9 +3,9 @@ import os
 
 from test_session_persistence import log_path, project_dir, read_jsonl, session_with_data_dir
 
-from minacode.base import SESSION_EVENT_KEY
-from minacode.context import ContextManager
-from minacode.session import Session
+from wizolt.base import SESSION_EVENT_KEY
+from wizolt.context import ContextManager
+from wizolt.session import Session
 
 
 def test_latest_pointer_created_on_first_save(tmp_path):

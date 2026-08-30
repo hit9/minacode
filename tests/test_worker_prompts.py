@@ -6,9 +6,9 @@ import pytest
 from agent_harness import session
 from test_worker_handoff import _requested_system
 
-from minacode.context import ContextManager
-from minacode.prompts import SYSTEM_PROMPT
-from minacode.tools import TOOL_REGISTRY, Tool
+from wizolt.context import ContextManager
+from wizolt.prompts import SYSTEM_PROMPT
+from wizolt.tools import TOOL_REGISTRY, Tool
 
 
 def test_tool_names_filter_resolved_schemas_and_keep_registry_order(tmp_path):
@@ -38,7 +38,7 @@ def test_system_prompt_default_matches_prompts_module(tmp_path):
     assert ContextManager(session(tmp_path)).model_messages(SYSTEM_PROMPT)[0]["content"] == SYSTEM_PROMPT.strip()
 
 def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
-    from minacode.session import Session, SessionSnapshotStore
+    from wizolt.session import Session, SessionSnapshotStore
 
     parent = session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
@@ -57,7 +57,7 @@ def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
     assert SessionSnapshotStore.latest_uid(parent.config.data_dir, cwd=str(tmp_path)) == parent.uid
 
 def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tmp_path, monkeypatch):
-    from minacode.session import Session, SessionSnapshotStore
+    from wizolt.session import Session, SessionSnapshotStore
 
     parent = session(tmp_path)
     parent.settings.session_retention_days = 1
@@ -78,7 +78,7 @@ def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tmp_path
         entries = list(real_scandir(path))
         return iter(sorted(entries, key=lambda entry: (not entry.name.endswith(".w.jsonl"), entry.name)))
 
-    monkeypatch.setattr("minacode.session.os.scandir", worker_first)
+    monkeypatch.setattr("wizolt.session.os.scandir", worker_first)
     cleaner = session(tmp_path)
     cleaner.settings.session_retention_days = 1
 
@@ -87,7 +87,7 @@ def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tmp_path
     assert not os.path.isfile(worker_path)
 
 def test_delegate_registration_gates(tmp_path):
-    from minacode.session import Session
+    from wizolt.session import Session
 
     def names(s):
         return {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
@@ -114,8 +114,8 @@ def test_delegate_registration_gates(tmp_path):
     assert "Delegate" in names(on)
 
 def test_worker_config_parsing_and_validation(tmp_path):
-    from minacode.base import ConfigError
-    from minacode.config import (
+    from wizolt.base import ConfigError
+    from wizolt.config import (
         Config,
         RuntimeSettings,
     )
@@ -128,7 +128,7 @@ def test_worker_config_parsing_and_validation(tmp_path):
         Config.from_dict({"worker": {"provider": "nope"}})
 
 def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):
-    from minacode.session import Session, SessionSnapshotStore
+    from wizolt.session import Session, SessionSnapshotStore
 
     parent = session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
@@ -146,7 +146,7 @@ def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):
     assert resolved_worker == worker.uid  # explicit full uid still works, by design
 
 def test_worker_prompt_shares_language_and_secret_rules_with_parent():
-    from minacode.prompts import LANGUAGE_RULES, SECRET_RULES, SYSTEM_PROMPT, WORKER_PROMPT
+    from wizolt.prompts import LANGUAGE_RULES, SECRET_RULES, SYSTEM_PROMPT, WORKER_PROMPT
 
     assert LANGUAGE_RULES in SYSTEM_PROMPT
     assert LANGUAGE_RULES in WORKER_PROMPT
@@ -154,7 +154,7 @@ def test_worker_prompt_shares_language_and_secret_rules_with_parent():
     assert SECRET_RULES in WORKER_PROMPT
 
 def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
-    from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
+    from wizolt.prompts import SYSTEM_PROMPT, WORKER_PROMPT
 
     assert "REVIEW:" in SYSTEM_PROMPT and "REVIEW:" not in WORKER_PROMPT
     assert "terminal scrollback" in SYSTEM_PROMPT and "terminal scrollback" not in WORKER_PROMPT
@@ -165,9 +165,9 @@ def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
 def test_prompts_never_name_tools_outside_their_toolset():
     import re
 
-    from minacode.prompts import WORKER_PROMPT
-    from minacode.tools import TOOL_REGISTRY
-    from minacode.tools.delegate import WORKER_TOOLS
+    from wizolt.prompts import WORKER_PROMPT
+    from wizolt.tools import TOOL_REGISTRY
+    from wizolt.tools.delegate import WORKER_TOOLS
 
     def mentioned(prompt):
         return {name for name in TOOL_REGISTRY if re.search(rf"\b{re.escape(name)}\b", prompt)}
@@ -177,7 +177,7 @@ def test_prompts_never_name_tools_outside_their_toolset():
 
 
 def test_worker_toolset_includes_image_and_script_tools():
-    from minacode.tools.delegate import WORKER_TOOLS
+    from wizolt.tools.delegate import WORKER_TOOLS
 
     assert "ViewImage" in WORKER_TOOLS
     assert "ToolScript" in WORKER_TOOLS
@@ -186,7 +186,7 @@ def test_worker_toolset_includes_image_and_script_tools():
 
 
 def test_worker_schemas_include_viewimage_and_toolscript(tmp_path):
-    from minacode.tools.delegate import WORKER_TOOLS
+    from wizolt.tools.delegate import WORKER_TOOLS
 
     s = session(tmp_path)
     s.tool_names = WORKER_TOOLS
@@ -199,6 +199,6 @@ def test_worker_schemas_include_viewimage_and_toolscript(tmp_path):
 def test_system_prompt_stable_across_refactors():
     import hashlib
 
-    from minacode.prompts import SYSTEM_PROMPT
+    from wizolt.prompts import SYSTEM_PROMPT
 
-    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "ce6aa05916103d6b91691c3868b657cbc16d2b38737c85417228d119af334567"
+    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "890d20827d7139f6d0a708f6b9697a3cc92280f3dc56d62507e9ed748c9d83c1"

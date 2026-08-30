@@ -783,7 +783,7 @@ wheels = [
 ]
 
 [[package]]
-name = "minacode"
+name = "wizolt"
 version = "0.36.0"
 source = { editable = "." }
 dependencies = [

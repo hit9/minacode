@@ -5,17 +5,17 @@ import os
 import pytest
 from agent_harness import session
 
-import minacode.cli.loop as loop_module
-from minacode.base import (
+import wizolt.cli.loop as loop_module
+from wizolt.base import (
     SESSION_EVENT_KEY,
-    MinacodeError,
     TurnBox,
+    WizoltError,
 )
-from minacode.cli import CommandLoop
-from minacode.cli.modals import select_choice
-from minacode.engine import Agent
-from minacode.session import SessionSnapshotStore, ToolResultRecord
-from minacode.tools import CodeIndex
+from wizolt.cli import CommandLoop
+from wizolt.cli.modals import select_choice
+from wizolt.engine import Agent
+from wizolt.session import SessionSnapshotStore, ToolResultRecord
+from wizolt.tools import CodeIndex
 
 
 def test_empty_exit_does_not_print_resume_command(tmp_path):
@@ -99,7 +99,7 @@ def test_resumed_session_warns_when_older_version_wrote_after_transcript(tmp_pat
     loop.render_resumed_session()
 
     assert output[0] == f"Restored session: {s.uid}"
-    assert output[1] == "Warning: this transcript may omit turns written by an older minacode version."
+    assert output[1] == "Warning: this transcript may omit turns written by an older wizolt version."
 
 def test_resumed_session_hides_internal_checkpoint_and_resume_events(tmp_path):
     s = session(tmp_path)
@@ -161,7 +161,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
             {"role": "assistant", "content": "compacted answer\nfinal detail"},
         ]
     )
-    s.tool_records.append(ToolResultRecord("tr.1", "Bash", ["wc -l minacode.py"], "999 minacode.py", "wc -l minacode.py"))
+    s.tool_records.append(ToolResultRecord("tr.1", "Bash", ["wc -l wizolt.py"], "999 wizolt.py", "wc -l wizolt.py"))
     output = []
     loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
 
@@ -171,8 +171,8 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
     assert f"Restored session: {s.uid}" in text
     assert "  compacted answer\n  final detail" in text  # the answer sits in the content column
     assert "user:" not in text and "assistant:" not in text
-    assert "  Bash  wc -l minacode.py\n    └ stored tr.1" in text
-    assert "999 minacode.py" not in text
+    assert "  Bash  wc -l wizolt.py\n    └ stored tr.1" in text
+    assert "999 wizolt.py" not in text
 
 def test_resumed_session_separates_turn_boxes(tmp_path):
     s = session(tmp_path)
@@ -231,7 +231,7 @@ def test_eof_exit_prints_resume_command(tmp_path):
     assert loop.run() == 0
 
     # The session took its name from the opening message; the pasted line still carries the uid.
-    assert output[-1] == f"Resume 'hello' with:\nminacode --resume {s.uid}"
+    assert output[-1] == f"Resume 'hello' with:\nwizolt --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 @pytest.mark.parametrize(("interrupt_phase", "expected_cancelled"), [("input", 0), ("request", 1)])
@@ -275,7 +275,7 @@ def test_simple_repl_publishes_the_final_answer_exactly_once(tmp_path, monkeypat
 
     def run(_user_input):
         if raised:
-            raise MinacodeError("provider is down")
+            raise WizoltError("provider is down")
         agent.output_fn("The answer.")  # what Agent.run does before it returns
         return "The answer."
 

@@ -5,14 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-import minacode
-import minacode.__main__ as cli
-from minacode.cli import CommandLoop
+import wizolt
+import wizolt.__main__ as cli
+from wizolt.cli import CommandLoop
 
 
 def test_package_root_exposes_only_version():
-    assert minacode.__all__ == ["__version__"]
-    assert all(not hasattr(minacode, name) for name in ("Agent", "Session", "TuiApp", "main"))
+    assert wizolt.__all__ == ["__version__"]
+    assert all(not hasattr(wizolt, name) for name in ("Agent", "Session", "TuiApp", "main"))
 
 
 def test_cli_rejects_native_windows(monkeypatch, capsys):
@@ -30,19 +30,19 @@ def test_cli_prints_version(capsys):
 def test_cli_help_links_docs(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help"])
-    assert "https://minacode.readthedocs.io" in capsys.readouterr().out
+    assert "https://wizolt.readthedocs.io" in capsys.readouterr().out
 
 
 def test_loop_help_links_docs():
-    assert "https://minacode.readthedocs.io" in CommandLoop.HELP
+    assert "https://wizolt.readthedocs.io" in CommandLoop.HELP
 
 
 @pytest.mark.parametrize(("created", "prefix"), [(True, "Created"), (False, "Exists")])
 def test_cli_initializes_config(monkeypatch, capsys, created, prefix):
     monkeypatch.setattr(cli.ConfigFile, "init", lambda path: (path, created))
 
-    assert cli.main(["--init-config", "--config", "/tmp/minacode.toml"]) == 0
-    assert capsys.readouterr().out.strip() == f"{prefix} config: /tmp/minacode.toml"
+    assert cli.main(["--init-config", "--config", "/tmp/wizolt.toml"]) == 0
+    assert capsys.readouterr().out.strip() == f"{prefix} config: /tmp/wizolt.toml"
 
 
 def test_cli_runs_session_and_closes_resources(monkeypatch):
@@ -107,7 +107,7 @@ def test_cli_loads_resumed_session_with_runtime_overrides(monkeypatch):
     ("error", "return_code", "message"),
     [
         (cli.ConfigError("bad config"), 2, "ConfigError: bad config"),
-        (cli.MinacodeError("bad session"), 1, "Error: bad session"),
+        (cli.WizoltError("bad session"), 1, "Error: bad session"),
     ],
 )
 def test_cli_reports_domain_errors(monkeypatch, capsys, error, return_code, message):
@@ -132,19 +132,19 @@ def test_cli_update_already_current(monkeypatch, capsys):
 
 def test_cli_upgrade_runs_package_manager(monkeypatch, capsys):
     monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", lambda: "999.0.0")
-    monkeypatch.setattr(cli.UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "minacode"])
+    monkeypatch.setattr(cli.UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "wizolt"])
     called = []
     monkeypatch.setattr(cli.subprocess, "call", lambda command: called.append(command) or 3)
 
     assert cli.main(["upgrade"]) == 3
     out = capsys.readouterr().out
     assert f"{cli.__version__} -> 999.0.0" in out
-    assert called == [["uv", "tool", "upgrade", "minacode"]]
+    assert called == [["uv", "tool", "upgrade", "wizolt"]]
 
 
 def test_cli_update_reports_fetch_error(monkeypatch, capsys):
     def boom():
-        raise cli.MinacodeError("network down")
+        raise cli.WizoltError("network down")
 
     monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", boom)
 
@@ -168,8 +168,8 @@ def test_cli_update_reports_missing_package_manager(monkeypatch, capsys):
 @pytest.mark.parametrize(
     ("executable", "expected"),
     [
-        ("/home/u/.local/share/uv/tools/minacode/bin/python", ["uv", "tool", "upgrade", "minacode"]),
-        ("/home/u/.local/pipx/venvs/minacode/bin/python", ["pipx", "upgrade", "minacode"]),
+        ("/home/u/.local/share/uv/tools/wizolt/bin/python", ["uv", "tool", "upgrade", "wizolt"]),
+        ("/home/u/.local/pipx/venvs/wizolt/bin/python", ["pipx", "upgrade", "wizolt"]),
     ],
 )
 def test_upgrade_command_detects_installer(monkeypatch, executable, expected):
@@ -184,7 +184,7 @@ def test_upgrade_command_falls_back_to_pip(monkeypatch):
     monkeypatch.setattr(cli.sys, "executable", executable)
     monkeypatch.setattr(cli.os.path, "realpath", lambda path: path)
 
-    assert cli.UpdateChecker.upgrade_command() == [executable, "-m", "pip", "install", "--upgrade", "minacode"]
+    assert cli.UpdateChecker.upgrade_command() == [executable, "-m", "pip", "install", "--upgrade", "wizolt"]
 
 
 def test_startup_does_not_import_the_provider_sdks():
@@ -192,7 +192,7 @@ def test_startup_does_not_import_the_provider_sdks():
 
     A fresh interpreter is used because the test session has already imported both SDKs.
     """
-    probe = "import minacode.__main__, sys; print(int(any(m in sys.modules for m in ('anthropic', 'openai'))))"
+    probe = "import wizolt.__main__, sys; print(int(any(m in sys.modules for m in ('anthropic', 'openai'))))"
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
 
     assert result.stdout.strip() == "0"
@@ -213,5 +213,5 @@ def test_py_compile():
     import py_compile
     from pathlib import Path
 
-    for source in sorted(Path("minacode").glob("*.py")):
+    for source in sorted(Path("wizolt").glob("*.py")):
         py_compile.compile(str(source), doraise=True)

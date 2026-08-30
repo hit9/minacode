@@ -8,7 +8,7 @@ import pytest
 from model_harness import _AnthropicMockClientFactory, _MockClientFactory, _session
 from provider_cases import PROVIDER_CONTRACTS, ProviderContract
 
-from minacode.model import ModelClient
+from wizolt.model import ModelClient
 
 
 def _chat_response(model: str) -> dict:

@@ -5,7 +5,7 @@ the compiled ProviderPolicy held by a session's catalog (with bundled_policy as 
 fallback). These thin wrappers keep the policy-focused tests readable.
 """
 
-from minacode.providers.compat import bundled_policy
+from wizolt.providers.compat import bundled_policy
 
 
 def resolve(config):

@@ -9,16 +9,16 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from tui_harness import loop, session, wait_until
 
-import minacode.cli.loop as loop_module
-import minacode.render as render_module
-import minacode.tui.app as tui_module
-from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
-from minacode.cli.update import UpdateChecker
-from minacode.engine import Agent
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX
-from minacode.session import Session, SessionSnapshotStore
-from minacode.tools import CodeIndex
-from minacode.tui import TuiApp
+import wizolt.cli.loop as loop_module
+import wizolt.render as render_module
+import wizolt.tui.app as tui_module
+from wizolt.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
+from wizolt.cli.update import UpdateChecker
+from wizolt.engine import Agent
+from wizolt.prompts import LIVE_FOLLOWUP_PREFIX
+from wizolt.session import Session, SessionSnapshotStore
+from wizolt.tools import CodeIndex
+from wizolt.tui import TuiApp
 
 
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):
@@ -354,4 +354,4 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     text = "".join(printed)
     assert "/provider" in text
     assert "status marker" in text
-    assert "minacode-help" in text
+    assert "wizolt-help" in text

@@ -6,16 +6,16 @@ import pytest
 from model_harness import _MockClientFactory
 from PIL import Image
 
-from minacode.base import Billing, ConfigError, ModelError, ToolError
-from minacode.config import Config, ProviderConfig
-from minacode.context import ContextManager
-from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_PREFIX, ImageInputs
-from minacode.model import ModelClient
-from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
-from minacode.runner import ToolRunner
-from minacode.session import Session
-from minacode.tools import Tool, ViewImageTool
-from minacode.vision import VisionObserver
+from wizolt.base import Billing, ConfigError, ModelError, ToolError
+from wizolt.config import Config, ProviderConfig
+from wizolt.context import ContextManager
+from wizolt.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_PREFIX, ImageInputs
+from wizolt.model import ModelClient
+from wizolt.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
+from wizolt.runner import ToolRunner
+from wizolt.session import Session
+from wizolt.tools import Tool, ViewImageTool
+from wizolt.vision import VisionObserver
 
 OBSERVATION = "The screenshot shows a terminal error."
 

@@ -14,25 +14,25 @@ import pytest
 from agent_harness import session, session_with_provider
 from test_context import RUNTIME_GENERATED_EVENTS
 
-import minacode.context as context_module
-from minacode import compaction
-from minacode.base import (
+import wizolt.context as context_module
+from wizolt import compaction
+from wizolt.base import (
     SESSION_EVENT_KEY,
     ModelError,
 )
-from minacode.cli import CommandLoop
-from minacode.cli.commands import compact
-from minacode.config import (
+from wizolt.cli import CommandLoop
+from wizolt.cli.commands import compact
+from wizolt.config import (
     DEFAULT_OUTPUT_RESERVE_TOKENS,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.prompts import (
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.model import ModelClient
+from wizolt.prompts import (
     COMPACTION_SUMMARY_TITLE,
 )
-from minacode.session import HistorySegment
-from minacode.skill import SkillLibrary
+from wizolt.session import HistorySegment
+from wizolt.skill import SkillLibrary
 
 
 def test_compaction_captures_a_history_segment(tmp_path):
@@ -469,7 +469,7 @@ def test_apply_compaction_clears_last_usage_but_keeps_cumulative(tmp_path):
 def test_compaction_override_does_not_change_request_budget(tmp_path):
     """The [compaction] entry never feeds the context budget: even pointing at a small-window entry,
     requests are still prepared against the active provider's window."""
-    from minacode.config import Config, request_budget_for
+    from wizolt.config import Config, request_budget_for
 
     s = session(tmp_path)
     s.config = Config.from_dict(
@@ -566,7 +566,7 @@ def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
 
 def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     """The engine half of the same rule: what run() appends around the request is not a request."""
-    folder = os.path.join(tmp_path, ".minacode", "skills", "triage")
+    folder = os.path.join(tmp_path, ".wizolt", "skills", "triage")
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
         handle.write("---\nname: triage\ndescription: triage a bug\n---\nReproduce first.\n")

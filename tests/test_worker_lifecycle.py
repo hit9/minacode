@@ -6,7 +6,7 @@ import pytest
 from agent_harness import call
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
-from minacode.base import SESSION_EVENT_KEY
+from wizolt.base import SESSION_EVENT_KEY
 
 
 def test_delegate_context_continuity(tmp_path, monkeypatch):
@@ -17,7 +17,7 @@ def test_delegate_context_continuity(tmp_path, monkeypatch):
             ({"role": "assistant", "content": "answer two"}, [], "answer two"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="order one")
     _delegate_call(parent, runner, action="send", order="order two")
@@ -32,7 +32,7 @@ def test_delegate_context_continuity(tmp_path, monkeypatch):
 def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "answer"}, [], "answer")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     retry_wait = lambda active: None
     builtin_call = lambda label, detail: None
@@ -52,7 +52,7 @@ def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
     # None-guard: without injected callbacks the worker's hooks stay unset.
     parent2 = _delegate_session(tmp_path)
     model2 = FakeModelClient([({"role": "assistant", "content": "answer"}, [], "answer")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model2)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model2)
     runner2 = _delegate_runner(parent2)
     _delegate_call(parent2, runner2, action="send", order="work")
     agent2 = parent2.worker._agent
@@ -61,7 +61,7 @@ def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
     assert agent2.context.on_compaction is None
 
 def test_delegate_reset_clears_context_and_snapshot(tmp_path, monkeypatch):
-    from minacode.session import SessionSnapshotStore
+    from wizolt.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
     model = FakeModelClient(
@@ -71,7 +71,7 @@ def test_delegate_reset_clears_context_and_snapshot(tmp_path, monkeypatch):
             ({"role": "assistant", "content": "answer fresh"}, [], "answer fresh"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="order one")
     worker_uid = parent.worker.uid
@@ -90,7 +90,7 @@ def test_delegate_reset_clears_context_and_snapshot(tmp_path, monkeypatch):
     assert "fresh start" in fresh
 
 def test_delegate_reset_stops_worker_jobs_before_dropping_runtime(tmp_path):
-    from minacode.session import Session
+    from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -115,8 +115,8 @@ def test_delegate_reset_stops_worker_jobs_before_dropping_runtime(tmp_path):
     assert parent.worker is None
 
 def test_delegate_reset_keeps_worker_when_snapshot_delete_fails(tmp_path, monkeypatch):
-    from minacode.base import ToolError
-    from minacode.session import Session, SessionSnapshotStore
+    from wizolt.base import ToolError
+    from wizolt.session import Session, SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -131,7 +131,7 @@ def test_delegate_reset_keeps_worker_when_snapshot_delete_fails(tmp_path, monkey
             raise PermissionError("read only")
         return real_unlink(path)
 
-    monkeypatch.setattr("minacode.tools.delegate.os.unlink", fail_snapshot)
+    monkeypatch.setattr("wizolt.tools.delegate.os.unlink", fail_snapshot)
 
     with pytest.raises(ToolError, match="failed to delete its snapshot"):
         _delegate_call(parent, _delegate_runner(parent), action="reset")
@@ -139,7 +139,7 @@ def test_delegate_reset_keeps_worker_when_snapshot_delete_fails(tmp_path, monkey
     assert os.path.isfile(snapshot)
 
 def test_delegate_reset_deletes_disk_only_worker_after_parent_resume(tmp_path):
-    from minacode.session import Session, SessionSnapshotStore
+    from wizolt.session import Session, SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -155,8 +155,8 @@ def test_delegate_reset_deletes_disk_only_worker_after_parent_resume(tmp_path):
 
 @pytest.mark.parametrize("max_steps", [0, -1, True, "3"])
 def test_delegate_rejects_invalid_max_steps(tmp_path, max_steps):
-    from minacode.base import ToolError
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import ToolError
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     with pytest.raises(ToolError, match="integer >= 1"):
@@ -189,7 +189,7 @@ def test_delegate_merges_worker_diffs_into_parent(tmp_path, monkeypatch):
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     result = _delegate_call(parent, runner, action="send", order="create f.txt")
 
@@ -200,7 +200,7 @@ def test_delegate_merges_worker_diffs_into_parent(tmp_path, monkeypatch):
 def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
     import threading
 
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     parent.settings.yolo = True
@@ -241,7 +241,7 @@ def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
         def cancel(self):
             pass
 
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: SlowModel())
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: SlowModel())
     runner = _delegate_runner(parent)
     tool = DelegateTool(parent, [{"action": "send", "order": "create f.txt"}])
     tool.runner = runner
@@ -270,9 +270,9 @@ def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
     assert '"role": "tool"' in worker_messages
 
 def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, monkeypatch):
-    from minacode.base import ToolError
-    from minacode.prompts import FAILED_TOOL_CALL_RESULT
-    from minacode.runner import ToolRunner
+    from wizolt.base import ToolError
+    from wizolt.prompts import FAILED_TOOL_CALL_RESULT
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     # Step 1 edits a real file (its diff lands before the failure), step 2 dies inside tools.run,
@@ -292,7 +292,7 @@ def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, 
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
     real_run = ToolRunner.run
@@ -342,9 +342,9 @@ def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, 
     assert "done" in result
 
 def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypatch):
-    from minacode.base import ToolCall, ToolError
-    from minacode.prompts import FAILED_TOOL_CALL_RESULT
-    from minacode.runner import ToolRunner
+    from wizolt.base import ToolCall, ToolError
+    from wizolt.prompts import FAILED_TOOL_CALL_RESULT
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     # Step 1 edits f.txt (answered), step 2 carries two calls and dies with the first one already
@@ -367,7 +367,7 @@ def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypa
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
     real_run = ToolRunner.run
@@ -416,8 +416,8 @@ def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypa
     assert 'rounds="2"' in result and "done" in result
 
 def test_delegate_status_reports_last_failure_until_a_success(tmp_path, monkeypatch):
-    from minacode.base import ToolError
-    from minacode.runner import ToolRunner
+    from wizolt.base import ToolError
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     model = FakeModelClient(
@@ -430,7 +430,7 @@ def test_delegate_status_reports_last_failure_until_a_success(tmp_path, monkeypa
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
     real_run = ToolRunner.run
@@ -453,8 +453,8 @@ def test_delegate_status_reports_last_failure_until_a_success(tmp_path, monkeypa
     assert 'rounds="2"' in status
 
 def test_delegate_failure_bounds_and_sanitizes_the_error_text(tmp_path, monkeypatch):
-    from minacode.base import ToolError
-    from minacode.runner import ToolRunner
+    from wizolt.base import ToolError
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     model = FakeModelClient(
@@ -466,7 +466,7 @@ def test_delegate_failure_bounds_and_sanitizes_the_error_text(tmp_path, monkeypa
             ),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     body = 'HTTP 400: {"error": "bad "quoted" thing"}\nsecond line\n' + "x" * 3000
     monkeypatch.setattr(ToolRunner, "run", lambda self, tool_calls, **kwargs: (_ for _ in ()).throw(RuntimeError(body)))
@@ -499,7 +499,7 @@ def test_worker_cache_prefix_stable_across_delegations(tmp_path, monkeypatch):
             ({"role": "assistant", "content": "answer two"}, [], "answer two"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="order one")
     _delegate_call(parent, runner, action="send", order="order two")
@@ -514,7 +514,7 @@ def test_delegate_settings_isolated_and_fresh(tmp_path, monkeypatch):
             ({"role": "assistant", "content": "answer two"}, [], "answer two"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="o", max_steps=3)
     assert parent.settings.max_steps == 7  # the parent's budget is untouched
@@ -526,9 +526,9 @@ def test_delegate_settings_isolated_and_fresh(tmp_path, monkeypatch):
     assert parent.worker.settings.yolo is True  # fresh copy sees the runtime change
 
 def test_worker_reset_appends_event_message(tmp_path):
-    from minacode.cli import CommandLoop
-    from minacode.engine import Agent
-    from minacode.session import Session
+    from wizolt.cli import CommandLoop
+    from wizolt.engine import Agent
+    from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
@@ -549,13 +549,13 @@ def test_worker_reset_appends_event_message(tmp_path):
     assert any(message.get("role") == "user" and "starts from scratch" in str(message.get("content")) for message in request.messages)
 
 def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):
-    from minacode.session import SessionSnapshotStore
+    from wizolt.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
     parent.save_snapshot()
     model = FakeModelClient([({"role": "assistant", "content": "one"}, [], "one")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="o")
 
@@ -577,13 +577,13 @@ def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):
     assert second_worker._agent.session is second_worker  # and the new one is bound to the new object
 
 def test_snapshot_restored_worker_shares_parent_skills_and_mcp(tmp_path, monkeypatch):
-    from minacode.session import SessionSnapshotStore
+    from wizolt.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
     parent.save_snapshot()
     model = FakeModelClient([({"role": "assistant", "content": "one"}, [], "one")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="o")
     parent.worker.messages.append({"role": "user", "content": "worker request"})

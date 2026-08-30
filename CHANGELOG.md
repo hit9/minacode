@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Rename the project, PyPI distribution, Python package, console command, data directory, and
+  documentation from `minacode` to `wizolt`. Existing `~/.minacode` and `~/.nanocode`
+  configuration and session data remain readable in place when `~/.wizolt` does not exist.
+
 ## 0.36.0 - 2026-08-29
 
 ### Added

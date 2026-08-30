@@ -5,14 +5,14 @@ import pytest
 from model_harness import _AnthropicMockClientFactory, _MockClientFactory, _session
 from test_builtin_tools import FUNCTION_TOOL, WEB_SEARCH, _responses_body
 
-from minacode.base import (
+from wizolt.base import (
     SEARCH_SOURCES_KEY,
     ConfigError,
 )
-from minacode.config import (
+from wizolt.config import (
     ProviderConfig,
 )
-from minacode.model import ModelClient
+from wizolt.model import ModelClient
 
 
 def test_builtin_tools_parse_as_tables_with_a_type():

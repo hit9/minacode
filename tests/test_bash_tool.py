@@ -6,17 +6,17 @@ import time
 
 import pytest
 
-import minacode.render as render_module
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
-from minacode.cli import CommandLoop
-from minacode.cli.commands import ps_command
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.render import BashLivePreview, LiveSpark, UiPrinter
-from minacode.runner import ToolRunner
-from minacode.session import Session
-from minacode.tools import BashTool, JobTool, Tool, toolblocks, tooloutput
-from minacode.tools.toolblocks import ToolDisplay
+import wizolt.render as render_module
+from wizolt.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
+from wizolt.cli import CommandLoop
+from wizolt.cli.commands import ps_command
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.render import BashLivePreview, LiveSpark, UiPrinter
+from wizolt.runner import ToolRunner
+from wizolt.session import Session
+from wizolt.tools import BashTool, JobTool, Tool, toolblocks, tooloutput
+from wizolt.tools.toolblocks import ToolDisplay
 
 
 def session(tmp_path):
@@ -449,7 +449,7 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     # Safe read-only commands auto-run (no confirmation prompt in non-yolo mode).
     assert readonly("ls -la")
     assert readonly("cat file.txt")
-    assert readonly("wc -l minacode.py")
+    assert readonly("wc -l wizolt.py")
     assert readonly("find . -name '*.py'")
     assert readonly("rg needle src")
     assert readonly("git status --short")

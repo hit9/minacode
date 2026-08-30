@@ -7,7 +7,7 @@ from prompt_toolkit.keys import Keys
 from test_tui_app import ACTIONS, _active, _approval_app
 from tui_harness import run_interactive_tui, wait_until
 
-from minacode.tui import TuiApp
+from wizolt.tui import TuiApp
 
 
 def test_tui_approval_form_fires_the_focused_action_on_enter():

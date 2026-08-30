@@ -10,12 +10,12 @@ from prompt_toolkit.utils import get_cwidth
 from test_ui_render import HIGHLIGHT_SAMPLES
 from tui_harness import loop
 
-import minacode.render as render_module
-from minacode.base import (
+import wizolt.render as render_module
+from wizolt.base import (
     Text,
 )
-from minacode.render import BashLivePreview, Theme, UiPrinter
-from minacode.tui import TuiApp
+from wizolt.render import BashLivePreview, Theme, UiPrinter
+from wizolt.tui import TuiApp
 
 
 def test_emit_turn_end_non_color_uses_elapsed_since_format():

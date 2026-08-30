@@ -6,16 +6,16 @@ from prompt_toolkit.formatted_text import fragment_list_to_text
 from test_tui_runtime import TextRecordingOutput
 from tui_harness import loop, run_interactive_tui, session, wait_until
 
-from minacode.base import (
+from wizolt.base import (
     MalformedToolCallError,
     ToolCall,
     TurnBox,
 )
-from minacode.cli import CommandLoop, TuiRuntime
-from minacode.config import ProviderConfig
-from minacode.engine import Agent
-from minacode.tools import CodeIndex
-from minacode.tui import TuiApp
+from wizolt.cli import CommandLoop, TuiRuntime
+from wizolt.config import ProviderConfig
+from wizolt.engine import Agent
+from wizolt.tools import CodeIndex
+from wizolt.tui import TuiApp
 
 
 def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monkeypatch):
@@ -265,7 +265,7 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
                 "type": "web_search_call",
                 "id": "ws_1",
                 "status": "completed",
-                "action": {"type": "search", "query": "minacode"},
+                "action": {"type": "search", "query": "wizolt"},
             },
         ],
     }
@@ -279,7 +279,7 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
                 "type": "web_search_call",
                 "id": "ws_1",
                 "status": "completed",
-                "action": {"type": "search", "query": "minacode"},
+                "action": {"type": "search", "query": "wizolt"},
             },
         },
         {"type": "response.completed", "response": terminal},
@@ -306,7 +306,7 @@ def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(t
     provider.key = "sk-test"
     command_loop.tui = TuiApp()  # no running application: scrollback writes run inline
     lead, rest = "Let me look that up.", "The searched answer."
-    call = {"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"type": "search", "query": "minacode"}}
+    call = {"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"type": "search", "query": "wizolt"}}
     terminal = {
         "status": "completed",
         "output": [

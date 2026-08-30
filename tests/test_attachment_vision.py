@@ -6,10 +6,10 @@ import os
 import pytest
 from PIL import Image
 
-from minacode.base import ModelError, ToolCall
-from minacode.config import Config, ProviderConfig
-from minacode.engine import Agent
-from minacode.image import (
+from wizolt.base import ModelError, ToolCall
+from wizolt.config import Config, ProviderConfig
+from wizolt.engine import Agent
+from wizolt.image import (
     FAILED_IMAGE_CONTEXT_PREFIX,
     IMAGE_ASSET_CONTEXT_PREFIX,
     IMAGE_MARKER,
@@ -17,7 +17,7 @@ from minacode.image import (
     ImageInputs,
     UserInput,
 )
-from minacode.session import Session, SessionSnapshotCodec
+from wizolt.session import Session, SessionSnapshotCodec
 
 
 def image_file(path, *, color=(12, 34, 56)):

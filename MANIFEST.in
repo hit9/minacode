@@ -1,4 +1,4 @@
 include LICENSE
-recursive-include minacode/builtin_skills *.md
+recursive-include wizolt/builtin_skills *.md
 prune demo*
 prune tests

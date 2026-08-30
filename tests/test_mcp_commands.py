@@ -6,7 +6,7 @@
 # Helpers
 # ---------------------------------------------------------------------------
 
-from minacode.mcp import MCPFileTokenStore
+from wizolt.mcp import MCPFileTokenStore
 
 
 def oauth_value(store: MCPFileTokenStore, url: str, collection: str, suffix: str) -> dict | None:

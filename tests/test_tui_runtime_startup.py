@@ -11,18 +11,18 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from tui_harness import loop, session
 
-import minacode.render as render_module
-import minacode.tui.app as tui_module
-from minacode.base import (
-    MinacodeError,
+import wizolt.render as render_module
+import wizolt.tui.app as tui_module
+from wizolt.base import (
+    WizoltError,
 )
-from minacode.cli import CommandLoop, TuiRuntime
-from minacode.cli.runtime import RESUME_STATUS_LABEL
-from minacode.cli.update import UpdateChecker
-from minacode.engine import Agent
-from minacode.session import SessionSnapshotStore
-from minacode.tools import CodeIndex
-from minacode.tui import TuiApp
+from wizolt.cli import CommandLoop, TuiRuntime
+from wizolt.cli.runtime import RESUME_STATUS_LABEL
+from wizolt.cli.update import UpdateChecker
+from wizolt.engine import Agent
+from wizolt.session import SessionSnapshotStore
+from wizolt.tools import CodeIndex
+from wizolt.tui import TuiApp
 
 
 def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeypatch):
@@ -226,7 +226,7 @@ def test_tui_dispatch_failed_command_still_flushes_followup(tmp_path):
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
     command_loop.session.enqueue_user_input("followup after error")
-    command_loop.command = lambda _text: (_ for _ in ()).throw(MinacodeError("command failed"))
+    command_loop.command = lambda _text: (_ for _ in ()).throw(WizoltError("command failed"))
 
     assert runtime.dispatch("/broken")
 

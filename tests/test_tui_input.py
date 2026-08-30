@@ -16,21 +16,21 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 from tui_harness import ResizableOutput, loop, run_interactive_tui, session, wait_until
 
-import minacode.tui.app as tui_module
-from minacode.base import (
+import wizolt.tui.app as tui_module
+from wizolt.base import (
     SESSION_EVENT_KEY,
     LogBlock,
     LogEdge,
 )
-from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime
-from minacode.cli.update import UpdateChecker
-from minacode.config import (
+from wizolt.cli import CommandCompleter, CommandLoop, TuiRuntime
+from wizolt.cli.update import UpdateChecker
+from wizolt.config import (
     Config,
 )
-from minacode.engine import Agent
-from minacode.session import Session, SessionSnapshotStore
-from minacode.tools import CodeIndex
-from minacode.tui import CallbackPlaceholder, TuiApp
+from wizolt.engine import Agent
+from wizolt.session import Session, SessionSnapshotStore
+from wizolt.tools import CodeIndex
+from wizolt.tui import CallbackPlaceholder, TuiApp
 
 
 def ctrl_c_queue_scenario(cwd, results):
@@ -409,7 +409,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
         assert command_loop.run_tui() == 0
         driver.join(timeout=1)
 
-    assert any(f"minacode --resume {scenario_session.uid}" in line for line in output)
+    assert any(f"wizolt --resume {scenario_session.uid}" in line for line in output)
     assert full_screen_modes == [False]
     assert tui_daemon == [False]
 

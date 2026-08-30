@@ -11,8 +11,8 @@ import time
 from agent_harness import session
 from prompt_toolkit.document import Document
 
-from minacode.cli.view import CommandCompleter
-from minacode.mentions import FileMentions, FzfPicker, active_mention, encode_file_mention, scan_mentions
+from wizolt.cli.view import CommandCompleter
+from wizolt.mentions import FileMentions, FzfPicker, active_mention, encode_file_mention, scan_mentions
 
 
 def completions(completer, text):
@@ -57,18 +57,18 @@ def test_file_mention_quoted_round_trip_and_incomplete_span():
 
 
 FILES = (
-    ("minacode/cli/view.py", "minacode/cli/view.py"),
-    ("minacode/tui.py", "minacode/tui.py"),
-    ("minacode/hints.py", "minacode/hints.py"),
+    ("wizolt/cli/view.py", "wizolt/cli/view.py"),
+    ("wizolt/tui.py", "wizolt/tui.py"),
+    ("wizolt/hints.py", "wizolt/hints.py"),
 )
 
 
 def test_matching_substring_and_case_insensitive():
     c = CommandCompleter(files=lambda: FILES)
-    assert completions(c, "@file:view") == ["@file:minacode/cli/view.py"]
-    assert completions(c, "@file:cli/view") == ["@file:minacode/cli/view.py"]  # whole-path substring
-    assert completions(c, "@file:VIEW") == ["@file:minacode/cli/view.py"]  # case-insensitive
-    assert completions(c, "@file:minacode/tui.py") == ["@file:minacode/tui.py"]
+    assert completions(c, "@file:view") == ["@file:wizolt/cli/view.py"]
+    assert completions(c, "@file:cli/view") == ["@file:wizolt/cli/view.py"]  # whole-path substring
+    assert completions(c, "@file:VIEW") == ["@file:wizolt/cli/view.py"]  # case-insensitive
+    assert completions(c, "@file:wizolt/tui.py") == ["@file:wizolt/tui.py"]
 
 
 def test_matching_ranks_basename_prefix_substring_then_path():
@@ -117,7 +117,7 @@ def test_bare_menu_does_not_scan_or_merge_repository_files():
 def test_kind_completion_keeps_canonical_at_prefix():
     c = CommandCompleter(mcp_servers=lambda: ("github", "gitlab"), skills=lambda: ("release",), files=lambda: FILES)
     assert completions(c, "use @") == ["@file:", "@mcp:", "@skill:"]
-    assert completions(c, "use @file:vie") == ["@file:minacode/cli/view.py"]
+    assert completions(c, "use @file:vie") == ["@file:wizolt/cli/view.py"]
     assert completions(c, "use @mcp:git") == ["@mcp:github", "@mcp:gitlab"]
     assert completions(c, "use @skill:rel") == ["@skill:release"]
 
@@ -194,7 +194,7 @@ def test_python_fallback_honors_nested_gitignore(monkeypatch, tmp_path):
     (nested / ".gitignore").write_text("*.tmp\n!keep.tmp\n", encoding="utf-8")
     (nested / "drop.tmp").write_text("", encoding="utf-8")
     (nested / "keep.tmp").write_text("", encoding="utf-8")
-    monkeypatch.setattr("minacode.mentions.shutil.which", lambda _name: None)
+    monkeypatch.setattr("wizolt.mentions.shutil.which", lambda _name: None)
 
     rels = {rel for _, rel in session(tmp_path).mentions.paths()}
     assert "nested/drop.tmp" not in rels
@@ -345,7 +345,7 @@ def test_fzf_picker_cancel_and_protocol_failure_are_bounded(tmp_path):
 def test_fzf_picker_caches_missing_executable(monkeypatch, tmp_path):
     mentions = session(tmp_path).mentions
     calls = []
-    monkeypatch.setattr("minacode.mentions.shutil.which", lambda name: calls.append(name))
+    monkeypatch.setattr("wizolt.mentions.shutil.which", lambda name: calls.append(name))
     picker = FzfPicker(mentions)
 
     assert not picker.available()

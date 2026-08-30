@@ -6,19 +6,19 @@ import pytest
 from catalog_harness import resolve
 from model_harness import _MockClientFactory
 
-from minacode import compaction
-from minacode.base import (
+from wizolt import compaction
+from wizolt.base import (
     ConfigError,
     ModelError,
 )
-from minacode.config import (
+from wizolt.config import (
     Config,
     ProviderConfig,
 )
-from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.render import StatusBar
-from minacode.session import Session, SessionSnapshotCodec
+from wizolt.context import ContextManager
+from wizolt.model import ModelClient
+from wizolt.render import StatusBar
+from wizolt.session import Session, SessionSnapshotCodec
 
 
 def test_compaction_config_fields_parse_and_default_empty():
@@ -51,7 +51,7 @@ def test_compaction_config_rejects_invalid_values():
 
 
 def test_compaction_provider_config_folds_overrides_without_sharing():
-    from minacode.config import compaction_provider_config
+    from wizolt.config import compaction_provider_config
 
     config = Config.from_dict(
         {
@@ -104,7 +104,7 @@ def test_provider_compaction_rejects_invalid_values():
 
 
 def test_compaction_provider_config_per_provider_wins_over_global():
-    from minacode.config import compaction_provider_config
+    from wizolt.config import compaction_provider_config
 
     config = Config.from_dict(
         {
@@ -132,7 +132,7 @@ def test_compaction_provider_config_per_provider_wins_over_global():
 
 
 def test_compaction_provider_config_per_provider_follows_base_entry():
-    from minacode.config import compaction_provider_config
+    from wizolt.config import compaction_provider_config
 
     config = Config.from_dict(
         {

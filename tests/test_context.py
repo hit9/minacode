@@ -6,9 +6,9 @@ import threading
 
 from agent_harness import session_with_provider
 
-from minacode.base import Billing
-from minacode.context import ContextManager
-from minacode.prompts import (
+from wizolt.base import Billing
+from wizolt.context import ContextManager
+from wizolt.prompts import (
     COMPACTION_SUMMARY_TITLE,
 )
 

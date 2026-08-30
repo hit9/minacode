@@ -3,12 +3,12 @@
 import pytest
 from test_edit_tool import anchor, session
 
-from minacode.base import ToolCall, ToolError
-from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.runner import ToolRunner
-from minacode.tools import CodeIndex, EditTool, ReadTool
-from minacode.tools.editplan import EditBatchPlan
+from wizolt.base import ToolCall, ToolError
+from wizolt.context import ContextManager
+from wizolt.model import ModelClient
+from wizolt.runner import ToolRunner
+from wizolt.tools import CodeIndex, EditTool, ReadTool
+from wizolt.tools.editplan import EditBatchPlan
 
 
 def test_edit_accepts_inspect_code_anchor(tmp_path):

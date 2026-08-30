@@ -1,9 +1,9 @@
 
 
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
-from minacode.session import Session, bootstrap_features
+from wizolt.session import Session, bootstrap_features
 
 
 def session(tmp_path):

@@ -4,19 +4,19 @@ import pytest
 from catalog_harness import resolve
 from test_core_logic import session
 
-from minacode.base import (
+from wizolt.base import (
     RESPONSES_OUTPUT_KEY,
     ConfigError,
 )
-from minacode.config import (
+from wizolt.config import (
     Config,
     ProviderConfig,
     RuntimeSettings,
 )
-from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.providers.catalog import decode_bundled
-from minacode.providers.compat import bundled_policy
+from wizolt.context import ContextManager
+from wizolt.model import ModelClient
+from wizolt.providers.catalog import decode_bundled
+from wizolt.providers.compat import bundled_policy
 
 
 def test_runtime_settings_reads_theme_from_config():

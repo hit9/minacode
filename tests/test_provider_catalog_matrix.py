@@ -2,7 +2,7 @@
 
 import re
 
-from minacode.providers.catalog import decode_bundled
+from wizolt.providers.catalog import decode_bundled
 
 EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 

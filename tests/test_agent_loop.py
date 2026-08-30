@@ -2,10 +2,10 @@
 import pytest
 from agent_harness import call, session
 
-from minacode.engine import Agent
-from minacode.prompts import INTERRUPT_MARKER
-from minacode.session import Session, SessionSnapshotCodec
-from minacode.skill import SkillLibrary
+from wizolt.engine import Agent
+from wizolt.prompts import INTERRUPT_MARKER
+from wizolt.session import Session, SessionSnapshotCodec
+from wizolt.skill import SkillLibrary
 
 
 def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):

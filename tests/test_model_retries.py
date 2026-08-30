@@ -14,8 +14,8 @@ import openai
 import pytest
 from model_harness import _MockClientFactory, _session
 
-from minacode import compaction
-from minacode.base import (
+from wizolt import compaction
+from wizolt.base import (
     MODEL_REQUEST_RETRIES,
     RETRY_BASE_DELAY,
     RETRY_MAX_DELAY,
@@ -24,11 +24,11 @@ from minacode.base import (
     ModelRequestRetry,
     ModelResponseTimeout,
 )
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
-from minacode.context import ContextManager
-from minacode.model import ModelClient, resilience
+from wizolt.context import ContextManager
+from wizolt.model import ModelClient, resilience
 
 
 def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch):
@@ -840,7 +840,7 @@ def test_compaction_failure_names_the_provider_entry(tmp_path, monkeypatch):
 
 def test_compaction_input_restates_the_contract_after_the_payload(tmp_path):
     """The payload ends with raw transcript, so the last instruction the model reads must be ours."""
-    from minacode.prompts import compaction_input
+    from wizolt.prompts import compaction_input
 
     text = compaction_input(state="s", previous_summary="", older_messages="old", recent_messages="user:\n继续 Part B 收尾")
     assert text.rstrip().endswith("using exactly two keys: title, summary.")

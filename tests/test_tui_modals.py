@@ -7,9 +7,9 @@ from prompt_toolkit.data_structures import Size
 from test_tui_input import ctrl_c_queue_scenario
 from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, wait_until
 
-from minacode.cli.commands import select_choice
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX
-from minacode.tui import TUI_MODAL_PENDING, TuiApp
+from wizolt.cli.commands import select_choice
+from wizolt.prompts import LIVE_FOLLOWUP_PREFIX
+from wizolt.tui import TUI_MODAL_PENDING, TuiApp
 
 
 def test_interactive_tui_modal_uses_real_j_and_enter_keys(monkeypatch):

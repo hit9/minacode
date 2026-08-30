@@ -10,7 +10,7 @@
     // sessionStorage scopes the position to this browser tab and documentation
     // site, while the guard keeps the script harmless when storage is blocked.
     try {
-      var scrollKey = "minacode-sidebar-scroll";
+      var scrollKey = "wizolt-sidebar-scroll";
       var savedScroll = sessionStorage.getItem(scrollKey);
       if (savedScroll !== null) sidebar.scrollTop = Number(savedScroll);
       sidebar.addEventListener("scroll", function () {

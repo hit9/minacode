@@ -1,16 +1,16 @@
 # Interaction
 
-minacode runs as a conversation in your terminal. You type a request, the agent works
+wizolt runs as a conversation in your terminal. You type a request, the agent works
 through it with [tools](tools.md), and you stay in the loop the whole time — steering,
 answering questions, and reviewing changes.
 
 ## Follow-ups
 
-You can keep typing while minacode works. A submitted follow-up joins the current task if
+You can keep typing while wizolt works. A submitted follow-up joins the current task if
 another model step begins; otherwise it becomes the next task. A draft still in the editor is
 never submitted by interrupting — the first `Ctrl-C` discards it instead.
 
-<div class="term-shot" role="img" aria-label="Terminal view: minacode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read minacode.py</span><span class="fs-tool">  Edit minacode.py</span><span><span class="fs-i fs-rule">--</span><span class="fs-i fs-glow">-</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-add">●</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-working">working (12s) [ 2 queued ]</span><span class="fs-i fs-rule"> ------------------------------</span></span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C interrupts</span></div>
+<div class="term-shot" role="img" aria-label="Terminal view: wizolt is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read wizolt.py</span><span class="fs-tool">  Edit wizolt.py</span><span><span class="fs-i fs-rule">--</span><span class="fs-i fs-glow">-</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-add">●</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-working">working (12s) [ 2 queued ]</span><span class="fs-i fs-rule"> ------------------------------</span></span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C interrupts</span></div>
 
 A `+` below the divider is waiting for the next model step. At that boundary — after the current
 tool-call batch, when there is one — all waiting follow-ups are sent together, in order, with the
@@ -30,7 +30,7 @@ Interrupting splits two ways. If the agent has not answered yet, `Ctrl-C` *retra
 message: it is discarded and never reaches the conversation record or the saved session, as
 if it was never sent (your input history still recalls it with `Ctrl-P`). Once the agent has
 spoken or run a tool, `Ctrl-C` *interrupts*: the work already shown stays, and the turn is
-marked as interrupted so minacode knows it ended early.
+marked as interrupted so wizolt knows it ended early.
 
 ## Streaming model output
 
@@ -126,7 +126,7 @@ session, or configure runtime behavior on the fly. See the
 Mentions pull something into the turn. Type `@` at the prompt for a list of the three kinds;
 picking one opens its candidates, which narrow as you keep typing. `Tab` highlights a row; `Enter` commits it into the input without sending, and a second `Enter` sends.
 
-<div class="term-shot" role="img" aria-label="The mention menu in two moments. After typing an at sign the prompt lists the three kinds with a one-line description each. After choosing at-file the file picker opens between two rules, with its own query line, a match counter, a key hint, and two ranked file paths, the first one pointed at."><span class="fs-prompt">&gt; add tests for @<span class="fs-caret">▏</span></span><span><span class="fs-i">                </span><span class="fs-i"> @file:   </span><span class="fs-i fs-dim"> files in this repo </span></span><span><span class="fs-i">                </span><span class="fs-i"> @mcp:    </span><span class="fs-i fs-dim"> MCP servers and tools </span></span><span><span class="fs-i">                </span><span class="fs-i"> @skill:  </span><span class="fs-i fs-dim"> installed skills </span></span><span> </span><span class="fs-prompt">&gt; add tests for @file:<span class="fs-caret">▏</span></span><span class="fs-divider">  ──── file picker ─────────────────────────────────</span><span><span class="fs-i fs-sel">  files&gt; </span><span class="fs-i">mention</span><span class="fs-i fs-caret">▏</span></span><span class="fs-dim">      3/812</span><span class="fs-dim">      Ctrl-N/P or ↑/↓ move · Enter select · Esc close</span><span class="fs-sel">  &gt;   tests/test_mentions.py</span><span>      minacode/mentions.py</span><span class="fs-divider">  ──────────────────────────────────────────────────</span></div>
+<div class="term-shot" role="img" aria-label="The mention menu in two moments. After typing an at sign the prompt lists the three kinds with a one-line description each. After choosing at-file the file picker opens between two rules, with its own query line, a match counter, a key hint, and two ranked file paths, the first one pointed at."><span class="fs-prompt">&gt; add tests for @<span class="fs-caret">▏</span></span><span><span class="fs-i">                </span><span class="fs-i"> @file:   </span><span class="fs-i fs-dim"> files in this repo </span></span><span><span class="fs-i">                </span><span class="fs-i"> @mcp:    </span><span class="fs-i fs-dim"> MCP servers and tools </span></span><span><span class="fs-i">                </span><span class="fs-i"> @skill:  </span><span class="fs-i fs-dim"> installed skills </span></span><span> </span><span class="fs-prompt">&gt; add tests for @file:<span class="fs-caret">▏</span></span><span class="fs-divider">  ──── file picker ─────────────────────────────────</span><span><span class="fs-i fs-sel">  files&gt; </span><span class="fs-i">mention</span><span class="fs-i fs-caret">▏</span></span><span class="fs-dim">      3/812</span><span class="fs-dim">      Ctrl-N/P or ↑/↓ move · Enter select · Esc close</span><span class="fs-sel">  &gt;   tests/test_mentions.py</span><span>      wizolt/mentions.py</span><span class="fs-divider">  ──────────────────────────────────────────────────</span></div>
 
 | Mention | Also written | Effect |
 |---|---|---|
@@ -168,7 +168,7 @@ Mentions are expanded in follow-ups queued while the agent is working, too.
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to
   vim), as a temporary Markdown file
 
-```{figure} ../snapshots/minacode-working-input-editor.png
+```{figure} ../snapshots/wizolt-working-input-editor.png
 :alt: Editing a follow-up message in an external editor
 :width: 600px
 :align: center
@@ -178,20 +178,20 @@ Typing a follow-up message in an external editor.
 
 When you open the editor in reply to the agent, its most recent reply is appended below a git-style scissors line, so you can read what you are answering while you compose (the full-screen editor hides that scrollback):
 
-<div class="term-shot" role="img" aria-label="The message open in vim: numbered lines holding the draft with the cursor at its end, a blank line, the scissors line with its unique marker, two comment lines explaining that everything below is stripped — the first wrapping at the window edge — then the agent's most recent reply, filler tildes, a status line naming the modified temporary Markdown file with the cursor position, and the INSERT mode message."><span><span class="fs-i fs-vim-fill">  1 </span><span class="fs-i">yes, add the reconnect test and cap the backoff at 30s</span><span class="fs-i fs-caret">▏</span></span><span><span class="fs-i fs-vim-fill">  2 </span><span class="fs-i">&nbsp;</span></span><span><span class="fs-i fs-vim-fill">  3 </span><span class="fs-i fs-dim"># ------------------------ &gt;8 ------------------------ (4f2a9c1b77d0)</span></span><span><span class="fs-i fs-vim-fill">  4 </span><span class="fs-i fs-dim"># Reference only: everything below the scissors line is stripped before </span></span><span><span class="fs-i fs-vim-fill">    </span><span class="fs-i fs-dim">your</span></span><span><span class="fs-i fs-vim-fill">  5 </span><span class="fs-i fs-dim"># message is sent. The agent&#x27;s most recent reply follows for reference.</span></span><span><span class="fs-i fs-vim-fill">  6 </span><span class="fs-i">&nbsp;</span></span><span><span class="fs-i fs-vim-fill">  7 </span><span class="fs-i">I split McpManager into StdioTransport and HttpTransport.</span></span><span><span class="fs-i fs-vim-fill">  8 </span><span class="fs-i">Want me to add a test for the reconnect path?</span></span><span><span class="fs-i fs-vim-fill">    </span><span class="fs-i fs-vim-fill">~</span></span><span><span class="fs-i fs-vim-fill">    </span><span class="fs-i fs-vim-fill">~</span></span><span class="fs-vim-status">minacode-input-a1b2c3d4.md [+]                  markdown    1,55     All</span><span class="fs-dim">-- INSERT --</span></div>
+<div class="term-shot" role="img" aria-label="The message open in vim: numbered lines holding the draft with the cursor at its end, a blank line, the scissors line with its unique marker, two comment lines explaining that everything below is stripped — the first wrapping at the window edge — then the agent's most recent reply, filler tildes, a status line naming the modified temporary Markdown file with the cursor position, and the INSERT mode message."><span><span class="fs-i fs-vim-fill">  1 </span><span class="fs-i">yes, add the reconnect test and cap the backoff at 30s</span><span class="fs-i fs-caret">▏</span></span><span><span class="fs-i fs-vim-fill">  2 </span><span class="fs-i">&nbsp;</span></span><span><span class="fs-i fs-vim-fill">  3 </span><span class="fs-i fs-dim"># ------------------------ &gt;8 ------------------------ (4f2a9c1b77d0)</span></span><span><span class="fs-i fs-vim-fill">  4 </span><span class="fs-i fs-dim"># Reference only: everything below the scissors line is stripped before </span></span><span><span class="fs-i fs-vim-fill">    </span><span class="fs-i fs-dim">your</span></span><span><span class="fs-i fs-vim-fill">  5 </span><span class="fs-i fs-dim"># message is sent. The agent&#x27;s most recent reply follows for reference.</span></span><span><span class="fs-i fs-vim-fill">  6 </span><span class="fs-i">&nbsp;</span></span><span><span class="fs-i fs-vim-fill">  7 </span><span class="fs-i">I split McpManager into StdioTransport and HttpTransport.</span></span><span><span class="fs-i fs-vim-fill">  8 </span><span class="fs-i">Want me to add a test for the reconnect path?</span></span><span><span class="fs-i fs-vim-fill">    </span><span class="fs-i fs-vim-fill">~</span></span><span><span class="fs-i fs-vim-fill">    </span><span class="fs-i fs-vim-fill">~</span></span><span class="fs-vim-status">wizolt-input-a1b2c3d4.md [+]                  markdown    1,55     All</span><span class="fs-dim">-- INSERT --</span></div>
 
 Everything from the scissors line down is stripped before the message is sent; a scissors line you type yourself is left untouched. Long replies are capped to their most recent lines.
 
 ### Image input
 
-Paste or type the path of an existing local image directly into the prompt. minacode replaces
+Paste or type the path of an existing local image directly into the prompt. wizolt replaces
 the path with an inline label such as `[Image #1 · screenshot.png]`, so you can see exactly which
 images will be submitted while continuing to edit the surrounding text. Relative paths resolve
 from the workspace; quoted paths and backslash-escaped spaces are accepted.
 
 <div class="term-shot" role="img" aria-label="The input prompt after recognizing a local screenshot path as an editable inline image label."><span class="fs-prompt">&gt; explain <span class="fs-i fs-sel">[Image #1 · screenshot.png]</span> and fix the layout<span class="fs-caret">▏</span></span></div>
 
-PNG, JPEG, WebP, and single-frame GIF files are supported. minacode sends each new attachment to
+PNG, JPEG, WebP, and single-frame GIF files are supported. wizolt sends each new attachment to
 the active model using the selected standard API. If the provider rejects that turn, the image
 remains stored at a session-owned path and later requests replay a readable label instead of the
 same image blocks; the agent can inspect the stored path explicitly with `ViewImage`. A configured
@@ -202,17 +202,17 @@ same image blocks; the agent can inspect the stored path explicitly with `ViewIm
 <span class="marker">Your work is saved automatically</span> — the conversation, edits, and diffs
 are tied to the project directory you started in, so an interrupted session picks up where it
 stopped. Sessions untouched for seven days are removed by default, swept in the background when
-minacode starts; it reports how many it removed. Resuming a session resets its clock, so one you
+wizolt starts; it reports how many it removed. Resuming a session resets its clock, so one you
 keep returning to is never removed. Set `runtime.session_retention_days = 0` to keep them
 indefinitely.
 
 Resume from the command line:
 
 ```sh
-minacode -c              # resume the latest session in this project
-minacode --resume        # same, explicit
-minacode --resume UID    # resume a specific session by id, from any directory
-minacode --resume "fd leak"   # or by name, or by the first few characters of an id
+wizolt -c              # resume the latest session in this project
+wizolt --resume        # same, explicit
+wizolt --resume UID    # resume a specific session by id, from any directory
+wizolt --resume "fd leak"   # or by name, or by the first few characters of an id
 ```
 
 Sessions are stored per project, so `-c` and a bare `--resume` never reach into another project's
@@ -220,7 +220,7 @@ history — even when your most recent session anywhere was somewhere else. A `U
 across every project, so you can resume one by id from wherever you are.
 
 A name or id prefix is searched in the current project first, then everywhere — you can resume a
-session by name after moving directories. When a query matches more than one session, minacode
+session by name after moving directories. When a query matches more than one session, wizolt
 <span class="marker">lists the candidates instead of guessing</span> between them.
 
 Resuming replays the conversation into your scrollback, including the diff each edit made. Long
@@ -247,14 +247,14 @@ name yesterday is still under it today, even after its early messages have been 
 each was touched and how many rounds it ran. Type to filter across names and opening lines, and
 press Enter to re-enter one:
 
-<div class="term-shot" role="img" aria-label="The session picker: a searchable list of saved sessions, each showing its name, age, and round count, with the current session marked, above a preview of the highlighted session's id, opening message, and directory."><span class="fs-divider">──── Sessions ─────────────────────────────</span><span class="fs-sel">&gt; port the tool runner to asyncio<span class="fs-i fs-dim">  ·  2h ago · 14 rounds</span></span><span class="fs-dim">  split the large test modules<span class="fs-i fs-dim">  ·  yesterday · 31 rounds</span></span><span class="fs-dim">  fix the fd leak in MCPFileTokenStore<span class="fs-i fs-dim">  ·  3d ago · 1 round</span></span><span class="fs-dim">  what I am doing right now<span class="fs-i fs-dim">  ·  just now · 2 rounds · current</span></span><span> </span><span class="fs-dim">  uid   20260728074943-e22e69e8-070</span><span class="fs-dim">  start port the tool runner to asyncio, starting with Bash</span><span class="fs-dim">  where ~/dev/github/minacode</span><span> </span><span class="fs-hint">  ↑/↓ or j/k move · / search · Enter open · Esc close</span></div>
+<div class="term-shot" role="img" aria-label="The session picker: a searchable list of saved sessions, each showing its name, age, and round count, with the current session marked, above a preview of the highlighted session's id, opening message, and directory."><span class="fs-divider">──── Sessions ─────────────────────────────</span><span class="fs-sel">&gt; port the tool runner to asyncio<span class="fs-i fs-dim">  ·  2h ago · 14 rounds</span></span><span class="fs-dim">  split the large test modules<span class="fs-i fs-dim">  ·  yesterday · 31 rounds</span></span><span class="fs-dim">  fix the fd leak in MCPFileTokenStore<span class="fs-i fs-dim">  ·  3d ago · 1 round</span></span><span class="fs-dim">  what I am doing right now<span class="fs-i fs-dim">  ·  just now · 2 rounds · current</span></span><span> </span><span class="fs-dim">  uid   20260728074943-e22e69e8-070</span><span class="fs-dim">  start port the tool runner to asyncio, starting with Bash</span><span class="fs-dim">  where ~/dev/github/wizolt</span><span> </span><span class="fs-hint">  ↑/↓ or j/k move · / search · Enter open · Esc close</span></div>
 
 `/sessions all` widens the list past the current project, adding each session's directory to its
 row. Choosing a session ends the current one — it is saved first — and starts the next in its
 place, exactly as if you had launched with `--resume`. Choosing the session you are already in, or
 pressing `Esc`, changes nothing.
 
-Run it from the prompt between turns. While the agent is working, minacode says so and asks you to
+Run it from the prompt between turns. While the agent is working, wizolt says so and asks you to
 press `Ctrl-C` first: switching sessions mid-turn would abandon a request already in flight.
 
 Sessions saved before names existed list under their id until the next time they are saved.
@@ -268,7 +268,7 @@ Sessions saved before names existed list under their id until the next time they
 
 Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close.
 
-```{figure} ../snapshots/minacode-diff-list.png
+```{figure} ../snapshots/wizolt-diff-list.png
 :alt: Interactive diff list showing changed files from the latest turn
 :width: 600px
 :align: center
@@ -276,7 +276,7 @@ Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close.
 Choosing a file to diff.
 ```
 
-```{figure} ../snapshots/minacode-diff-file-detail.png
+```{figure} ../snapshots/wizolt-diff-file-detail.png
 :alt: Side-by-side file diff with syntax highlighting
 :width: 600px
 :align: center
@@ -286,6 +286,6 @@ Side-by-side detail view of a changed file.
 
 ### Long sessions
 
-minacode keeps long conversations within a working budget on its own, summarizing older
+wizolt keeps long conversations within a working budget on its own, summarizing older
 context as needed so a session can run indefinitely. Run `/compact` to trim it now, or
 `/status` to see current context and token usage.

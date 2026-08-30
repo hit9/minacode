@@ -1,4 +1,4 @@
-"""Sphinx configuration for the minacode documentation."""
+"""Sphinx configuration for the wizolt documentation."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _meta = _pyproject["project"]
 
 # -- Project information -----------------------------------------------------
 
-project = "minacode"
+project = "wizolt"
 author = _meta["authors"][0]["name"]
 copyright = f"{author}"
 release = _meta["version"]

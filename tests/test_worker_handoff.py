@@ -6,7 +6,7 @@ Coverage follows WORKER_HANDOFF_PLAN.txt section 9; each numbered test maps to t
 
 from agent_harness import session
 
-from minacode.engine import Agent
+from wizolt.engine import Agent
 
 
 def _requested_system(tmp_path, custom=None):
@@ -45,7 +45,7 @@ def _requested_system(tmp_path, custom=None):
 
 
 class FakeModelClient:
-    """Stands in for minacode.engine.ModelClient: records every request and replays a script of
+    """Stands in for wizolt.engine.ModelClient: records every request and replays a script of
     (assistant, tool_calls, content) triples, so the worker's loop is exercised without HTTP."""
 
     def __init__(self, script):
@@ -74,7 +74,7 @@ def _delegate_session(tmp_path):
 
 
 def _delegate_call(parent, runner, **args):
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.tools.delegate import DelegateTool
 
     tool = DelegateTool(parent, [args])
     tool.runner = runner
@@ -82,8 +82,8 @@ def _delegate_call(parent, runner, **args):
 
 
 def _delegate_runner(parent):
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     return ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
 

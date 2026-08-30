@@ -5,8 +5,8 @@ from dataclasses import replace
 import pytest
 from catalog_harness import normalized_reasoning, reasoning_choices, resolve
 
-from minacode.base import ConfigError
-from minacode.config import Config, ProviderConfig
+from wizolt.base import ConfigError
+from wizolt.config import Config, ProviderConfig
 
 
 def entry(**overrides) -> ProviderConfig:
@@ -35,7 +35,7 @@ def test_a_declared_level_is_sent_as_written():
 @pytest.mark.parametrize(("stored", "aligned"), (("minimal", "low"), ("xhigh", "high"), ("max", "high")))
 def test_an_effort_off_the_declared_scale_is_moved_onto_it(stored, aligned):
     """Only reachable by carrying an effort over from another model — the picker cannot produce
-    one. It lands on the nearest level the declaration names that minacode also knows."""
+    one. It lands on the nearest level the declaration names that wizolt also knows."""
     assert normalized_reasoning(replace(entry(), reasoning=stored)) == aligned
 
 
@@ -57,7 +57,7 @@ def test_the_first_matching_glob_wins_like_a_catalog_rule():
     assert provider.declared_levels() == ("low",)
 
 
-def test_a_scale_of_names_minacode_knows_none_of_is_offered_as_written():
+def test_a_scale_of_names_wizolt_knows_none_of_is_offered_as_written():
     """Nothing has to rank `cheap` against `deep`: they are the menu, and one of them is chosen."""
     provider = ProviderConfig.from_dict({"url": "https://gw.example/v1", "model": "m", "models": {"m": {"reasoning": ["cheap", "normal", "deep"]}}})
 
@@ -138,7 +138,7 @@ def test_declarations_follow_the_entry_into_its_copies():
 
 
 def test_a_catalogued_model_offers_the_levels_it_documents():
-    """The scale minacode ships is the endpoint's own: DeepSeek documents low/high/max, and the
+    """The scale wizolt ships is the endpoint's own: DeepSeek documents low/high/max, and the
     compatibility spellings it also accepts (medium, xhigh) both resolve to high server-side, so
     offering them would be offering two choices that do the same thing."""
     deepseek = ProviderConfig(url="https://api.deepseek.com", key="k", model="deepseek-v4-flash")
@@ -147,7 +147,7 @@ def test_a_catalogued_model_offers_the_levels_it_documents():
 
 
 def test_a_model_the_catalog_says_nothing_about_keeps_the_full_scale():
-    """Unknown means unconstrained: an endpoint minacode has no evidence for must not have its
+    """Unknown means unconstrained: an endpoint wizolt has no evidence for must not have its
     choices narrowed on a guess."""
     unknown = ProviderConfig(url="https://gw.example/v1", key="k", model="custom-model")
 

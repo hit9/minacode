@@ -7,11 +7,11 @@ blocks, calling, result normalization, and resources."""
 # Helpers
 # ---------------------------------------------------------------------------
 
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
-from minacode.mcp import MCPToolInfo
-from minacode.session import Session, bootstrap_features
+from wizolt.mcp import MCPToolInfo
+from wizolt.session import Session, bootstrap_features
 
 
 def _index_session(servers):

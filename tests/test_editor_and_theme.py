@@ -6,15 +6,15 @@ from prompt_toolkit.formatted_text import to_formatted_text
 from rich.console import Console
 from tui_harness import loop
 
-import minacode.render as render_module
-from minacode.base import (
+import wizolt.render as render_module
+from wizolt.base import (
     LogBlock,
     LogEdge,
     LogLine,
     LogRole,
 )
-from minacode.render import StatusBar, Theme, UiPrinter
-from minacode.tui import TuiApp
+from wizolt.render import StatusBar, Theme, UiPrinter
+from wizolt.tui import TuiApp
 
 
 def test_theme_palettes_have_identical_complete_keys():
@@ -204,7 +204,7 @@ def test_standalone_turn_rows_carry_no_edge_glyph(tmp_path, monkeypatch):
 
     ui = UiPrinter(output_fn=lambda text: None)
     builtin = "".join(text for _, text in ui.log_segments(blocks[0])).splitlines()[0]
-    tool_root = "".join(text for _, text in ui.log_segments(LogBlock([LogLine("Bash", "rg -n cache minacode/", LogRole.TOOL)]))).splitlines()[0]
+    tool_root = "".join(text for _, text in ui.log_segments(LogBlock([LogLine("Bash", "rg -n cache wizolt/", LogRole.TOOL)]))).splitlines()[0]
     user_echo = "\u2022 [Image #1 \u00b7 ef739e37-....png]"
     # All three rows start their content in the same column (two-cell indent, no edge).
     assert builtin.index("search") == tool_root.index("Bash") == user_echo.index("[Image") == 2
@@ -217,7 +217,7 @@ def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypat
     monkeypatch.setattr(render_module, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
 
     ui = UiPrinter()
-    # Interactive TTY output stays colored regardless of NO_COLOR — minacode owns its theming and
+    # Interactive TTY output stays colored regardless of NO_COLOR — wizolt owns its theming and
     # renders through prompt_toolkit's ANSI path, so the parent env var is not honored.
     assert ui.color
     ui.emit_answer("sent message", role="user", rule=False)

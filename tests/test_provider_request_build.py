@@ -8,18 +8,18 @@ import pytest
 from catalog_harness import resolve
 from test_core_logic import session
 
-from minacode.base import (
+from wizolt.base import (
     ModelError,
     ModelUsage,
     ToolCall,
     drop_nulls,
 )
-from minacode.config import (
+from wizolt.config import (
     ProviderConfig,
 )
-from minacode.context import ContextManager
-from minacode.model import ModelClient, resilience
-from minacode.tools import TOOL_REGISTRY, Tool
+from wizolt.context import ContextManager
+from wizolt.model import ModelClient, resilience
+from wizolt.tools import TOOL_REGISTRY, Tool
 
 
 def test_explicit_manual_thinking_maps_max_to_the_largest_budget(tmp_path):
@@ -56,12 +56,12 @@ def test_chat_provider_extra_body_passthrough(tmp_path):
     client.apply_provider_params(params, provider)
     assert params["extra_body"] == search
 
-    # Configured extra_body merges with minacode-managed reasoning fields...
+    # Configured extra_body merges with wizolt-managed reasoning fields...
     params = {}
     client.apply_provider_params(params, ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"enable_search": True}))
     assert params["extra_body"] == {"enable_search": True, "reasoning": {"effort": "high"}}
 
-    # ...and reasoning wins on key conflict so minacode stays in control of its own fields.
+    # ...and reasoning wins on key conflict so wizolt stays in control of its own fields.
     params = {}
     client.apply_provider_params(
         params, ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"reasoning": {"effort": "low"}})
@@ -346,7 +346,7 @@ def _session_for(tmp_path, provider):
 def test_configured_headers_reach_both_wire_clients(tmp_path):
     """`extra_body` cannot express a header, so a provider feature documented as one -- Command
     Code's zero-retention `x-cmd-zdr` -- has to ride on the client's default headers instead."""
-    from minacode.base import HTTP_USER_AGENT
+    from wizolt.base import HTTP_USER_AGENT
 
     provider = ProviderConfig.from_dict(
         {"url": "https://api.commandcode.ai/provider/v1", "key": "k", "model": "deepseek/deepseek-v4-flash", "headers": {"x-cmd-zdr": 1, "x-tenant": "team"}}
@@ -360,7 +360,7 @@ def test_configured_headers_reach_both_wire_clients(tmp_path):
         assert built.default_headers["User-Agent"] == HTTP_USER_AGENT
 
 
-def test_configured_headers_may_replace_minacode_defaults(tmp_path):
+def test_configured_headers_may_replace_wizolt_defaults(tmp_path):
     provider = ProviderConfig.from_dict({"url": "https://gateway.example/v1", "key": "k", "model": "m", "headers": {"User-Agent": "fleet/1"}})
 
     assert ModelClient(_session_for(tmp_path, provider)).client(provider).default_headers["User-Agent"] == "fleet/1"

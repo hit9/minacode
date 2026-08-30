@@ -6,12 +6,12 @@ import time
 from agent_harness import session
 from prompt_toolkit.utils import get_cwidth
 
-import minacode.cli.commands as commands_mod
-from minacode.base import (
+import wizolt.cli.commands as commands_mod
+from wizolt.base import (
     SESSION_EVENT_KEY,
 )
-from minacode.cli import CommandLoop
-from minacode.cli.commands import (
+from wizolt.cli import CommandLoop
+from wizolt.cli.commands import (
     name_command,
     session_label_fn,
     session_preview,
@@ -19,12 +19,12 @@ from minacode.cli.commands import (
     session_table,
     sessions_command,
 )
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
-from minacode.engine import Agent
-from minacode.session import Session, SessionEntry, SessionSnapshotStore
-from minacode.tui import TuiApp
+from wizolt.engine import Agent
+from wizolt.session import Session, SessionEntry, SessionSnapshotStore
+from wizolt.tui import TuiApp
 
 
 def test_exit_command_prints_resume_command(tmp_path):
@@ -37,7 +37,7 @@ def test_exit_command_prints_resume_command(tmp_path):
 
     assert (handled, exit_now) == (True, True)
     # The session took its name from the opening message; the pasted line still carries the uid.
-    assert output[-1] == f"Resume 'hello' with:\nminacode --resume {s.uid}"
+    assert output[-1] == f"Resume 'hello' with:\nwizolt --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 def stored_session(tmp_path, text, *, name=""):

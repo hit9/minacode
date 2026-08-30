@@ -1,7 +1,7 @@
-<h1 align="center">minacode</h1>
+<h1 align="center">wizolt</h1>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/hit9/minacode/master/snapshots/minacode1.gif" alt="minacode editing code and running tools" width="600">
+  <img src="https://raw.githubusercontent.com/hit9/wizolt/master/snapshots/wizolt1.gif" alt="wizolt editing code and running tools" width="600">
 </p>
 
 <p align="center">
@@ -10,18 +10,18 @@
 
 ## Safety
 
-**Use at your own risk.** minacode can edit files and run shell commands in the environment where it starts. It does not provide sandbox isolation; use a container or VM when needed.
+**Use at your own risk.** wizolt can edit files and run shell commands in the environment where it starts. It does not provide sandbox isolation; use a container or VM when needed.
 
 ## What it is
 
-minacode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
+wizolt does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
 
-It works on real repositories, including its own: I use minacode to build and maintain minacode. Everything ships in one self-contained Python package, so I can change the behavior directly whenever I want the workflow to work differently.
+It works on real repositories, including its own: I use wizolt to build and maintain wizolt. Everything ships in one self-contained Python package, so I can change the behavior directly whenever I want the workflow to work differently.
 
-minacode is the former nanocode. It started as a single-file agent small enough to be called *nano*; it is no longer small, or a single file, so it now goes by minacode.
+Wizolt is the former minacode, which began as the single-file nanocode. The implementation outgrew both earlier names; the project history remains continuous.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/hit9/minacode/master/snapshots/minacode2.gif" alt="minacode resuming a saved session" width="600">
+  <img src="https://raw.githubusercontent.com/hit9/wizolt/master/snapshots/wizolt2.gif" alt="wizolt resuming a saved session" width="600">
 </p>
 <p align="center"><sub>Resuming a saved session with its conversation and tool history.</sub></p>
 
@@ -45,11 +45,11 @@ minacode is the former nanocode. It started as a single-file agent small enough 
 Requires macOS or Linux, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-uv tool install minacode
-minacode --init-config
+uv tool install wizolt
+wizolt --init-config
 ```
 
-Add your provider to `~/.minacode/config.toml`:
+Add your provider to `~/.wizolt/config.toml`:
 
 ```toml
 [provider]
@@ -64,13 +64,13 @@ model = "deepseek-v4-flash"
 Then run:
 
 ```sh
-minacode
+wizolt
 ```
 
-Upgrade with `uv tool upgrade minacode`.
+Upgrade with `uv tool upgrade wizolt`.
 
 ## Links
 
-- [Documentation](https://minacode.readthedocs.io/en/latest/) — full usage guide and reference.
+- [Documentation](https://wizolt.readthedocs.io/en/latest/) — full usage guide and reference.
 - [Blog post](https://hit9.dev/post/nanocode) — why and how it was built.
-- [code-symbol-index](https://github.com/hit9/code-symbol-index) — the code index library minacode uses.
+- [code-symbol-index](https://github.com/hit9/code-symbol-index) — the code index library wizolt uses.

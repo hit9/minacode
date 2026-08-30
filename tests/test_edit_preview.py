@@ -2,11 +2,11 @@
 from prompt_toolkit.utils import get_cwidth
 from test_edit_tool import anchor, session
 
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall
-from minacode.context import ContextManager
-from minacode.render import UiPrinter
-from minacode.runner import ToolRunner
-from minacode.tools import CodeIndex, ReadTool
+from wizolt.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall
+from wizolt.context import ContextManager
+from wizolt.render import UiPrinter
+from wizolt.runner import ToolRunner
+from wizolt.tools import CodeIndex, ReadTool
 
 
 def test_approval_segments_highlight_inline_edit_preview():

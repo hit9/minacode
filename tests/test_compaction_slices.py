@@ -12,19 +12,19 @@ import pytest
 from agent_harness import session, session_with_provider
 from catalog_harness import resolve
 
-from minacode import compaction
-from minacode.base import (
+from wizolt import compaction
+from wizolt.base import (
     SESSION_EVENT_KEY,
     Billing,
 )
-from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.prompts import (
+from wizolt.context import ContextManager
+from wizolt.model import ModelClient
+from wizolt.prompts import (
     COMPACTION_SUMMARY_TITLE,
     LIVE_FOLLOWUP_PREFIX,
     PREVIOUS_CONTEXT_TRIMMED,
 )
-from minacode.session import AgentState, Session
+from wizolt.session import AgentState, Session
 
 
 def test_history_segments_keep_only_the_newest_window(tmp_path):
@@ -93,7 +93,7 @@ def test_compaction_reuses_the_agent_prefix_and_keeps_real_messages(tmp_path):
     assert tools  # carried so the prefix matches; tool_choice stays exactly as an ordinary request
     # The tool calls survive as structure, where the flattened payload would have dropped them.
     assert any(message.get("tool_calls") for message in messages)
-    assert "Compact the minacode working context." in messages[-1]["content"]
+    assert "Compact the wizolt working context." in messages[-1]["content"]
     assert "END OF CONVERSATION TO COMPACT" in messages[-1]["content"]
 
 

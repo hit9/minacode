@@ -6,15 +6,15 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from minacode.base import ConfigError
-from minacode.config import Config, ConfigFile, ProviderConfig
-from minacode.providers.catalog import CatalogCodec, decode_bundled
-from minacode.providers.compat import ProviderPolicy
-from minacode.providers.schema import CatalogFormatError, CatalogSyncError, CatalogVersionConflict
-from minacode.providers.sync import CATALOG_URL, CatalogRepository, CatalogRuntime
-from minacode.session import Session
+from wizolt.base import ConfigError
+from wizolt.config import Config, ConfigFile, ProviderConfig
+from wizolt.providers.catalog import CatalogCodec, decode_bundled
+from wizolt.providers.compat import ProviderPolicy
+from wizolt.providers.schema import CatalogFormatError, CatalogSyncError, CatalogVersionConflict
+from wizolt.providers.sync import CATALOG_URL, CatalogRepository, CatalogRuntime
+from wizolt.session import Session
 
-CATALOG_PATH = Path(__file__).parents[1] / "minacode" / "providers" / "catalog.json"
+CATALOG_PATH = Path(__file__).parents[1] / "wizolt" / "providers" / "catalog.json"
 
 
 def catalog_data() -> dict:
@@ -240,7 +240,7 @@ def test_fetch_rejects_same_version_with_different_content(tmp_path, monkeypatch
     data = catalog_data()
     data["defaults"]["provider_policy"]["cache.prompt_key"] = False
     repository = CatalogRepository(str(tmp_path))
-    monkeypatch.setattr("minacode.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
+    monkeypatch.setattr("wizolt.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
 
     with pytest.raises(CatalogVersionConflict, match="same version"):
         repository.fetch()
@@ -254,7 +254,7 @@ def test_fetch_wraps_transport_failures_without_a_ui_prefix(tmp_path, monkeypatc
     def unavailable(*_args, **_kwargs):
         raise URLError("offline")
 
-    monkeypatch.setattr("minacode.providers.sync.urlopen", unavailable)
+    monkeypatch.setattr("wizolt.providers.sync.urlopen", unavailable)
 
     with pytest.raises(CatalogSyncError) as raised:
         repository.fetch()
@@ -268,7 +268,7 @@ def test_fetch_treats_http_304_as_current(tmp_path, monkeypatch):
     def not_modified(*_args, **_kwargs):
         raise HTTPError(CATALOG_URL, 304, "Not Modified", {}, None)
 
-    monkeypatch.setattr("minacode.providers.sync.urlopen", not_modified)
+    monkeypatch.setattr("wizolt.providers.sync.urlopen", not_modified)
 
     assert repository.fetch().version == decode_bundled().version
 
@@ -277,7 +277,7 @@ def test_fetch_does_not_cache_a_remote_older_than_bundled(tmp_path, monkeypatch)
     data = catalog_data()
     data["version"] -= 1
     repository = CatalogRepository(str(tmp_path))
-    monkeypatch.setattr("minacode.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
+    monkeypatch.setattr("wizolt.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
 
     assert repository.fetch().version == decode_bundled().version
     assert not os.path.exists(repository.cache_path)

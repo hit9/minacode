@@ -8,19 +8,19 @@ from agent_harness import call, queue, session
 from catalog_harness import resolve
 from test_agent_turn import _runner
 
-from minacode.base import (
+from wizolt.base import (
     ToolCall,
 )
-from minacode.config import (
+from wizolt.config import (
     Config,
     ProviderConfig,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.runner import ToolRunner
-from minacode.session import Session
-from minacode.tools import BashTool, ReadTool
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.model import ModelClient
+from wizolt.runner import ToolRunner
+from wizolt.session import Session
+from wizolt.tools import BashTool, ReadTool
 
 
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
@@ -66,7 +66,7 @@ def test_provider_compatibility_and_prompt_cache_key(tmp_path):
     first = client.prompt_cache_key(provider, [BashTool.schema(), ReadTool.schema()])
     second = client.prompt_cache_key(provider, [ReadTool.schema(), BashTool.schema()])
     assert first == second
-    assert first.startswith("minacode-")
+    assert first.startswith("wizolt-")
 
     provider.prompt_cache_key = "fixed-key"
     assert client.prompt_cache_key(provider, None) == "fixed-key"

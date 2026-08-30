@@ -5,13 +5,13 @@ from typing import ClassVar
 import pytest
 from mcp_harness import _fake_resource, mcp_cfg, session
 
-from minacode.base import ToolError
-from minacode.config import (
+from wizolt.base import ToolError
+from wizolt.config import (
     Config,
 )
-from minacode.mcp import MCPManager, MCPResourceInfo
-from minacode.session import Session, bootstrap_features
-from minacode.tools import MCPTool
+from wizolt.mcp import MCPManager, MCPResourceInfo
+from wizolt.session import Session, bootstrap_features
+from wizolt.tools import MCPTool
 
 
 class TestMCPResources:

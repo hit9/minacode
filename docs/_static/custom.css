@@ -39,8 +39,8 @@ h3 { font-size: 1.35rem; margin-top: 1.75rem; }
 
 /* The project name belongs to the sidebar; keep the index title for Sphinx
    metadata while showing only the subtitle in the content column. */
-.body section#minacode > h1 { display: none; }
-.body section#minacode > p:first-of-type {
+.body section#wizolt > h1 { display: none; }
+.body section#wizolt > p:first-of-type {
     margin-top: 2.4rem;
     font-size: 2rem;
     font-weight: 400;
@@ -163,7 +163,7 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .tool-reference { width: 100%; table-layout: fixed; }
 .tool-reference figure { margin: 1rem 0 0; }
 
-/* Terminal pictures: small faithful renderings of a minacode screen or output,
+/* Terminal pictures: small faithful renderings of a wizolt screen or output,
    so a feature is recognisable on sight. Shared by every diagram in the docs. */
 .term-shot {
     margin: 1.25rem 0 1.5rem;
@@ -189,7 +189,7 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .fs-tab-on { color: #282c34; background: #56b6c2; }
 .fs-tab-off { color: #56b6c2; }
 .fs-output { color: #5c6370; }  /* tool output: LogRole.OUTPUT renders bright black, like .fs-dim */
-/* Diff rows, mirroring Theme.DARK diff.added/removed in minacode/render.py: the row carries a
+/* Diff rows, mirroring Theme.DARK diff.added/removed in wizolt/render.py: the row carries a
    background and the text keeps the default foreground; only the +/- marker is colored. */
 /* Approval action row, mirroring cli/view.py: actions are ansiyellow, the focused one reversed. */
 .fs-approve { color: #e5c07b; }
@@ -212,7 +212,7 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .fs-goal { color: #c678dd; }
 .fs-doing { color: #e5c07b; }
 .fs-worker { color: #fbbf24; } /* worker identity color, mirroring render.py Theme.DARK status.worker */
-/* Status bar roles, mirroring the dark palette in minacode/render.py (Theme.DARK). */
+/* Status bar roles, mirroring the dark palette in wizolt/render.py (Theme.DARK). */
 .sb-base { color: #cbd5e1; }
 .sb-sep { color: #4b5563; }
 .sb-reason { color: #a5b4fc; }

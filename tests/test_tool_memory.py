@@ -5,18 +5,18 @@ import json
 import pytest
 from test_tools import session
 
-from minacode.base import (
+from wizolt.base import (
     ToolCall,
     ToolError,
 )
-from minacode.config import (
+from wizolt.config import (
     ConfigFile,
     RuntimeSettings,
 )
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.session import HistorySegment, Session, SessionSnapshotCodec
-from minacode.tools import (
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.session import HistorySegment, Session, SessionSnapshotCodec
+from wizolt.tools import (
     NextHintsTool,
     NoteTool,
     RecallContextTool,
@@ -314,7 +314,7 @@ def test_legacy_config_quick_hints_key_loads_and_keeps_hints_enabled(tmp_path):
     """An old config file with `[runtime] quick_hints = false` still loads: the obsolete key is
     ignored (no runtime field, no crash) and the TUI capability stays on, so hints are not
     disabled by stale configuration."""
-    cfg = tmp_path / "minacode.toml"
+    cfg = tmp_path / "wizolt.toml"
     cfg.write_text("[runtime]\nquick_hints = false\n", encoding="utf-8")
     s = Session.from_config_file(path=str(cfg))
 

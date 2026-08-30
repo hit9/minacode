@@ -3,14 +3,14 @@ from typing import ClassVar
 
 from test_session_persistence import _resumed_transcript, log_path, read_jsonl, session_with_data_dir
 
-from minacode.base import SESSION_EVENT_KEY
-from minacode.cli import CommandLoop
-from minacode.cli.commands import compact
-from minacode.config import ProviderConfig
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX
-from minacode.session import HistorySegment, Session
+from wizolt.base import SESSION_EVENT_KEY
+from wizolt.cli import CommandLoop
+from wizolt.cli.commands import compact
+from wizolt.config import ProviderConfig
+from wizolt.engine import Agent
+from wizolt.model import ModelClient
+from wizolt.prompts import LIVE_FOLLOWUP_PREFIX
+from wizolt.session import HistorySegment, Session
 
 
 def test_resume_replays_full_transcript_after_model_context_and_retained_records_are_pruned(tmp_path):

@@ -5,20 +5,20 @@ viewer, and the stored Bash output viewer."""
 import pytest
 from tui_harness import loop
 
-from minacode.base import (
+from wizolt.base import (
     ImageRouteNotice,
     LogBlock,
     LogEdge,
     LogRole,
     ModelError,
 )
-from minacode.cli import COMMANDS, CommandLoop
-from minacode.cli.commands import (
+from wizolt.cli import COMMANDS, CommandLoop
+from wizolt.cli.commands import (
     api,
     config,
 )
-from minacode.model import ModelClient
-from minacode.tui import TUI_MODAL_PENDING
+from wizolt.model import ModelClient
+from wizolt.tui import TUI_MODAL_PENDING
 
 
 def diff_loop(tmp_path):

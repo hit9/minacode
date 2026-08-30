@@ -14,19 +14,19 @@ import pytest
 from model_harness import _AnthropicMockClientFactory, _MockClientFactory
 from openai_mock_server import OpenAIMockServer
 
-from minacode.base import SESSION_EVENT_KEY
-from minacode.config import (
+from wizolt.base import SESSION_EVENT_KEY
+from wizolt.config import (
     MIN_CONTEXT_SAFETY_TOKENS,
     Config,
     ProviderConfig,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
-from minacode.session import Session
-from minacode.skill import SkillLibrary
-from minacode.tools import Tool
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.model import ModelClient
+from wizolt.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
+from wizolt.session import Session
+from wizolt.skill import SkillLibrary
+from wizolt.tools import Tool
 
 
 def _tool_call_response(call_id: str, name: str, arguments: dict) -> tuple[int, dict]:
@@ -334,7 +334,7 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     # Identical tool_choice, deliberately: changing it invalidates the messages cache, which is the
     # conversation this request exists to reuse. The instruction not to call tools is in the tail.
     assert compactor_request["tool_choice"] == agent_request["tool_choice"]
-    assert "Compact the minacode working context." in compactor_request["messages"][-1]["content"]
+    assert "Compact the wizolt working context." in compactor_request["messages"][-1]["content"]
     assert "OLD_BODY_SENTINEL" in "\n".join(str(message.get("content") or "") for message in compactor_request["messages"])
 
     active_messages = agent_request["messages"]

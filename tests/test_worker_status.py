@@ -1,16 +1,16 @@
 """worker status (split from tests/test_worker_handoff.py)."""
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
-from minacode.cli.worker import worker_command
+from wizolt.cli.worker import worker_command
 
 
 def test_status_bar_shows_worker_segment(tmp_path):
-    from minacode.config import (
+    from wizolt.config import (
         Config,
         ProviderConfig,
     )
-    from minacode.render import StatusBar
-    from minacode.session import Session
+    from wizolt.render import StatusBar
+    from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
     parent.usage.last_prompt_tokens = 200
@@ -46,9 +46,9 @@ def test_status_bar_shows_worker_segment(tmp_path):
     assert "ctx 50% · cache 50%" in texts
 
 def test_working_divider_marks_inflight_worker(tmp_path):
-    from minacode.cli import CommandLoop
-    from minacode.engine import Agent
-    from minacode.session import Session
+    from wizolt.cli import CommandLoop
+    from wizolt.engine import Agent
+    from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
     agent = Agent(parent, output_fn=lambda text: None)
@@ -66,7 +66,7 @@ def test_working_divider_marks_inflight_worker(tmp_path):
 def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     calls = []
     runner.model_stream = lambda kind, text: calls.append((kind, text))
@@ -79,9 +79,9 @@ def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
     assert calls == [("output", "x"), ("", "")]
 
 def test_status_reports_worker_delegation_state(tmp_path):
-    from minacode.cli import CommandLoop
-    from minacode.engine import Agent
-    from minacode.session import Session
+    from wizolt.cli import CommandLoop
+    from wizolt.engine import Agent
+    from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
     agent = Agent(parent, output_fn=lambda text: None)
@@ -125,9 +125,9 @@ def test_status_reports_worker_delegation_state(tmp_path):
     assert "`delegating`, rounds `0`" in text
 
 def test_worker_status_command_is_human_readable(tmp_path):
-    from minacode.cli import CommandLoop
-    from minacode.engine import Agent
-    from minacode.session import Session
+    from wizolt.cli import CommandLoop
+    from wizolt.engine import Agent
+    from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
     agent = Agent(parent, output_fn=lambda text: None)
@@ -160,9 +160,9 @@ def test_worker_status_command_is_human_readable(tmp_path):
     assert "worker context: 42%" in worker_command(loop, "status")
 
 def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import LogBlock, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     tool_call = ToolCall(id="call1", name="Note", args={"action": "view"})
@@ -172,7 +172,7 @@ def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     _delegate_call(parent, runner, action="send", order="o")
@@ -182,9 +182,9 @@ def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch
     assert any("thinking out loud" in text for text in rendered)
 
 def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import LogBlock, ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     tool_call = ToolCall(id="call1", name="Note", args={"action": "view"})
@@ -194,7 +194,7 @@ def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, 
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     log_outputs = []
     answer_outputs = []
     append_answer = answer_outputs.append
@@ -217,8 +217,8 @@ def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, 
 def test_worker_output_passes_memory_shaped_text_through_for_highlighting():
     from types import SimpleNamespace
 
-    from minacode.base import LogBlock, LogLine, LogRole
-    from minacode.tools.delegate import _worker_output
+    from wizolt.base import LogBlock, LogLine, LogRole
+    from wizolt.tools.delegate import _worker_output
 
     outputs = []
     emit = _worker_output(SimpleNamespace(output_fn=outputs.append))

@@ -7,9 +7,9 @@ class _StubModel:
 
 from agent_harness import session
 
-from minacode import compaction
-from minacode.context import ContextManager
-from minacode.tools import EditTool, ReadTool
+from wizolt import compaction
+from wizolt.context import ContextManager
+from wizolt.tools import EditTool, ReadTool
 
 
 def test_compaction_keeps_assistant_with_tool_results(tmp_path):

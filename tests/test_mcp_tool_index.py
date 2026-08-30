@@ -4,12 +4,12 @@ from typing import ClassVar
 from mcp_harness import mcp_cfg, mcp_tool_info, session
 from test_mcp_tools import _index_session
 
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
-from minacode.mcp import MCPManager, MCPToolInfo
-from minacode.session import Session, bootstrap_features
-from minacode.tools import Tool
+from wizolt.mcp import MCPManager, MCPToolInfo
+from wizolt.session import Session, bootstrap_features
+from wizolt.tools import Tool
 
 
 class TestToolIndexRendering:

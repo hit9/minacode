@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
-from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
-from minacode.model import ModelClient, resilience
-from minacode.model.protocol import ChatWire
+from wizolt.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
+from wizolt.model import ModelClient, resilience
+from wizolt.model.protocol import ChatWire
 
 
 def _chat_completion(content, finish_reason, completion_tokens=16384):
@@ -248,7 +248,7 @@ def test_chat_appends_declared_builtin_function_to_the_local_tools(tmp_path, mon
                                     {
                                         "id": "call_1",
                                         "type": "function",
-                                        "function": {"name": "$web_search", "arguments": '{"search_query":"minacode"}'},
+                                        "function": {"name": "$web_search", "arguments": '{"search_query":"wizolt"}'},
                                     },
                                     {"id": "call_2", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
                                 ],
@@ -266,7 +266,7 @@ def test_chat_appends_declared_builtin_function_to_the_local_tools(tmp_path, mon
     assistant, calls, content = model.request([{"role": "user", "content": "search"}], [local])
 
     assert content == ""
-    assert calls == [ToolCall("call_1", "$web_search", [{"search_query": "minacode"}]), ToolCall("call_2", "Bash", ["ls"])]
+    assert calls == [ToolCall("call_1", "$web_search", [{"search_query": "wizolt"}]), ToolCall("call_2", "Bash", ["ls"])]
     assert [call["function"]["name"] for call in assistant["tool_calls"]] == ["$web_search", "Bash"]
     # The builtin is appended to the local tools rather than replacing them: one stable tool block.
     assert json.loads(factory.calls[0].content)["tools"] == [local, builtin]

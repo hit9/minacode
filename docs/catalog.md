@@ -1,6 +1,6 @@
 # Compatibility catalog
 
-minacode keeps documented compatibility adjustments in a versioned catalog. It covers only
+wizolt keeps documented compatibility adjustments in a versioned catalog. It covers only
 well-known provider and model behavior that needs an exception to the generic API path: protocol
 routing, reasoning controls and levels, reasoning replay, strict schemas, prompt caching,
 temperature constraints, provider-side tools, and documented text-only models.
@@ -12,13 +12,13 @@ needs a different choice.
 
 ## Which copy is active
 
-Every installation includes a bundled catalog. minacode may also have a complete copy previously
-synced from [the minacode repository](https://github.com/hit9/minacode/blob/master/minacode/providers/catalog.json).
+Every installation includes a bundled catalog. wizolt may also have a complete copy previously
+synced from [the wizolt repository](https://github.com/hit9/wizolt/blob/master/wizolt/providers/catalog.json).
 At startup it validates both copies and selects the one with the higher numeric version. The two
 documents are never merged, and publication dates do not decide which one wins.
 
 An invalid cached copy is ignored, leaving the bundled copy active. If two different documents
-claim the same version, minacode keeps the bundled copy and reports the conflict in `/catalog`.
+claim the same version, wizolt keeps the bundled copy and reports the conflict in `/catalog`.
 An invalid bundled copy means the installation is damaged and stops startup rather than hiding
 the problem behind hard-coded compatibility behavior.
 
@@ -27,7 +27,7 @@ maintenance scope, remote URL, and the result of the latest sync attempt.
 
 ## Updates
 
-After startup, minacode checks GitHub at most once every 72 hours. This is one short background
+After startup, wizolt checks GitHub at most once every 72 hours. This is one short background
 request and does not delay the first prompt. A newer document is saved for the next session; the
 running session keeps its current catalog so one turn cannot change compatibility policy midway.
 

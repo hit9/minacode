@@ -5,7 +5,7 @@ import os
 
 
 def _write_skill(root, name, description, body, *, scripts=None):
-    folder = os.path.join(root, ".minacode", "skills", name)
+    folder = os.path.join(root, ".wizolt", "skills", name)
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
         handle.write(f"---\nname: {name}\ndescription: {description}\n---\n{body}\n")

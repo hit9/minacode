@@ -4,13 +4,13 @@ import os
 
 from test_session_persistence import log_path, read_jsonl, read_lines, session_with_data_dir
 
-from minacode.cli import CommandLoop
-from minacode.cli.commands import provider, set_model
-from minacode.config import (
+from wizolt.cli import CommandLoop
+from wizolt.cli.commands import provider, set_model
+from wizolt.config import (
     ProviderConfig,
 )
-from minacode.engine import Agent
-from minacode.session import Session
+from wizolt.engine import Agent
+from wizolt.session import Session
 
 
 def test_provider_overrides_persist_and_restore(tmp_path):

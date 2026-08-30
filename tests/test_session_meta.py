@@ -6,11 +6,11 @@ import time
 import pytest
 from test_session_persistence import session_with_data_dir
 
-from minacode.base import MinacodeError
-from minacode.config import (
+from wizolt.base import WizoltError
+from wizolt.config import (
     Config,
 )
-from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore
+from wizolt.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore
 
 
 def test_snapshot_messages_strips_non_persistable_roles(tmp_path):
@@ -66,7 +66,7 @@ def test_session_name_does_not_change_when_goal_changes(tmp_path):
     assert Session.load_snapshot(s.uid, config=s.config).name == "rewrite the tokenizer"
 
 def test_session_name_survives_compaction_dropping_the_opening_message(tmp_path):
-    from minacode.prompts import COMPACTION_SUMMARY_TITLE
+    from wizolt.prompts import COMPACTION_SUMMARY_TITLE
 
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "add a session picker"})
@@ -163,7 +163,7 @@ def test_ambiguous_resume_names_its_candidates(tmp_path):
     second.messages.append({"role": "user", "content": "rename the glow styles"})
     second.save_snapshot()
 
-    with pytest.raises(MinacodeError) as error:
+    with pytest.raises(WizoltError) as error:
         SessionSnapshotStore.resolve_uid("rename the", config.data_dir, str(tmp_path))
 
     # Guessing between them would resume the wrong work silently.

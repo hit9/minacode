@@ -2,10 +2,10 @@
 import pytest
 from test_edit_tool import anchor, session
 
-from minacode.base import ToolCall, ToolError
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.tools import CodeIndex, EditTool, ReadTool
+from wizolt.base import ToolCall, ToolError
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.tools import CodeIndex, EditTool, ReadTool
 
 
 def test_single_anchor_stale_guides_content_check(tmp_path):

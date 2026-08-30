@@ -5,20 +5,20 @@ from types import SimpleNamespace
 from test_command_ui import ModalHarness
 from tui_harness import loop
 
-import minacode.cli.commands as commands_mod
-from minacode.base import (
+import wizolt.cli.commands as commands_mod
+from wizolt.base import (
     SELECTION_BACK,
 )
-from minacode.cli import CommandCompleter
-from minacode.cli import worker as worker_mod
-from minacode.cli.modals import tool_output_viewer
-from minacode.cli.worker import WorkerFlow, worker_command
-from minacode.config import (
+from wizolt.cli import CommandCompleter
+from wizolt.cli import worker as worker_mod
+from wizolt.cli.modals import tool_output_viewer
+from wizolt.cli.worker import WorkerFlow, worker_command
+from wizolt.config import (
     PROVIDER_API_CHOICES,
     Config,
     ProviderConfig,
 )
-from minacode.tools import Tool
+from wizolt.tools import Tool
 
 
 def test_worker_command_completion(tmp_path):

@@ -4,21 +4,21 @@ import subprocess
 import sys
 import time
 
-import minacode.cli.commands as commands_mod
-from minacode.base import ToolCall
-from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop
-from minacode.cli.commands import diff_command
-from minacode.cli.modals import diff_viewer
-from minacode.config import (
+import wizolt.cli.commands as commands_mod
+from wizolt.base import ToolCall
+from wizolt.cli import QUEUE_SAFE_COMMANDS, CommandLoop
+from wizolt.cli.commands import diff_command
+from wizolt.cli.modals import diff_viewer
+from wizolt.config import (
     Config,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.render import UiPrinter
-from minacode.runner import ToolRunner
-from minacode.session import Session, SessionSnapshotStore, TurnDiff
-from minacode.session.diffs import _find_unambiguous_move, net_diff_for_path, net_diff_sections
-from minacode.tui import DiffViewState, TabbedViewState
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.render import UiPrinter
+from wizolt.runner import ToolRunner
+from wizolt.session import Session, SessionSnapshotStore, TurnDiff
+from wizolt.session.diffs import _find_unambiguous_move, net_diff_for_path, net_diff_sections
+from wizolt.tui import DiffViewState, TabbedViewState
 
 
 def session(tmp_path):
@@ -53,7 +53,7 @@ def test_diff_preserves_cli_history_when_tmux_alternate_screen_is_off(tmp_path):
     executable = shutil.which("tmux")
     if executable is None:
         return
-    socket = "minacode-test-" + tmp_path.name
+    socket = "wizolt-test-" + tmp_path.name
     command = [executable, "-L", socket]
     probe = tmp_path / "diff_tmux_probe.py"
     probe.write_text(
@@ -61,15 +61,15 @@ def test_diff_preserves_cli_history_when_tmux_alternate_screen_is_off(tmp_path):
 import threading
 import time
 
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
 
-from minacode.engine import Agent
-from minacode.cli import CommandLoop
-from minacode.cli.commands import diff_command
-from minacode.session import Session
-from minacode.tui import TuiApp
+from wizolt.engine import Agent
+from wizolt.cli import CommandLoop
+from wizolt.cli.commands import diff_command
+from wizolt.session import Session
+from wizolt.tui import TuiApp
 
 session = Session(cwd="/tmp", config=Config(data_dir=tempfile.mkdtemp()))
 session.store_turn_diff("tr.1", 1, "a.py", "-old\\n+new\\n", round=1)
@@ -113,13 +113,13 @@ def test_alternate_screen_probe_reads_the_resolved_window_option(tmp_path):
     executable = shutil.which("tmux")
     if executable is None:
         return
-    socket = "minacode-test-probe-" + tmp_path.name
+    socket = "wizolt-test-probe-" + tmp_path.name
     command = [executable, "-L", socket]
     probe = tmp_path / "alternate_screen_probe.py"
     probe.write_text(
         f"""import subprocess
 
-from minacode.tui import TuiApp
+from wizolt.tui import TuiApp
 
 print(TuiApp.alternate_screen_available())
 subprocess.run([{executable!r}, "set-option", "-wg", "alternate-screen", "off"], check=True)

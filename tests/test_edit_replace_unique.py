@@ -2,11 +2,11 @@
 import pytest
 from test_edit_tool import anchor, session
 
-from minacode.base import ToolCall, ToolError
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.tools import CodeIndex, EditTool, ReadTool
-from minacode.tools.files import Edit
+from wizolt.base import ToolCall, ToolError
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.tools import CodeIndex, EditTool, ReadTool
+from wizolt.tools.files import Edit
 
 
 def test_replace_unique_replaces_exact_single_hit(tmp_path):
@@ -180,7 +180,7 @@ def test_large_edit_warns_on_what_the_call_wrote_not_on_the_file(tmp_path):
     """The subject is the assistant message the call arrived in: one call that writes a lot is one
     message that loses a lot when it times out. So the measure is the payload, and an ordinary edit
     to a large file says nothing."""
-    from minacode.tools.files import LARGE_EDIT_CHARS, _large_edit
+    from wizolt.tools.files import LARGE_EDIT_CHARS, _large_edit
 
     small = [Edit(op="replace", start=anchor(0, "a\n"), end=anchor(0, "a\n"), content="b\n")]
     assert _large_edit(small) is None
@@ -198,7 +198,7 @@ def test_large_edit_warns_on_what_the_call_wrote_not_on_the_file(tmp_path):
 def test_large_edit_warning_rides_the_edit_result(tmp_path):
     """It reaches the model the same way every other post-edit observation does, so a call that was
     too big says so in its own result rather than only in the tool description."""
-    from minacode.tools.files import LARGE_EDIT_CHARS
+    from wizolt.tools.files import LARGE_EDIT_CHARS
 
     s = session(tmp_path)
     body = "".join(f"line {index}\n" for index in range(LARGE_EDIT_CHARS // 8))

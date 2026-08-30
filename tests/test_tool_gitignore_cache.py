@@ -1,7 +1,7 @@
 """tool gitignore cache (split from tests/test_tools.py)."""
 from test_tools import session
 
-from minacode.tools import (
+from wizolt.tools import (
     SearchTool,
 )
 

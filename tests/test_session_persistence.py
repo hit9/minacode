@@ -1,15 +1,15 @@
 import json
 
-from minacode.cli import CommandLoop
-from minacode.config import (
+from wizolt.cli import CommandLoop
+from wizolt.config import (
     Config,
 )
-from minacode.engine import Agent
-from minacode.session import Session, SessionSnapshotCodec, SessionSnapshotStore
+from wizolt.engine import Agent
+from wizolt.session import Session, SessionSnapshotCodec, SessionSnapshotStore
 
 
 def session_with_data_dir(tmp_path):
-    """Session targeting tmp_path as data_dir (avoids touching ~/.minacode)."""
+    """Session targeting tmp_path as data_dir (avoids touching ~/.wizolt)."""
     return Session(
         cwd=str(tmp_path),
         config=Config(data_dir=str(tmp_path)),

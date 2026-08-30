@@ -8,13 +8,13 @@ from prompt_toolkit.utils import get_cwidth
 from test_command_ui import ModalHarness
 from tui_harness import loop, session
 
-import minacode.cli.modals as modals_mod
-from minacode.cli import CommandLoop
-from minacode.cli.modals import job_view, tool_output_viewer
-from minacode.engine import Agent
-from minacode.session import Session
-from minacode.session.jobs import BackgroundJob
-from minacode.tools import BashTool, JobTool, Tool, tooloutput
+import wizolt.cli.modals as modals_mod
+from wizolt.cli import CommandLoop
+from wizolt.cli.modals import job_view, tool_output_viewer
+from wizolt.engine import Agent
+from wizolt.session import Session
+from wizolt.session.jobs import BackgroundJob
+from wizolt.tools import BashTool, JobTool, Tool, tooloutput
 
 
 def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_opens_full_output(tmp_path, monkeypatch):
@@ -276,11 +276,11 @@ def test_tool_output_viewer_reopens_a_delegate_order_with_the_worker_answer(tmp_
     has to be judged against what was actually asked. The transcript keeps only the `Delegate send`
     line, so this browser is the second reading."""
     command_loop = loop(tmp_path)
-    order = "Goal: rename the flag.\nFiles: minacode/config.py\nVerify: uv run pytest tests/test_cli.py"
+    order = "Goal: rename the flag.\nFiles: wizolt/config.py\nVerify: uv run pytest tests/test_cli.py"
     command_loop.session.store_tool_result(
         "Delegate",
         [{"action": "send", "order": order, "title": "rename the flag"}],
-        '<Delegate action="send" files="minacode/config.py">\n<worker>renamed it at config.py:118</worker>\n</Delegate>',
+        '<Delegate action="send" files="wizolt/config.py">\n<worker>renamed it at config.py:118</worker>\n</Delegate>',
     )
     command_loop.session.store_tool_result("Delegate", [{"action": "status"}], '<Delegate action="status" alive="true"/>')
     modal = ModalHarness(["enter"])

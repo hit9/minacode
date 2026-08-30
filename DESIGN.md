@@ -5,7 +5,7 @@ short: document durable conclusions, not implementation diaries or complete inve
 
 ## Orientation
 
-minacode turns one user request into a bounded loop of model and tool calls in one local process.
+wizolt turns one user request into a bounded loop of model and tool calls in one local process.
 Four objectives, often in tension, explain most decisions below:
 
 1. **Resumable.** A session survives a crash, an interrupt, or a quit at any point.
@@ -322,15 +322,15 @@ only one the context design has to obey.
    families place them at model-dependent intervals, so coverage of a long conversation is
    partial. GPT-5.6 and later place one breakpoint at the end of the latest eligible user or tool
    message — which in an agent loop is exactly the tail of the previous step, so the whole
-   conversation body is covered without minacode asking for anything.
+   conversation body is covered without wizolt asking for anything.
 2. **Explicit breakpoints.** Anthropic caches only at a marked block, which is why
    `mark_prompt_cache_tail` exists: the system breakpoint alone would leave the conversation body
    uncached. GPT-5.6 also accepts explicit markers
    (`prompt_cache_options.mode: "explicit"` plus `prompt_cache_breakpoint` on a content block),
-   and minacode deliberately does not use them — the implicit breakpoint already lands where the
+   and wizolt deliberately does not use them — the implicit breakpoint already lands where the
    explicit one would, so marking would add a wire-only field for no reuse.
 3. **Server-side conversation state.** The Responses wire can retain the conversation and let a
-   later request reference it by id. minacode sends `store: false` and replays the full history
+   later request reference it by id. wizolt sends `store: false` and replays the full history
    every time. This is not a caching trade-off, it is the projection rule: session messages are
    the source of truth, a sent message is irrevocable, and a resumed session must reconstruct
    from the snapshot alone. Server-held state moves the truth off the machine that owns it.
@@ -519,8 +519,8 @@ threshold; provider integration tests verify reported usage and acceptance witho
 
 ## Worker handoff
 
-A worker is the same process's second minacode session, driven serially by the parent through one
-`Delegate` tool call per round: a full minacode (compaction, Recall, tr.N, Job, Skill, MCP, diff,
+A worker is the same process's second wizolt session, driven serially by the parent through one
+`Delegate` tool call per round: a full wizolt (compaction, Recall, tr.N, Job, Skill, MCP, diff,
 confirmation, snapshots) with its own system prompt and reduced tool list. The worker never
 reaches back. Three decisions are easy to reopen; their reasons follow.
 

@@ -8,15 +8,15 @@ from prompt_toolkit.history import FileHistory
 from test_tui_runtime import history_file
 from tui_harness import loop
 
-from minacode.cli import CommandLoop
-from minacode.cli.update import UpdateChecker
-from minacode.config import (
+from wizolt.cli import CommandLoop
+from wizolt.cli.update import UpdateChecker
+from wizolt.config import (
     Config,
 )
-from minacode.engine import Agent
-from minacode.session import Session, SessionSnapshotStore, bootstrap_features
-from minacode.tools import CodeIndex
-from minacode.tui import TuiApp
+from wizolt.engine import Agent
+from wizolt.session import Session, SessionSnapshotStore, bootstrap_features
+from wizolt.tools import CodeIndex
+from wizolt.tui import TuiApp
 
 
 def test_background_output_is_closed_before_final_output(tmp_path):

@@ -5,13 +5,13 @@ import time
 import pytest
 from agent_harness import call, queue, session
 
-import minacode.cli.loop as loop_module
-from minacode.cli import CommandLoop
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.runner import ToolRunner
-from minacode.tools import CodeIndex
-from minacode.tui import TuiApp
+import wizolt.cli.loop as loop_module
+from wizolt.cli import CommandLoop
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.runner import ToolRunner
+from wizolt.tools import CodeIndex
+from wizolt.tui import TuiApp
 
 
 def test_queue_live_region_shows_divider_and_pending(tmp_path):

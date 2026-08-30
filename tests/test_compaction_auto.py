@@ -3,7 +3,7 @@
 from agent_harness import session, session_with_provider
 from test_context import _CountingModel, _huge_history
 
-from minacode.context import ContextManager
+from wizolt.context import ContextManager
 
 
 def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):

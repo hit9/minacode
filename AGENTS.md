@@ -12,18 +12,18 @@ Keep this file short. It is an entry point, not a second design document.
 
 ## Project map
 
-- `minacode/engine.py`: the agent turn loop composing context, model, and tools.
-- `minacode/context.py`, `minacode/model/`, `minacode/runner.py`: context projection/compaction,
+- `wizolt/engine.py`: the agent turn loop composing context, model, and tools.
+- `wizolt/context.py`, `wizolt/model/`, `wizolt/runner.py`: context projection/compaction,
   provider request protocols (`model/client.py` with the per-API adapters beside it), and the tool
   execution lifecycle.
-- `minacode/cli/update.py`, `minacode/cli/hints.py`: the background version check and quick hints.
-- `minacode/session/`: durable semantic state (`__init__.py`) and snapshot persistence
+- `wizolt/cli/update.py`, `wizolt/cli/hints.py`: the background version check and quick hints.
+- `wizolt/session/`: durable semantic state (`__init__.py`) and snapshot persistence
   (`store.py`); `store.py` never imports the package at module scope.
-- `minacode/tools/`, `minacode/image.py`, `minacode/mcp/`, `minacode/skill.py`: vertical
+- `wizolt/tools/`, `wizolt/image.py`, `wizolt/mcp/`, `wizolt/skill.py`: vertical
   features; `tools/` splits built-ins by capability, registry in `__init__.py`.
-- `minacode/config.py`, `minacode/providers/`: config-file settings, the model capability catalog
+- `wizolt/config.py`, `wizolt/providers/`: config-file settings, the model capability catalog
   (`providers/catalog.py`), and evidence-backed compatibility policy (`providers/compat.py`).
-- `minacode/cli/`, `minacode/tui/`, `minacode/render.py`: commands (`cli/commands.py`,
+- `wizolt/cli/`, `wizolt/tui/`, `wizolt/render.py`: commands (`cli/commands.py`,
   `cli/modals.py`, `/worker`'s flow in `cli/worker.py`), TUI runtime (`cli/runtime.py`), view
   fragments (`cli/view.py`), interaction, and presentation.
 - `tests/`: behavior-oriented tests grouped by subsystem and boundary.
@@ -31,7 +31,7 @@ Keep this file short. It is an entry point, not a second design document.
 ## Project workflow
 
 - **Tests:** run targeted tests while iterating and `uv run pytest` before completing behavior changes.
-- **Quality:** run `uv run ruff check minacode`, `uv run ruff format --check minacode`, and `uv run pyright`.
+- **Quality:** run `uv run ruff check wizolt`, `uv run ruff format --check wizolt`, and `uv run pyright`.
 - **Docs:** on user-facing doc changes, update the English source and build `html`
   (`make -C docs html`).
 - **Docs standard:** `docs/` is written for users, not for the people who changed the code.
@@ -49,7 +49,7 @@ Keep this file short. It is an entry point, not a second design document.
     and has to be redrawn. Keep every `<span>` closed.
 - **Changelog:** record user-visible changes under `Unreleased`; omit internal-only refactors and
   doc maintenance.
-- **Release (only when requested):** bump `pyproject.toml` and `minacode/base.py`, move Unreleased
+- **Release (only when requested):** bump `pyproject.toml` and `wizolt/base.py`, move Unreleased
   entries under the dated version, run tests, quality checks, both doc builds, and `uv build`,
   commit `Release X.Y.Z`, and create the lightweight tag `vX.Y.Z`. Do not push or publish.
 
@@ -61,6 +61,6 @@ Keep this file short. It is an entry point, not a second design document.
 - Mock external uncertainty, not the core behavior under test; keep tests deterministic and fast.
 - Keep `CHANGELOG.md` aligned with user-visible behavior.
 - Never rebuild or re-sync the project `.venv` (no `uv run --python X` / `uv sync --python X`
-  with a different interpreter): the developer's own `minacode` process runs out of it, and swapping
+  with a different interpreter): the developer's own `wizolt` process runs out of it, and swapping
   it mid-session deletes modules under that process and crashes it. For cross-version testing,
   point `UV_PROJECT_ENVIRONMENT` at a throwaway directory instead.

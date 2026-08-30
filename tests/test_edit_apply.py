@@ -3,11 +3,11 @@
 import pytest
 from test_edit_tool import anchor, session
 
-from minacode.base import ToolCall, ToolError, split_lines
-from minacode.context import ContextManager
-from minacode.runner import ToolRunner
-from minacode.tools import CodeIndex, EditTool
-from minacode.tools.editplan import EditBatchPlan
+from wizolt.base import ToolCall, ToolError, split_lines
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.tools import CodeIndex, EditTool
+from wizolt.tools.editplan import EditBatchPlan
 
 
 @pytest.mark.parametrize(

@@ -3,14 +3,14 @@
 import os
 from unittest import mock
 
-from minacode.base import LogBlock
-from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, modals
-from minacode.cli.commands import compact
-from minacode.cli.modals import compaction_log_viewer
-from minacode.config import Config
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.session import HistorySegment, Session, SessionSnapshotCodec
+from wizolt.base import LogBlock
+from wizolt.cli import QUEUE_SAFE_COMMANDS, CommandLoop, modals
+from wizolt.cli.commands import compact
+from wizolt.cli.modals import compaction_log_viewer
+from wizolt.config import Config
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.session import HistorySegment, Session, SessionSnapshotCodec
 
 
 def session(tmp_path):
@@ -269,7 +269,7 @@ def test_viewer_detail_explains_a_segment_older_than_the_log(tmp_path):
     text = open_first(tmp_path, created_at="", scope="", trigger="", messages=0, summary="")
 
     # Missing detail is the record's age, not a failure of this compaction.
-    assert "Compacted before minacode kept these details" in text
+    assert "Compacted before wizolt kept these details" in text
     assert "predates the log" in text
 
 

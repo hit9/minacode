@@ -5,10 +5,10 @@ import json
 import pytest
 from model_harness import _AnthropicMockClientFactory, _MockClientFactory, _session
 
-from minacode.base import ConfigError
-from minacode.config import ProviderConfig
-from minacode.model import ModelClient
-from minacode.model.protocol import omit_request_fields
+from wizolt.base import ConfigError
+from wizolt.config import ProviderConfig
+from wizolt.model import ModelClient
+from wizolt.model.protocol import omit_request_fields
 
 CHAT_BODY = {
     "id": "c",
@@ -27,7 +27,7 @@ def sent_body(model: ModelClient, factory, monkeypatch, attribute: str = "client
 
 
 def test_a_named_field_never_reaches_the_chat_request(tmp_path, monkeypatch):
-    """The reason the setting exists: a gateway answers 400 for a field minacode sends, and
+    """The reason the setting exists: a gateway answers 400 for a field wizolt sends, and
     `extra_body` can only add fields."""
     s = _session(tmp_path, url="https://api.openai.com/v1", model="gpt-5.5", stream=False, reasoning="high")
     body = sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
@@ -59,7 +59,7 @@ def test_a_named_field_never_reaches_the_anthropic_request(tmp_path, monkeypatch
 
 
 def test_a_field_is_dropped_wherever_the_request_puts_it(tmp_path, monkeypatch):
-    """A provider's 400 names the field, not the place minacode happened to put it, so a name
+    """A provider's 400 names the field, not the place wizolt happened to put it, so a name
     configured here is matched in `extra_body` as well as at the top level."""
     s = _session(tmp_path, url="https://gw.example/v1", model="m", stream=False, extra_body={"enable_search": True}, omit_body=("enable_search",))
     body = sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
@@ -91,6 +91,6 @@ def test_the_fields_carrying_the_request_itself_are_refused():
 
 
 def test_an_unsent_field_is_not_an_error():
-    """Named fields are what an endpoint rejects, not what minacode promises to send: a name that
+    """Named fields are what an endpoint rejects, not what wizolt promises to send: a name that
     never appears must stay harmless as the request shape changes."""
     assert omit_request_fields({"model": "m"}, ProviderConfig(omit_body=("nothing_like_this",)).omit_body) == {"model": "m"}

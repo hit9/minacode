@@ -6,12 +6,12 @@ import time
 import pytest
 from test_session_persistence import log_path, project_dir, read_jsonl, read_lines, session_with_data_dir, visible_contents
 
-from minacode.base import SESSION_EVENT_KEY, MinacodeError
-from minacode.config import (
+from wizolt.base import SESSION_EVENT_KEY, WizoltError
+from wizolt.config import (
     Config,
     RuntimeSettings,
 )
-from minacode.session import Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
+from wizolt.session import Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
 
 
 def test_oversized_snapshots_are_dropped_before_reaching_the_log(tmp_path):
@@ -191,7 +191,7 @@ def test_latest_never_crosses_into_another_project(tmp_path):
     elsewhere.messages.append({"role": "user", "content": "other"})
     elsewhere.save_snapshot()
 
-    with pytest.raises(MinacodeError, match="No previous session for this project"):
+    with pytest.raises(WizoltError, match="No previous session for this project"):
         Session.load_snapshot("latest", config=config, cwd=str(project))
 
 def test_latest_falls_back_to_newest_log_when_pointer_is_missing(tmp_path):
@@ -224,7 +224,7 @@ def test_load_rejects_an_unknown_format_version(tmp_path):
     with open(log_path(s), "w") as file:
         file.write("\n".join(json.dumps(line) for line in lines) + "\n")
 
-    with pytest.raises(MinacodeError, match="Unsupported session format v99"):
+    with pytest.raises(WizoltError, match="Unsupported session format v99"):
         Session.load_snapshot(s.uid, config=s.config)
 
 def test_load_appends_local_time_resume_event(tmp_path, monkeypatch):
@@ -233,7 +233,7 @@ def test_load_appends_local_time_resume_event(tmp_path, monkeypatch):
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    monkeypatch.setattr("minacode.session.local_timestamp", lambda value=None: "2026-07-30T15:04:05+08:00")
+    monkeypatch.setattr("wizolt.session.local_timestamp", lambda value=None: "2026-07-30T15:04:05+08:00")
     s2 = Session.load_snapshot(s.uid, config=s.config)
     assert len(s2.messages) == 2  # hello + resume marker
     assert s2.messages[-1] == {
@@ -370,7 +370,7 @@ def test_real_legacy_snapshot_without_layout_field_converts_numeric_local_time(t
         timestamp_calls.append(value)
         return "2023-11-14T17:13:20-05:00" if value is not None else "2026-07-30T15:04:05+08:00"
 
-    monkeypatch.setattr("minacode.session.local_timestamp", timestamp)
+    monkeypatch.setattr("wizolt.session.local_timestamp", timestamp)
 
     loaded = Session.load_snapshot(s.uid, config=s.config)
 
@@ -501,14 +501,14 @@ def test_multiple_deltas_with_tool_calls(tmp_path):
     assert len(s2.tool_records) == 3
 
 def test_load_missing_snapshot_raises_error(tmp_path):
-    """Loading a non-existent session raises MinacodeError."""
-    with pytest.raises(MinacodeError, match="Session snapshot not found"):
+    """Loading a non-existent session raises WizoltError."""
+    with pytest.raises(WizoltError, match="Session snapshot not found"):
         Session.load_snapshot("nonexistent-uid", config=Config(data_dir=str(tmp_path)))
 
 @pytest.mark.parametrize("alias", ["latest", "last"])
 def test_resolve_uid_without_a_project_session(tmp_path, alias):
-    """Resolving an alias in a project with no sessions raises MinacodeError."""
-    with pytest.raises(MinacodeError, match="No previous session for this project"):
+    """Resolving an alias in a project with no sessions raises WizoltError."""
+    with pytest.raises(WizoltError, match="No previous session for this project"):
         SessionSnapshotStore.resolve_uid(alias, str(tmp_path), str(tmp_path))
 
 def test_resolve_uid_passthrough_normal_uid(tmp_path):

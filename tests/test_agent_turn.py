@@ -3,13 +3,13 @@ parallel execution, and provider message conversion."""
 
 
 
-from minacode.base import (
+from wizolt.base import (
     SESSION_EVENT_KEY,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.runner import ToolRunner
-from minacode.session import Session
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.runner import ToolRunner
+from wizolt.session import Session
 
 
 def _correction(name):

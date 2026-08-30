@@ -2,14 +2,14 @@
 from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _MockClientFactory, _session, _StreamClientFactory
 from test_builtin_tools import FUNCTION_TOOL, WEB_SEARCH, _responses_body
 
-from minacode.base import (
+from wizolt.base import (
     builtin_tool_label,
 )
-from minacode.config import (
+from wizolt.config import (
     ConfigFile,
 )
-from minacode.model import ModelClient
-from minacode.render import search_sources_footer
+from wizolt.model import ModelClient
+from wizolt.render import search_sources_footer
 
 
 def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):

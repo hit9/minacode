@@ -1,7 +1,7 @@
 (worker-delegation)=
 # Worker delegation
 
-A **worker** is a second minacode session running in the same process. When the model meets a
+A **worker** is a second wizolt session running in the same process. When the model meets a
 bounded task that deserves an independent look — a review, a refactor, a second opinion — it hands
 the task over with the `Delegate` tool.
 
@@ -68,7 +68,7 @@ provider and model plus the order's title (or first line), the worker's streamed
 yellow `worker done` rule with the step count, elapsed time, tokens in and out, and the files it
 touched.
 
-<div class="term-shot" role="img" aria-label="The delegation bracket: a full-width yellow worker start rule naming the worker's provider, model, and order title, a few worker tool lines beneath it, and a yellow worker done rule with step count, elapsed time, token counts, and touched files."><span class="fs-worker">──── worker start · deepseek/deepseek-v4-flash · Review the parser refactor ────</span><span class="fs-tool">  ├ Read minacode/loop.py</span><span class="fs-tool">  ├ Read tests/test_edit_tool.py</span><span class="fs-tool">  └ Bash uv run pytest tests/ -q</span><span class="fs-worker">──── worker done · steps 7 · 43.2s · 12.4K in / 1.1K out · minacode/loop.py, tests/ ────</span></div>
+<div class="term-shot" role="img" aria-label="The delegation bracket: a full-width yellow worker start rule naming the worker's provider, model, and order title, a few worker tool lines beneath it, and a yellow worker done rule with step count, elapsed time, token counts, and touched files."><span class="fs-worker">──── worker start · deepseek/deepseek-v4-flash · Review the parser refactor ────</span><span class="fs-tool">  ├ Read wizolt/loop.py</span><span class="fs-tool">  ├ Read tests/test_edit_tool.py</span><span class="fs-tool">  └ Bash uv run pytest tests/ -q</span><span class="fs-worker">──── worker done · steps 7 · 43.2s · 12.4K in / 1.1K out · wizolt/loop.py, tests/ ────</span></div>
 
 ### Status bar while delegating
 

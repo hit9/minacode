@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 from agent_harness import session
 
-import minacode.cli.modals as modals_mod
-from minacode.base import (
+import wizolt.cli.modals as modals_mod
+from wizolt.base import (
     DISMISSED,
     SELECTION_BACK,
     LogBlock,
@@ -14,11 +14,11 @@ from minacode.base import (
     Text,
     ToolCall,
 )
-from minacode.cli import CommandLoop
-from minacode.cli.modals import choice_application, question_interaction
-from minacode.engine import Agent
-from minacode.tools import AskSpec
-from minacode.tui import ASK_DONE, ASK_FREE_TEXT
+from wizolt.cli import CommandLoop
+from wizolt.cli.modals import choice_application, question_interaction
+from wizolt.engine import Agent
+from wizolt.tools import AskSpec
+from wizolt.tui import ASK_DONE, ASK_FREE_TEXT
 
 
 def test_choice_application_expands_escaped_preview_newlines(tmp_path):
@@ -438,7 +438,7 @@ def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_path):
     user's message opens each turn with a rule, interim narration closes with one once it is
     far enough from the rule above, and a silent run of tool batches closes with the batch
     rule -- even though the engine never runs again."""
-    from minacode.session import ToolResultRecord
+    from wizolt.session import ToolResultRecord
 
     def rules_for(messages, records):
         loop = _colored_loop(tmp_path)

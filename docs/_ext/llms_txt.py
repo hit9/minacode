@@ -30,7 +30,7 @@ INCLUDE_RE = re.compile(r"^```\{include\}\s*(?P<path>\S+)\s*\n```\s*$", re.MULTI
 INLINE_TAG_RE = re.compile(r"</?(?:span|em|strong|br|sup|sub)\b[^>]*>")
 ANCHOR_RE = re.compile(r"^\(\S+\)=\s*$", re.MULTILINE)
 # Kept out of the single-file copy: the changelog is release history, not documentation, and it is
-# 65% of the bytes — a model reading llms-full.txt to learn how minacode works would spend most of
+# 65% of the bytes — a model reading llms-full.txt to learn how wizolt works would spend most of
 # its context on versions it will never be asked about. It stays listed in llms.txt, one fetch away
 # for the questions it does answer.
 FULL_TEXT_SKIP = frozenset({"changelog"})

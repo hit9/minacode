@@ -8,18 +8,18 @@ import shutil
 import time
 from types import SimpleNamespace
 
-import minacode.render as render_module
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, TurnBox
-from minacode.cli import CommandLoop
-from minacode.cli.runtime import RESUME_STATUS_LABEL
-from minacode.cli.view import View
-from minacode.config import (
+import wizolt.render as render_module
+from wizolt.base import LogBlock, LogEdge, LogLine, LogRole, TurnBox
+from wizolt.cli import CommandLoop
+from wizolt.cli.runtime import RESUME_STATUS_LABEL
+from wizolt.cli.view import View
+from wizolt.config import (
     Config,
 )
-from minacode.engine import Agent
-from minacode.render import BashLivePreview, LiveSpark, Theme
-from minacode.session import Session
-from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState
+from wizolt.engine import Agent
+from wizolt.render import BashLivePreview, LiveSpark, Theme
+from wizolt.session import Session
+from wizolt.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState
 
 
 def test_diff_view_state_tab_switching():

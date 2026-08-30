@@ -13,13 +13,13 @@ import pytest
 # ---------------------------------------------------------------------------
 from mcp_harness import mcp_cfg, mcp_tool_info, session
 
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
-from minacode.context import ContextManager
-from minacode.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig
-from minacode.render import StatusBar
-from minacode.session import Session, bootstrap_features
+from wizolt.context import ContextManager
+from wizolt.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig
+from wizolt.render import StatusBar
+from wizolt.session import Session, bootstrap_features
 
 
 def parse_one(raw: dict) -> MCPServerConfig | None:
@@ -255,7 +255,7 @@ class TestMCPManagerDiscovery:
         left to retrieve that exception, so asyncio would otherwise print it at collection."""
         import gc
 
-        from minacode.base import ToolError
+        from wizolt.base import ToolError
 
         s = session("/tmp")
         loop = s.mcp._async_loop()
@@ -876,7 +876,7 @@ class TestStatusBarMCPStatus:
 # ---------------------------------------------------------------------------
 # Library logging — MCP client transport tracebacks must not reach the TUI
 # ---------------------------------------------------------------------------
-# minacode's configure_logging quiets the noisy MCP client transport loggers so that
+# wizolt's configure_logging quiets the noisy MCP client transport loggers so that
 # expected-and-already-surfaced failures (httpx ReadTimeout on a slow server,
 # dropped SSE/stdio frames, JSON-RPC parse errors) don't dump full tracebacks
 # onto stderr mid-render via logging.lastResort.
@@ -887,7 +887,7 @@ class TestTransportLoggingSuppressed:
         """configure_logging raises the transport loggers out of the ERROR band."""
         import logging
 
-        from minacode.base import configure_logging
+        from wizolt.base import configure_logging
 
         configure_logging()
 
@@ -899,7 +899,7 @@ class TestTransportLoggingSuppressed:
         """logger.exception on the streamable_http transport produces no stderr output."""
         import logging
 
-        from minacode.base import configure_logging
+        from wizolt.base import configure_logging
 
         configure_logging()
         log = logging.getLogger("mcp.client.streamable_http")

@@ -24,9 +24,9 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.patch_stdout import patch_stdout
 from tui_harness import session
 
-from minacode.cli import CommandLoop, TuiRuntime
-from minacode.engine import Agent
-from minacode.render import UiPrinter
+from wizolt.cli import CommandLoop, TuiRuntime
+from wizolt.engine import Agent
+from wizolt.render import UiPrinter
 
 # Every terminal-writing method of prompt_toolkit's Output interface. The recorder logs the
 # method name and arguments, so the test can count the renderer.erase() fingerprint that marks
@@ -164,7 +164,7 @@ def test_tool_output_burst_suspends_the_application_once():
 def test_emit_without_running_application_prints_directly(monkeypatch):
     """Headless / pre-TUI emits keep printing immediately, one print per emit."""
     printed = []
-    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    monkeypatch.setattr("wizolt.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
     ui = UiPrinter(print)
     ui.color = True
 
@@ -179,7 +179,7 @@ def test_emit_without_running_application_prints_directly(monkeypatch):
 def test_batched_replay_still_prints_in_one_call(monkeypatch):
     """The replay batch keeps its single-print contract even with the batching window present."""
     printed = []
-    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    monkeypatch.setattr("wizolt.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
     ui = UiPrinter(print)
     ui.color = True
 
@@ -198,7 +198,7 @@ def test_direct_print_drains_queued_burst_first(monkeypatch):
     print must drain it first so terminal order matches emit order.
     """
     printed = []
-    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    monkeypatch.setattr("wizolt.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
     ui = UiPrinter(print)
     ui.color = True
     ui._scrollback_parts = [FormattedText([("", "queued line\n")])]
@@ -214,7 +214,7 @@ def test_direct_print_drains_queued_burst_first(monkeypatch):
 def test_drain_scrollback_prints_queued_output_at_shutdown(monkeypatch):
     """Output queued when the application stops (timer never fires again) is not lost."""
     printed = []
-    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    monkeypatch.setattr("wizolt.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
     ui = UiPrinter(print)
     ui.color = True
     ui._scrollback_parts = [FormattedText([("", "last line\n")])]  # left behind by an un-fired timer
@@ -244,8 +244,8 @@ def test_shutdown_drains_fragment_before_loop_processes_schedule(monkeypatch):
         _running_in_terminal = False
         loop = Loop()
 
-    monkeypatch.setattr("minacode.render.get_app_or_none", lambda: App())
-    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    monkeypatch.setattr("wizolt.render.get_app_or_none", lambda: App())
+    monkeypatch.setattr("wizolt.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
     ui = UiPrinter(print)
     ui.color = True
 
@@ -288,7 +288,7 @@ def test_agent_thread_emit_batches_into_one_suspend(monkeypatch):
     every line present and the window drained, not fall back to per-emit direct prints.
     """
     printed = []
-    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    monkeypatch.setattr("wizolt.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
     rec = RecordingOutput()
     ui = UiPrinter(print)
     ui.color = True
@@ -354,7 +354,7 @@ def test_flush_exception_drains_the_batch_and_keeps_the_printer_usable(monkeypat
     def throw_once(*args, **kwargs):
         raise RuntimeError("terminal failure")
 
-    monkeypatch.setattr("minacode.render.print_formatted_text", throw_once)
+    monkeypatch.setattr("wizolt.render.print_formatted_text", throw_once)
     ui = UiPrinter(print)
     ui.color = True
     ui._scrollback_parts = [FormattedText([("", "queued line\n")])]
@@ -367,7 +367,7 @@ def test_flush_exception_drains_the_batch_and_keeps_the_printer_usable(monkeypat
 
     # The printer keeps working: the next emit falls through to a direct print.
     printed = []
-    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    monkeypatch.setattr("wizolt.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
     ui.emit("after failure\n")
     assert len(printed) == 1
     assert fragment_text(printed[0][0]) == "after failure\n"

@@ -9,13 +9,13 @@ from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-import minacode.tui.app as tui_module
-from minacode.cli import CommandLoop
-from minacode.config import (
+import wizolt.tui.app as tui_module
+from wizolt.cli import CommandLoop
+from wizolt.config import (
     Config,
 )
-from minacode.engine import Agent
-from minacode.session import Session, bootstrap_features
+from wizolt.engine import Agent
+from wizolt.session import Session, bootstrap_features
 
 
 def session(tmp_path):

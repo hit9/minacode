@@ -3,20 +3,20 @@
 import pytest
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
-from minacode.prompts import WORKER_PROMPT
-from minacode.tools import tooloutput
+from wizolt.prompts import WORKER_PROMPT
+from wizolt.tools import tooloutput
 
 
 def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole, oneline
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import LogBlock, LogRole, oneline
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["default"].model = "worker-model-x"
     order = "Rewrite the worker handoff plan to cover the start marker, then check it. " * 8
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     _delegate_call(parent, runner, action="send", order=order)
@@ -31,15 +31,15 @@ def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
 
 
 def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
-    from minacode.base import oneline
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import oneline
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["default"].model = "worker-model-x"
     order = "Rewrite the worker handoff plan to cover the start rule, then check it. " * 8
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
@@ -52,15 +52,15 @@ def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
 
 
 def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch):
-    from minacode.base import oneline
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import oneline
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["default"].model = "worker-model-x"
     order = "Rewrite the worker handoff plan to cover the start rule, then check it. " * 8
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
@@ -73,15 +73,15 @@ def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch)
 
 
 def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole, oneline
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import LogBlock, LogRole, oneline
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["default"].model = "worker-model-x"
     order = "Rewrite the worker handoff plan to cover the start marker, then check it. " * 8
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     _delegate_call(parent, runner, action="send", order=order, title="fix /status blank line")
@@ -96,15 +96,15 @@ def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
 
 
 def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, monkeypatch):
-    from minacode.base import oneline
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import oneline
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["default"].model = "worker-model-x"
     order = "Rewrite the worker handoff plan to cover the start rule, then check it. " * 8
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
@@ -116,8 +116,8 @@ def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, mon
 
 
 def test_delegate_rejects_empty_title(tmp_path):
-    from minacode.base import ToolError
-    from minacode.tools.delegate import DelegateTool
+    from wizolt.base import ToolError
+    from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     with pytest.raises(ToolError, match="non-empty string"):
@@ -127,7 +127,7 @@ def test_delegate_rejects_empty_title(tmp_path):
 def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="fix the parser", language="Chinese")
 
@@ -137,7 +137,7 @@ def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, m
 
 
 def test_delegate_send_rejects_a_blank_language(tmp_path):
-    from minacode.base import ToolError
+    from wizolt.base import ToolError
 
     parent = _delegate_session(tmp_path)
     runner = _delegate_runner(parent)
@@ -146,12 +146,12 @@ def test_delegate_send_rejects_a_blank_language(tmp_path):
 
 
 def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch):
-    from minacode.context import ContextManager
+    from wizolt.context import ContextManager
 
     parent = _delegate_session(tmp_path)
     parent.settings.language = "Chinese"
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     _delegate_call(parent, runner, action="send", order="fix the parser")
 
@@ -165,7 +165,7 @@ def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch
 
 
 def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, monkeypatch):
-    from minacode.engine import Agent
+    from wizolt.engine import Agent
 
     parent = _delegate_session(tmp_path)
     runner = _delegate_runner(parent)
@@ -188,7 +188,7 @@ def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, monkeyp
 
 
 def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_path, monkeypatch):
-    from minacode.engine import Agent
+    from wizolt.engine import Agent
 
     parent = _delegate_session(tmp_path)
     runner = _delegate_runner(parent)
@@ -240,9 +240,9 @@ def test_send_rejects_worker_calls_to_excluded_tools(tmp_path, monkeypatch):
     ToolScript but not Ask/NextHints/Delegate, a hallucinated call to an excluded tool is
     rejected with a tool message instead of blocking on user input, and ViewImage executes
     as an ordinary tool (its failure here is a plain missing-file error)."""
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from wizolt.base import ToolCall
+    from wizolt.context import ContextManager
+    from wizolt.runner import ToolRunner
 
     parent = _delegate_session(tmp_path)
     prompts = []
@@ -262,7 +262,7 @@ def test_send_rejects_worker_calls_to_excluded_tools(tmp_path, monkeypatch):
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = ToolRunner(parent, ContextManager(parent), input_fn=fail_on_user, output_fn=lambda text: None)
     result = _delegate_call(parent, runner, action="send", order="do the thing")
 

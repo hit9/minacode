@@ -2,18 +2,18 @@
 from agent_harness import session as agent_session
 from model_harness import _AnthropicMockClientFactory, _session
 
-from minacode.base import (
+from wizolt.base import (
     PAUSED_TURN_KEY,
     ToolCall,
 )
-from minacode.config import (
+from wizolt.config import (
     ProviderConfig,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.runner import ToolRunner
-from minacode.skill import SkillLibrary
+from wizolt.context import ContextManager
+from wizolt.engine import Agent
+from wizolt.model import ModelClient
+from wizolt.runner import ToolRunner
+from wizolt.skill import SkillLibrary
 
 
 def test_paused_turn_is_reported_and_replays_unchanged(tmp_path, monkeypatch):

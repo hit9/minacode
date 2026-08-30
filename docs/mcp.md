@@ -1,6 +1,6 @@
 # MCP
 
-minacode can connect to [Model Context Protocol](https://modelcontextprotocol.io) servers and
+wizolt can connect to [Model Context Protocol](https://modelcontextprotocol.io) servers and
 call their tools through its `MCP` tool. Servers can be **remote** (HTTP) or **local**
 (stdio), and <span class="marker">nothing about a server reaches the model until you connect
 it</span>.
@@ -49,7 +49,7 @@ want. Ways to connect:
 
 - **`/mcp`** — open the interactive manager and toggle a server on or off.
 
-```{figure} ../snapshots/minacode-mcp-list.png
+```{figure} ../snapshots/wizolt-mcp-list.png
 :alt: MCP server manager listing all configured servers and their connection status
 :width: 600px
 :align: center
@@ -59,7 +59,7 @@ The /mcp interactive server manager.
 - **`@server`** in a message — connect on demand. The connection remains active until you
   disconnect it.
 
-```{figure} ../snapshots/minacode-mcp-mention.png
+```{figure} ../snapshots/wizolt-mcp-mention.png
 :alt: Using @server mention to connect an MCP server on demand
 :width: 600px
 :align: center
@@ -73,7 +73,7 @@ Connecting a server on demand with an @-mention.
 Connecting several servers in one command runs them concurrently; interactive OAuth browser
 flows are serialized so they do not interfere with each other.
 
-Once a server is connected, minacode can use its tools like any other. Tools the server marks
+Once a server is connected, wizolt can use its tools like any other. Tools the server marks
 read-only run without a prompt; anything that may change state asks for
 {ref}`confirmation <built-in-guardrails>` first.
 

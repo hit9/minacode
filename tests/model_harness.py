@@ -15,11 +15,11 @@ from openai import OpenAI
 # all come from that same module. Older SDKs use plain httpx; fall back to it.
 sdk_httpx = getattr(_bc, "httpx2", None) or httpx
 
-from minacode.config import (
+from wizolt.config import (
     Config,
     ProviderConfig,
 )
-from minacode.session import Session, bootstrap_features
+from wizolt.session import Session, bootstrap_features
 
 
 class _MockClientFactory:

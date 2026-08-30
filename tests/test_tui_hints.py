@@ -6,9 +6,9 @@ from types import SimpleNamespace
 from test_tui_app import _StubJob, quick_hint_app
 from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, wait_until
 
-from minacode.cli import hints
-from minacode.cli.hints import HintPicker
-from minacode.tui import TuiApp
+from wizolt.cli import hints
+from wizolt.cli.hints import HintPicker
+from wizolt.tui import TuiApp
 
 
 def test_tui_chat_input_shows_random_idle_placeholder(tmp_path):
@@ -269,7 +269,7 @@ def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
         del callback, in_executor
         return "edited text"
 
-    monkeypatch.setattr("minacode.tui.app.run_in_terminal", edit_in_terminal)
+    monkeypatch.setattr("wizolt.tui.app.run_in_terminal", edit_in_terminal)
     asyncio.run(app._run_input_editor())
 
     assert app.input_buffer.text == "edited text"

@@ -6,15 +6,15 @@ import pytest
 from agent_harness import call, queue, session
 from test_agent_turn import _correction
 
-import minacode.engine as engine_module
-from minacode.base import (
+import wizolt.engine as engine_module
+from wizolt.base import (
     LogBlock,
     MalformedToolCallError,
 )
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
-from minacode.tools import Tool
+from wizolt.engine import Agent
+from wizolt.model import ModelClient
+from wizolt.prompts import LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
+from wizolt.tools import Tool
 
 
 def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):

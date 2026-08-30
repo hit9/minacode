@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 from mcp_harness import mcp_cfg, mcp_tool_info, session
 
-from minacode.config import (
+from wizolt.config import (
     Config,
 )
-from minacode.session import Session, bootstrap_features
+from wizolt.session import Session, bootstrap_features
 
 
 class TestNormalizeResult:
