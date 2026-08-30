@@ -100,6 +100,17 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 }
 .sphinxsidebar h3.site-title a,
 .sphinxsidebar h3.site-title a:visited { color: var(--nc-fg-strong); }
+.sphinxsidebar h3.site-title a {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+.sphinxsidebar h3.site-title img {
+    width: 2.5rem;
+    height: 2.5rem;
+    flex: none;
+    object-fit: contain;
+}
 .sphinxsidebar a:hover {
     color: var(--nc-link);
     text-decoration: underline dotted;

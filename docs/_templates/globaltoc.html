@@ -1,5 +1,10 @@
 {# Site title and global navigation. #}
-<h3 class="site-title"><a href="{{ pathto(root_doc)|e }}">{{ project|e }}</a></h3>
+<h3 class="site-title">
+  <a href="{{ pathto(root_doc)|e }}">
+    <img src="{{ pathto('_static/wizolt-logo.png', 1) }}" alt="" width="40" height="40">
+    <span>{{ project|e }}</span>
+  </a>
+</h3>
 <iframe
   class="github-star"
   src="https://ghbtns.com/github-btn.html?user=hit9&amp;repo=wizolt&amp;type=star&amp;count=True&amp;size=large&amp;v=2"
