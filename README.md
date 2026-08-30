@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/hit9/wizolt/master/docs/_static/wizolt-logo.png" alt="Wizolt logo: a blue hooded terminal mage holding a lightning staff" width="112">
+</p>
+
 <h1 align="center">wizolt</h1>
 
 <p align="center">

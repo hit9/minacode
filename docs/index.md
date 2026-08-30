@@ -1,5 +1,11 @@
 # wizolt
 
+```{image} _static/wizolt-logo.png
+:alt: Wizolt logo: a blue hooded terminal mage holding a lightning staff
+:width: 112px
+:align: center
+```
+
 A terminal coding agent
 
 wizolt works in your terminal: you describe a task, and it reads code, edits files, runs
