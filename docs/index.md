@@ -1,6 +1,17 @@
 # wizolt
 
-A terminal coding agent
+<div class="home-tagline">
+  <p>A terminal coding agent</p>
+  <iframe
+    class="github-star"
+    src="https://ghbtns.com/github-btn.html?user=hit9&amp;repo=wizolt&amp;type=star&amp;count=True&amp;size=large&amp;v=2"
+    title="Star hit9/wizolt on GitHub"
+    width="170"
+    height="30"
+    scrolling="no"
+    frameborder="0"
+  ></iframe>
+</div>
 
 wizolt works in your terminal: you describe a task, and it reads code, edits files, runs
 commands, and reports back. It keeps <span class="marker">stable prompt prefixes</span> so

@@ -40,11 +40,24 @@ h3 { font-size: 1.35rem; margin-top: 1.75rem; }
 /* The project name belongs to the sidebar; keep the index title for Sphinx
    metadata while showing only the subtitle in the content column. */
 .body section#wizolt > h1 { display: none; }
-.body section#wizolt > p:first-of-type {
+.body .home-tagline {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem 1rem;
     margin-top: 2.4rem;
+}
+.body .home-tagline p {
+    margin: 0;
     font-size: 2rem;
     font-weight: 400;
     line-height: 1.2;
+}
+.body .home-tagline .github-star {
+    display: block;
+    flex: none;
+    margin-left: auto;
+    border: 0;
 }
 
 /* Links: a muted blue at rest, a quiet underline on hover. The underline is
@@ -119,11 +132,6 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
     text-decoration: underline dotted;
     text-underline-offset: 3px;
     text-decoration-color: rgba(194, 216, 246, 0.4);
-}
-
-.sphinxsidebar .github-star {
-    display: block;
-    margin: 0 0 1.25rem;
 }
 
 /* Separate documentation pages from sections within the current page. */
