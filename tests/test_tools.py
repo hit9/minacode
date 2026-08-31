@@ -20,7 +20,7 @@ from wizolt.context import ContextManager
 from wizolt.render import UiPrinter
 from wizolt.runner import ToolRunner
 from wizolt.session import HistorySegment, Session
-from wizolt.source import render_tool_output
+from wizolt.source import range_lines, render_tool_output
 from wizolt.tools import (
     TOOL_REGISTRY,
     TOOLS,
@@ -727,3 +727,83 @@ def test_mixed_batch_whitelisted_tool_runs_and_excluded_rejected(tmp_path):
     assert "hello" in contents["r1"]
     assert "Search is not available in this session" in contents["s1"]
     assert "Search is not available in this session" in contents["s2"]
+
+
+def test_search_shares_one_view_per_file_across_queries(tmp_path, monkeypatch):
+    """A batched Search unions every query's visible rows for one path into one view, so two
+    queries hitting the same file cannot hand the model two ids for the same snapshot -- or two
+    renderings of it that disagree. The Python backend and ripgrep must agree on that shape."""
+    (tmp_path / "a.py").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("alpha\n", encoding="utf-8")
+
+    for rg_available in (True, False):
+        s = session(tmp_path)
+        if not rg_available:
+            monkeypatch.setattr(shutil, "which", lambda name: None)
+        out = SearchTool(s, [{"pattern": "alpha", "path": "."}, {"pattern": "gamma", "path": "."}]).call()
+        keys = s.register_source_drafts(list(out.drafts))
+        text = render_tool_output(out, keys)
+
+        # Three blocks (a.py twice, b.py once) but two views: a.py's blocks share one id.
+        assert len(keys) == 3
+        assert len(set(keys)) == 2
+        assert len(s.source_views) == 2
+        a_view = next(v for v in s.source_views.values() if v.display_path == "a.py")
+        assert [line for span in a_view.spans for line in span.lines] == ["alpha\n", "gamma\n"]
+        assert text.count(f'source="{a_view.key}"') == 2
+        monkeypatch.undo()
+
+
+def test_search_rows_come_from_the_file_not_the_candidate_finder(tmp_path, monkeypatch):
+    """ripgrep only nominates (path, line) candidates. If the file changes before the rows are
+    captured, the view must show the file as it is now -- pairing a view id with the text rg
+    printed earlier would let an Edit validate against content that no longer exists."""
+    path = tmp_path / "a.py"
+    path.write_text("needle\nsecond\n", encoding="utf-8")
+    s = session(tmp_path)
+    tool = SearchTool(s, [{"pattern": "needle", "path": "."}])
+    original = SearchTool.find_candidates
+
+    def stale(self, request):
+        rows = original(self, request)
+        path.write_text("header\nneedle\nsecond\n", encoding="utf-8")  # shifts every candidate line
+        return rows
+
+    monkeypatch.setattr(SearchTool, "find_candidates", stale)
+    out = tool.call()
+    key = s.register_source_drafts(list(out.drafts))[0]
+    view_obj = s.get_source_view(key)
+
+    assert view_obj.total_lines == 3
+    assert [(span.start, span.lines) for span in view_obj.spans] == [(2, ("needle\n",))]
+    assert "2 | needle" in out.retained_text
+
+
+def test_read_merges_one_view_per_path_across_request_items(tmp_path):
+    """A batched Read emits one block and one view per file, not one per requested range. Ranges
+    for the same path are unioned, sorted, and merged when they overlap or touch, so the `lines`
+    label the model sees is exactly the set of spans the view can validate an edit against."""
+    (tmp_path / "a.py").write_text("".join(f"a{index}\n" for index in range(1, 11)), encoding="utf-8")
+    (tmp_path / "b.py").write_text("b1\n", encoding="utf-8")
+    s = session(tmp_path)
+
+    out = ReadTool(
+        s,
+        [
+            {"path": "a.py", "ranges": [[5, 6]]},
+            {"path": "b.py", "ranges": [[1, 1]]},
+            {"path": "a.py", "ranges": [[1, 2], [3, 4], [9, 10]]},  # touching 1:2+3:4, disjoint 9:10
+        ],
+    ).call()
+    keys = s.register_source_drafts(list(out.drafts))
+
+    assert len(keys) == 2
+    a_view = s.get_source_view(keys[0])
+    assert [(span.start, span.end) for span in a_view.spans] == [(1, 6), (9, 10)]
+    assert 'lines="1:6,9:10"' in out.retained_text
+    assert out.retained_text.count("<Read ") == 2
+
+    # A range inside a span resolves; one crossing the gap between spans is refused as unseen.
+    assert range_lines(a_view, 5, 6) == ("a5\n", "a6\n")
+    with pytest.raises(ToolError, match="source range unseen"):
+        range_lines(a_view, 6, 9)

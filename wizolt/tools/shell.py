@@ -48,6 +48,7 @@ class BashTool(Tool):
         "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Compose several steps into one "
         "invocation with `&&`, `||`, `|`, and `;` rather than issuing separate calls. Avoid unbounded output; "
         "limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks. "
+        "Its output is never a source view: after locating code with `rg` or `cat`, Read, Search, or InspectCode the file before Edit. "
         "Never use it to read or print secrets (private keys, credentials, tokens, `.env`)."
     )
     MUTATES = True

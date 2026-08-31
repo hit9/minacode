@@ -156,3 +156,63 @@ def test_batch_stale_range_does_not_guess_after_prior_shift(tmp_path, monkeypatc
     assert path.read_text(encoding="utf-8") == "x\na\nB\nc\n"
     assert len(s.tool_errors) == 1
     assert "were replaced or deleted by an earlier edit in this batch" in s.tool_errors[0].error
+
+
+def test_deletion_fresh_view_shows_the_seam_it_left(tmp_path, monkeypatch):
+    # A deletion leaves no changed line to report, so a hunk-only view would come back empty and
+    # force a Read just to keep working on the file the edit only just changed. The fresh view
+    # covers the seam instead, and is a real view: the next edit can name it.
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("cut", "Edit", ["code.txt", key, [{"op": "delete", "start": 2, "end": 3}]])])
+
+    fresh = s.get_source_view("view.2")
+    assert fresh.total_lines == 2
+    assert fresh.spans and [line for span in fresh.spans for line in span.lines] == ["a\n", "d\n"]
+
+    runner.run([ToolCall("next", "Edit", ["code.txt", "view.2", [{"op": "replace", "start": 2, "end": 2, "content": "D\n"}]])])
+    assert path.read_text(encoding="utf-8") == "a\nD\n"
+    assert s.tool_errors == []
+
+
+def test_deleting_the_whole_file_leaves_an_empty_file_view(tmp_path, monkeypatch):
+    # The one legal shape for a view with no spans: an empty file, whose view carries its single
+    # legal insertion boundary at line 0.
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    (tmp_path / "code.txt").write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("cut", "Edit", ["code.txt", key, [{"op": "delete", "start": 1, "end": 2}]])])
+
+    fresh = s.get_source_view("view.2")
+    assert (fresh.total_lines, fresh.spans) == (0, ())
+    runner.run([ToolCall("fill", "Edit", ["code.txt", "view.2", [{"op": "insert_after", "line": 0, "content": "new\n"}]])])
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "new\n"
+    assert s.tool_errors == []
+
+
+def test_empty_file_insertion_rejects_once_another_writer_filled_it(tmp_path, monkeypatch):
+    # An empty-file view carries one legal boundary and no content to validate, so it is the one
+    # target that could be applied blind. It stays valid only while the file is still empty.
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "empty.txt"
+    path.write_text("", encoding="utf-8")
+    key = view(s, "empty.txt")
+    path.write_text("written elsewhere\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("fill", "Edit", ["empty.txt", key, [{"op": "insert_after", "line": 0, "content": "mine\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "written elsewhere\n"
+    assert s.tool_errors and "the empty file now has content" in s.tool_errors[0].error

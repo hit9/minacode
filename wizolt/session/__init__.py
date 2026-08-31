@@ -470,14 +470,16 @@ class Session:
 
         Only the runner's main thread calls this, in model tool-call order, so keys are
         deterministic regardless of parallel completion order. A key is never reused: the counter
-        is monotonic and re-registering an existing key is refused. Identical drafts (same path,
-        same span text) share one key, so one Search call with several queries pointing at the
-        same file resolves to a single view id.
+        is monotonic and re-registering an existing key is refused. Identical drafts within one
+        call share one key, so one Search call with several queries pointing at the same file
+        resolves to a single view id. Drafts from earlier calls are never reused: they were
+        captured from a different read, and their `total_lines` no longer describes what this call
+        showed the model.
         """
         keys: list[str] = []
-        existing = {self._draft_identity(key, view): key for key, view in self.source_views.items()}
+        existing: dict[tuple[object, ...], str] = {}
         for draft in drafts:
-            identity = self._draft_identity(draft.path, draft)
+            identity = self._draft_identity(draft)
             if identity in existing:
                 keys.append(existing[identity])
                 continue
@@ -500,8 +502,8 @@ class Session:
         return keys
 
     @staticmethod
-    def _draft_identity(path: str, draft: SourceViewDraft | SourceView) -> tuple[object, ...]:
-        return (path, tuple((span.start, span.lines) for span in draft.spans))
+    def _draft_identity(draft: SourceViewDraft) -> tuple[object, ...]:
+        return (draft.path, draft.total_lines, tuple((span.start, span.lines) for span in draft.spans))
 
     def get_source_view(self, key: str) -> SourceView | None:
         """The live view named by `key`, or None when it is unknown or expired."""

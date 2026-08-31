@@ -21,21 +21,29 @@ def project_output(output: ToolOutput, *, max_tokens: int, estimate: Callable[[s
     if estimate(render_tool_output(output, [None] * len(output.drafts))) <= max_tokens:
         return output
     literal = sum(estimate(part) if isinstance(part, str) else 0 for part in output.parts)
-    block_budget = max_tokens - literal
-    if block_budget <= 0:
+    remaining = max_tokens - literal
+    if remaining <= 0:
         # Literal parts alone exhaust the budget; keep the head of each block as evidence.
-        block_budget = max(1, max_tokens // 2)
+        remaining = max(1, max_tokens // 2)
+    # The budget covers the whole result, not each block: a batched Read or a Search spanning
+    # several files would otherwise emit one full budget per file. Each block takes an equal share
+    # of what is left, and a block that comes in under its share returns the rest to the pool.
+    pending = sum(1 for part in output.parts if isinstance(part, SourceBlock))
     blocks: list[str | SourceBlock] = []
     for part in output.parts:
         if not isinstance(part, SourceBlock):
             blocks.append(part)
             continue
+        block_budget = max(1, remaining // pending)
+        pending -= 1
         size = estimate(render_source_block(part))
         if size <= block_budget:
             blocks.append(part)
+            remaining = max(0, remaining - size)
             continue
         clipped = _clip_block(part, block_budget, estimate)
         clipped_size = estimate(render_source_block(clipped))
+        remaining = max(0, remaining - clipped_size)
         blocks.append(
             _replace_block(
                 clipped,

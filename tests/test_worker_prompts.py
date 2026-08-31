@@ -201,4 +201,4 @@ def test_system_prompt_stable_across_refactors():
 
     from wizolt.prompts import SYSTEM_PROMPT
 
-    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "7f0e371109c83fb10b54551d58ce1268135f602d58284c70a4238305e5526a06"
+    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "7cd0e1493ddd5a486a7b2bd71f8c6d08fecfa92e189bcf22da8cb4660ead6ad8"

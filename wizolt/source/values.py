@@ -57,10 +57,6 @@ class SourceSpan:
         """1-based inclusive end line."""
         return self.start + len(self.lines) - 1
 
-    def normalized(self) -> SourceSpan:
-        """Self, used where a value must be a normalized span."""
-        return self
-
 
 @dataclass(frozen=True)
 class SourceViewDraft:

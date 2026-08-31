@@ -30,8 +30,9 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 
     `view.12` is that file snapshot's id; `684` is the one-based line number. Line numbers and
     ranges include both ends, matching what `grep -n`, your editor, tracebacks, and diffs show, so
-    `Read`, `Search`, and `InspectCode` all agree on which line is which. Only about the
-    requested rows are kept in the model's context; the rest stays available by id.
+    `Read`, `Search`, and `InspectCode` all agree on which line is which. A long result is
+    shortened to its head and tail; the rows left out are not part of the view, and the full
+    output stays available under its `tr.N` id for `Recall`.
 * - **`ViewImage`**
   - Opens one local PNG, JPEG, WebP, or single-frame GIF. The active model reads it when it
     accepts images; on a text-only route a configured [vision model](configuration.md#vision-model)
@@ -52,6 +53,12 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     exists nearby, the edit relocates to it and reports the move. A successful edit returns a fresh
     source view for the region it changed, so consecutive edits to the same file keep going without
     re-reading it first. Successful edits appear in [`/diff`](usage.md#reviewing-changes).
+
+    Two costs come with this. A source view lives only as long as the conversation that mentions
+    it: once compaction drops the message it came from, the id is gone and the agent has to read
+    the file again. And output from `Bash` is never a source view, however it was produced, so
+    code found with `rg` or `cat` is read once more through `Read`, `Search`, or `InspectCode`
+    before it can be edited.
 
     :::{figure} ../snapshots/wizolt-edit-preview.png
     :alt: An Edit confirmation previewing the proposed diff

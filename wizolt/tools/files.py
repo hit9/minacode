@@ -259,7 +259,6 @@ class EditApplyResult:
     content: str
     changes: list[tuple[int, int, int, int]]
     replacements: list[tuple[int, int, list[str]]]
-    replace_all: bool = False
     relocations: list[str] = field(default_factory=list)  # "relocated ... -> ..." reports
 
 
@@ -367,14 +366,14 @@ class EditTool(Tool):
             "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after"},
             "start": {"type": "integer", "minimum": 1, "description": "First line of an inclusive 1-based replace/delete range; must be visible in the named source view"},
             "end": {"type": "integer", "minimum": 1, "description": "Last line of an inclusive 1-based replace/delete range; the line at end is itself replaced or deleted"},
-            "line": {"type": "integer", "minimum": 0, "description": "1-based anchor line for insert_before/insert_after; must be visible in the named source view. Line 0 is accepted only for insert_after into an existing empty file whose view explicitly represents it"},
+            "line": {"type": "integer", "minimum": 0, "description": "1-based line to insert beside for insert_before/insert_after; must be visible in the named source view. Line 0 is accepted only for insert_after into an existing empty file whose view explicitly represents it"},
             "content": {
                 "type": "string",
                 "description": (
                     "New text for create/replace/insert_before/insert_after. For replace: only the final replacement "
                     "text for the inclusive start..end range; lines before start and after end are preserved automatically "
                     "and must not be copied into content merely as context. For insert_before/insert_after: only the new "
-                    "text; the anchor line is preserved automatically, so do not copy it merely to keep it. An explicit "
+                    "text; the line you insert beside is preserved automatically, so do not copy it merely to keep it. An explicit "
                     "empty string deletes the matched range (replace). For create: the whole file."
                 ),
             },
@@ -414,23 +413,37 @@ class EditTool(Tool):
             original, created = "", True
         result = self.apply(original, edits, view)
         if result.content == original and not created:
-            raise ToolError(self.no_changes_error(original, result), recovery=self.no_op_recovery(path, view, original, result))
+            raise ToolError(self.no_changes_error(original, result), recovery=self.no_op_recovery(path, view, original, result.replacements))
         if created:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        return self.write_result(path, original, result.content, result.changes, self.warnings_block(original, result.content, edits), result.relocations)
+
+    def write_result(
+        self,
+        path: str,
+        before: str,
+        after: str,
+        changes: list[tuple[int, int, int, int]],
+        warnings: str,
+        relocations: list[str],
+    ) -> ToolOutput:
+        """Write `after` and render the Edit envelope: diff, warnings, relocations, fresh view.
+
+        The batch plan writes through here too, so a single Edit and a planned one report a change
+        the same way and the fresh view is minted in exactly one place.
+        """
         with open(path, "w", encoding="utf-8") as file:
-            file.write(result.content)
+            file.write(after)
         self.last_path = self.session.relpath(path)
-        self.last_diff = self.diff(path, original, result.content)
-        self.last_before = original
-        self.last_after = result.content
-        lines = split_lines(result.content)
+        self.last_diff = self.diff(path, before, after)
+        self.last_before = before
+        self.last_after = after
         parts: list[str | SourceBlock] = [f"<Edit path={json.dumps(self.last_path)}>", self.last_diff.rstrip()]
-        block = self.warnings_block(original, result.content, edits)
-        if block:
-            parts.append(block)
-        if result.relocations:
-            parts.append("\n".join(result.relocations))
-        parts.append(self.fresh_block(path, lines, result.changes))
+        if warnings:
+            parts.append(warnings)
+        if relocations:
+            parts.append("\n".join(relocations))
+        parts.append(self.fresh_block(path, split_lines(after), changes))
         parts.append("</Edit>")
         retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
         return ToolOutput(retained, tuple(parts))
@@ -609,17 +622,9 @@ class EditTool(Tool):
             try:
                 if edit.op in {"replace", "delete"}:
                     target = range_lines(view, edit.start, edit.end)
-                    index = edit.start - 1
-                    found = index
-                    if not same_position(lines, index, target):
-                        relocated = relocate_target(lines, index, target)
-                        if relocated is None:
-                            raise source_error(
-                                SOURCE_TARGET_CHANGED,
-                                f"exact target for {view.key} lines {edit.start}:{edit.end} differs and cannot relocate; use the fresh view below or Read again",
-                            )
-                        found = relocated
-                        relocations.append(f"relocated {view.key} lines {edit.start}:{edit.end} -> current lines {found + 1}:{found + len(target)}")
+                    found, report = self.locate_range(lines, view, edit, edit.start - 1, target)
+                    if report:
+                        relocations.append(report)
                     replacement = [] if edit.op == "delete" else self.content_lines(edit.content, found + len(target) < len(lines))
                     replacements.append((found, found + len(target), replacement))
                 else:
@@ -630,26 +635,57 @@ class EditTool(Tool):
                             raise source_error(SOURCE_TARGET_CHANGED, "the empty file now has content; Read again for a current view")
                         found = 0
                     else:
-                        found = index
-                        if not same_position(lines, index - boundary, witness):
-                            relocated = relocate_witness(lines, index, witness, boundary)
-                            if relocated is None:
-                                raise source_error(
-                                    SOURCE_TARGET_CHANGED,
-                                    f"boundary at {view.key} line {edit.line} differs and cannot relocate; use the fresh view below or Read again",
-                                )
-                            found = relocated
-                            relocations.append(self._relocation_report(view, edit, found))
-                    replacement = self.content_lines(edit.content, found < len(lines))
-                    replacements.append((found, found, replacement))
+                        found, report = self.locate_boundary(lines, view, edit, index, boundary, witness)
+                        if report:
+                            relocations.append(report)
+                    replacements.append(self.insertion_splice(lines, found, self.content_lines(edit.content, found < len(lines))))
             except ToolError as error:
                 raise self._with_recovery(error, view, lines, edit) from error
         return self.splice_lines(lines, replacements, relocations)
 
-    def _relocation_report(self, view: SourceView, edit: Edit, found: int) -> str:
+    @staticmethod
+    def locate_range(lines: list[str], view: SourceView, edit: Edit, index: int, target: tuple[str, ...]) -> tuple[int, str]:
+        """Resolve a replace/delete target: exact match at `index`, else exact bounded relocation.
+
+        Returns the 0-based start and a relocation report ("" when the target was where it was
+        expected). Both the single-call and the batch path go through here, so a target that
+        merely drifted is relocated under one set of rules and never resolved by position alone.
+        """
+        if index >= 0 and same_position(lines, index, target):
+            return index, ""
+        relocated = relocate_target(lines, max(index, 0), target)
+        if relocated is None:
+            raise source_error(
+                SOURCE_TARGET_CHANGED,
+                f"exact target for {view.key} lines {edit.start}:{edit.end} differs and cannot relocate; use the fresh view below or Read again",
+            )
+        return relocated, f"relocated {view.key} lines {edit.start}:{edit.end} -> current lines {relocated + 1}:{relocated + len(target)}"
+
+    @staticmethod
+    def locate_boundary(lines: list[str], view: SourceView, edit: Edit, index: int, boundary: int, witness: tuple[str, ...]) -> tuple[int, str]:
+        """Resolve an insertion boundary: exact witness at `index`, else exact bounded relocation."""
+        if index >= boundary and same_position(lines, index - boundary, witness):
+            return index, ""
+        relocated = relocate_witness(lines, index, witness, boundary)
+        if relocated is None:
+            raise source_error(
+                SOURCE_TARGET_CHANGED,
+                f"boundary at {view.key} line {edit.line} differs and cannot relocate; use the fresh view below or Read again",
+            )
         if edit.op == "insert_after":
-            return f"relocated {view.key} line {edit.line} -> current line {found}"
-        return f"relocated {view.key} line {edit.line} -> current line {found + 1}"
+            return relocated, f"relocated {view.key} line {edit.line} -> current line {relocated}"
+        return relocated, f"relocated {view.key} line {edit.line} -> current line {relocated + 1}"
+
+    @staticmethod
+    def insertion_splice(lines: list[str], at: int, content: list[str]) -> tuple[int, int, list[str]]:
+        """The splice for inserting `content` at 0-based `at`.
+
+        Appending past a final line that has no newline would join the two into one line, so that
+        line is terminated as part of the same splice rather than silently merged with the
+        insertion."""
+        if at == len(lines) and lines and not lines[-1].endswith("\n"):
+            return (at - 1, at, [lines[-1] + "\n", *content])
+        return (at, at, content)
 
     def _with_recovery(self, error: ToolError, view: SourceView, lines: list[str], edit: Edit) -> ToolError:
         """Attach a fresh bounded view of the current file around the requested coordinates."""
@@ -686,13 +722,11 @@ class EditTool(Tool):
         return EditApplyResult("".join(new_lines), changes, replacements, relocations=relocations or [])
 
     def no_changes_error(self, original: str, result: EditApplyResult) -> str:
-        return self.no_changes_error_from_lines(split_lines(original), result.replacements, result.replace_all)
+        return self.no_changes_error_from_lines(split_lines(original), result.replacements)
 
     @classmethod
-    def no_changes_error_from_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], replace_all: bool) -> str:
+    def no_changes_error_from_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]]) -> str:
         prefix = "edit produced no changes"
-        if replace_all:
-            return prefix + "; replace_all result is identical to current file"
         if not replacements:
             return prefix
         matching = [(start, end) for start, end, replacement in replacements if lines[start:end] == replacement]
@@ -700,10 +734,10 @@ class EditTool(Tool):
             return prefix + "; edits cancel out; check requested content"
         return prefix + "; requested content already matches target range"
 
-    def no_op_recovery(self, path: str, view: SourceView | None, original: str, result: EditApplyResult) -> ToolOutput:
+    def no_op_recovery(self, path: str, view: SourceView | None, original: str, replacements: list[tuple[int, int, list[str]]]) -> ToolOutput:
         """The no-op failure's fresh view: the current target ranges as a new view."""
         lines = split_lines(original)
-        ranges = [(start + 1, end) for start, end, replacement in result.replacements if lines[start:end] == replacement]
+        ranges = [(start + 1, end) for start, end, replacement in replacements if lines[start:end] == replacement]
         spans = spans_from_lines(lines, ranges)
         display = view.display_path if view else self.session.relpath(path)
         draft = SourceViewDraft(view.path if view else path, display, len(lines), spans, EDIT)
@@ -715,9 +749,10 @@ class EditTool(Tool):
         context lines on either side, as one new view the model can continue editing from."""
         ranges = []
         for clear_start, clear_end, start, end in changes:
-            if end <= start:
-                continue
-            ranges.append((max(1, start - 2), min(len(lines), end + 3)))
+            # A deletion has no changed line left to show, so the view covers the seam it left
+            # behind: without it the block would be empty and the model would have to Read again
+            # just to keep editing the file it only just changed.
+            ranges.append((max(1, start - 2), min(len(lines), max(end, start) + 3)))
         spans = spans_from_lines(lines, ranges)
         draft = SourceViewDraft(path, self.session.relpath(path), len(lines), spans, EDIT)
         return SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))

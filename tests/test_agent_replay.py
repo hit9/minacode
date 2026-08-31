@@ -173,7 +173,7 @@ def test_parallel_safe_classification(tmp_path):
     assert not safe("Bash", ["git status --short"])  # Bash streams live output, so it stays serial
     assert not safe("Bash", ["git commit -m x"])  # mutating command
     assert not safe("Bash", ["echo hi"])  # live-output command
-    assert not safe("Edit", ["f.txt", [{"op": "insert_after", "start": "0:a", "content": "x"}]])
+    assert not safe("Edit", ["f.txt", "view.1", [{"op": "insert_after", "line": 1, "content": "x"}]])
     assert not safe("Ask", [{"question": "q?"}])  # interactive
     assert not safe("NextHints", [{"inputs": ["x"]}])  # writes session state; serial so model order wins
     assert not safe("Nope", [])  # unknown tool
@@ -209,6 +209,33 @@ def test_parallel_readonly_preserves_request_order(tmp_path):
 
     assert [m["tool_call_id"] for m in messages] == [f"r{i}" for i in range(5)]
     assert active["max"] >= 2  # actually ran concurrently
+
+def test_parallel_view_ids_follow_model_call_order(tmp_path):
+    """View ids are allocated on the main thread in the order the model issued the calls, so the
+    slowest read cannot claim a lower id than a call the model made after it."""
+    for i in range(3):
+        (tmp_path / f"f{i}.txt").write_text(f"content-{i}\n")
+    s, runner = _runner(tmp_path)
+    s.settings.max_parallel_tools = 4
+    calls = [ToolCall(id=f"r{i}", name="Read", args=[{"path": f"f{i}.txt", "ranges": [[0, 0]]}]) for i in range(3)]
+
+    original = ReadTool.call
+
+    def traced(self):
+        # Finish in the exact reverse of request order.
+        time.sleep(0.05 * (2 - int(self.args[0]["path"][1])))
+        return original(self)
+
+    ReadTool.call = traced
+    try:
+        messages = runner.run(calls)
+    finally:
+        ReadTool.call = original
+
+    assert [m["tool_call_id"] for m in messages] == ["r0", "r1", "r2"]
+    assert [(view.key, view.display_path) for view in s.source_views.values()] == [("view.1", "f0.txt"), ("view.2", "f1.txt"), ("view.3", "f2.txt")]
+    for index, message in enumerate(messages):
+        assert f'source="view.{index + 1}"' in message["content"]
 
 def test_parallel_disabled_runs_serial(tmp_path):
     for i in range(3):

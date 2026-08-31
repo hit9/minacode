@@ -106,10 +106,11 @@ def test_tool_runner_batch_edit_accepts_drifted_view(tmp_path, monkeypatch):
     assert s.tool_errors == []
 
 
-def test_tool_runner_rejects_view_drifted_before_batch(tmp_path, monkeypatch):
-    # An external rewrite between the read and the batch renumbers the file underneath the view; the
-    # plan resolves by (view, line) origin against the new content, sees a changed target, and
-    # refuses rather than relocating against an untrusted position.
+def test_tool_runner_relocates_view_drifted_before_batch(tmp_path, monkeypatch):
+    # An external rewrite between the read and the batch renumbers the file underneath the view.
+    # Line origins only describe shifts this batch made, so they cannot resolve this; the planned
+    # index is a starting point and the exact target, still unique nearby, relocates and says so.
+    # This is the ordinary stale-read case, and it runs through the plan like every other Edit.
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
@@ -121,7 +122,27 @@ def test_tool_runner_rejects_view_drifted_before_batch(tmp_path, monkeypatch):
 
     runner.run([ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "B\n"}]])])
 
-    assert path.read_text(encoding="utf-8") == "x\nINS\na\nb\nc\n"
+    assert path.read_text(encoding="utf-8") == "x\nINS\na\nB\nc\n"
+    assert s.tool_errors == []
+    record = next(record for record in s.tool_records if record.name == "Edit")
+    assert f"relocated {key} lines 3:3 -> current lines 4:4" in record.output
+
+
+def test_tool_runner_refuses_changed_target_drifted_before_batch(tmp_path, monkeypatch):
+    # Same shape, but the target line itself was rewritten: nothing in the window matches it
+    # exactly, so the call is refused and the file is left alone.
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("x\na\nb\nc\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    path.write_text("x\nINS\na\nCHANGED\nc\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "B\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "x\nINS\na\nCHANGED\nc\n"
     assert s.tool_errors and "source target changed" in s.tool_errors[0].error
 
 
@@ -304,3 +325,47 @@ def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_pa
     assert "| c" in read_record.output
     assert "| C" not in read_record.output
     assert path.read_text(encoding="utf-8") == "a\nx\nb\nC\n"
+
+
+def test_inserting_past_an_unterminated_last_line_does_not_join_it(tmp_path, monkeypatch):
+    # A file whose last line has no newline: appending after it must not fuse the new text onto
+    # that line. The splice terminates the line it appends behind, so the insertion stays a line.
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb", encoding="utf-8")
+    key = view(s, "code.txt")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("append", "Edit", ["code.txt", key, [{"op": "insert_after", "line": 2, "content": "c\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
+    assert s.tool_errors == []
+
+
+def test_batch_separates_a_consumed_target_from_a_shifted_one(tmp_path, monkeypatch):
+    # Two outcomes that look alike from the view's side and must not be conflated. The line an
+    # earlier edit in this batch deleted is refused as consumed -- relocation must not go hunting
+    # for a copy of it elsewhere. A later line the same edit merely shifted is found by its origin
+    # and applied, with no relocation reported because nothing needed relocating.
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nb\n", encoding="utf-8")  # line 2 is duplicated at line 4
+    key = view(s, "code.txt")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            ToolCall("cut", "Edit", ["code.txt", key, [{"op": "delete", "start": 2, "end": 2}]]),
+            ToolCall("gone", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]),
+            ToolCall("shifted", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "C\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nC\nb\n"
+    assert len(s.tool_errors) == 1
+    assert s.tool_errors[0].error.startswith("ToolError: source target consumed view.1 lines 2:2 were replaced or deleted by an earlier edit in this batch")
+    assert all("relocated" not in record.output for record in s.tool_records if record.name == "Edit")

@@ -323,7 +323,7 @@ class ToolRunner:
                 raise ToolError(call.error)
             output = tool.call()
         except ToolError as error:
-            return "reject", f"ToolError: {error}", display, time.monotonic() - started, getattr(error, "recovery", None)
+            return "reject", f"ToolError: {error}", display, time.monotonic() - started, error.recovery
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
             return "error", f"ToolError: {error}", display, time.monotonic() - started, None
         return "ok", output, display, time.monotonic() - started, None
@@ -335,7 +335,9 @@ class ToolRunner:
             return self.finish(call, output, elapsed=elapsed, d=d)
         if kind == "reject":
             return self.reject(call, str(output), d=d, recovery=recovery)
-        return self.finish(call, output, failed=True, elapsed=elapsed, d=d, recovery=recovery)
+        # An unexpected exception carries no structured recovery; only ToolError does, and that is
+        # the "reject" branch above.
+        return self.finish(call, output, failed=True, elapsed=elapsed, d=d)
 
     def edit_segment_end(self, calls: list[ToolCall], start: int) -> int:
         end = start
@@ -384,8 +386,7 @@ class ToolRunner:
                 # A batch plan failure carries (message, recovery); attach the recovery so the
                 # rendered failure still hands the model a fresh view.
                 message, recovery = plan_error if isinstance(plan_error, tuple) else (plan_error, None)
-                error = ToolError(message, recovery=recovery) if recovery is not None else ToolError(message)
-                raise error
+                raise ToolError(message, recovery=recovery)
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo and not tool.always_confirms():
                 d.auto = True
@@ -445,7 +446,7 @@ class ToolRunner:
                 d.vision_entry = tool.vision_entry_label
             observation = tool.model_observation()
         except ToolError as error:
-            return "failed", self.reject(call, f"ToolError: {error}", d=d, recovery=getattr(error, "recovery", None)), None
+            return "failed", self.reject(call, f"ToolError: {error}", d=d, recovery=error.recovery), None
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
             return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d), None
         return "ok", self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d), observation
@@ -482,7 +483,6 @@ class ToolRunner:
         store: bool = True,
         turn_diff: TurnDiff | None = None,
         d: ToolDisplay | None = None,
-        recovery: object | None = None,
     ) -> str:
         d = d or ToolDisplay()
         tool_class = TOOL_REGISTRY.get(call.name)

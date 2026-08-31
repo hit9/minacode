@@ -186,3 +186,62 @@ def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
         '        tooling rules"',
     ]
     assert all(len(line) < 40 for line in rendered.splitlines())
+
+
+def _indexed(path, start, end, signature):
+    return f"definition:\n  name: Example\n  file: {path}\n  range: {start}:{end}\n  signature: {signature}\n"
+
+
+def test_inspect_code_hydrates_editable_source_from_the_current_file(tmp_path, monkeypatch):
+    """The index says where to look; only the file itself can say what is there. A definition whose
+    indexed signature still matches is re-read now and returned as an ordinary source block, so the
+    lines the model may edit are the lines on disk."""
+    s = session(tmp_path)
+    (tmp_path / "sample.py").write_text("import os\n\nclass Example:\n    value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(csi, "inspect", lambda query, **kwargs: _indexed("sample.py", 3, 4, "class Example:"))
+
+    out = InspectCodeTool(s, ["inspect", "Example"]).call()
+    key = s.register_source_drafts(list(out.drafts))[0]
+    view = s.get_source_view(key)
+
+    assert view.display_path == "sample.py"
+    assert view.total_lines == 4
+    assert [(span.start, span.lines) for span in view.spans] == [(3, ("class Example:\n", "    value = 1\n"))]
+    assert "3 | class Example:" in out.retained_text
+    assert "<stale-index>" not in out.retained_text
+
+
+@pytest.mark.parametrize(
+    ("indexed", "note"),
+    [
+        (("gone.py", 3, 4, "class Example:"), "no longer exists"),
+        (("sample.py", 3, 4, "class Renamed:"), "index is stale"),
+        (("sample.py", 99, 100, "class Example:"), "index is stale"),
+    ],
+    ids=("missing-file", "signature-moved", "range-past-eof"),
+)
+def test_inspect_code_stale_index_never_mints_source(tmp_path, monkeypatch, indexed, note):
+    """Structural metadata may still be useful, but it cannot authorize content. When the file is
+    gone or no longer holds that definition, the result says so and carries no view at all."""
+    s = session(tmp_path)
+    (tmp_path / "sample.py").write_text("import os\n\nclass Example:\n    value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(csi, "inspect", lambda query, **kwargs: _indexed(*indexed))
+
+    out = InspectCodeTool(s, ["inspect", "Example"]).call()
+
+    assert out.drafts == ()
+    assert note in out.retained_text
+
+
+def test_inspect_code_without_a_definition_block_returns_plain_text(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    (tmp_path / "sample.py").write_text("class Example:\n    value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(csi, "outline", lambda path, **kwargs: "outline:\n  Example (class) 3:4\n")
+
+    out = InspectCodeTool(s, ["outline", "sample.py"]).call()
+
+    assert out.drafts == ()
+    assert "outline:" in out.retained_text

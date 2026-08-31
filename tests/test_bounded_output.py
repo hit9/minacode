@@ -6,10 +6,11 @@ from agent_harness import call, session
 
 from wizolt.base import (
     MAX_TOOL_OUTPUT_TOKENS,
+    ToolCall,
 )
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
-from wizolt.tools import ReadTool
+from wizolt.tools import CodeIndex, ReadTool
 
 
 def test_session_tool_result_store_prunes_old_records(tmp_path):
@@ -141,6 +142,50 @@ def test_read_tool_message_inlines_bounded_output(tmp_path):
     assert "<bounded_output" in message
     assert 'recall="tr.1"' in message
     assert "-> FILE STATE" not in message
+
+def test_batched_read_projects_every_file_inside_one_output_budget(tmp_path):
+    """The output budget covers the whole result, not each source block. A batched Read of several
+    large files must not emit one full budget per file: source-bearing output skips the generic
+    character bounding, so nothing downstream would catch the overflow."""
+    big = "".join(f"line {index} of some moderately long content to burn tokens\n" for index in range(4000))
+    for index in range(4):
+        (tmp_path / f"f{index}.txt").write_text(big, encoding="utf-8")
+    s = session(tmp_path)
+    context = ContextManager(s)
+    runner = ToolRunner(s, context, output_fn=lambda text: None)
+    call_obj = call("Read", [{"path": f"f{index}.txt", "ranges": [[1, 0]]} for index in range(4)])
+
+    message = runner.finish(call_obj, ReadTool(s, call_obj.args).call())
+
+    assert message.count("<Read ") == 4  # every file still gets a view
+    assert message.count("<bounded_output") == 4  # and every one of them says what it dropped
+    assert context.estimated_text_tokens(message) < MAX_TOOL_OUTPUT_TOKENS * 1.2
+
+
+def test_bounded_read_cannot_authorize_its_omitted_middle(tmp_path, monkeypatch):
+    """Only projected lines become part of the view. A line number guessed from the omitted middle
+    is refused as unseen rather than resolved against whatever now occupies that position."""
+    path = tmp_path / "large.txt"
+    path.write_text("".join(f"line-{index}\n" for index in range(20000)), encoding="utf-8")
+    s = session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    call_obj = call("Read", [{"path": "large.txt", "ranges": [[1, 0]]}])
+
+    message = runner.finish(call_obj, ReadTool(s, call_obj.args).call())
+    view = s.get_source_view("view.1")
+
+    assert "<bounded_output" in message
+    assert len(view.spans) == 2  # a visible head and a visible tail, with nothing in between
+    head, tail = view.spans
+    assert head.end + 1 < tail.start
+    guessed = head.end + 1  # a real line of the file, but one the model was never shown
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    runner.run([ToolCall("edit", "Edit", ["large.txt", "view.1", [{"op": "replace", "start": guessed, "end": guessed, "content": "x\n"}]])])
+
+    assert s.tool_errors and "source range unseen" in s.tool_errors[0].error
+    assert path.read_text(encoding="utf-8") == "".join(f"line-{index}\n" for index in range(20000))
+
 
 def test_tool_error_records_keep_recent_failures(tmp_path):
     s = session(tmp_path)

@@ -4,10 +4,19 @@
 
 ### Changed
 
-- `Read`, `Search`, and `InspectCode` now return numbered source views (`view.N`) instead of
-  `line:hash` anchors, and `Edit` targets an existing file by naming a source view plus ordinary
-  one-based line numbers. A failed edit returns a fresh bounded view of the current file, and a
-  successful one returns the changed region as a new view.
+- **Breaking.** `Read`, `Search`, and `InspectCode` now return numbered source views (`view.N`)
+  instead of `line:hash` anchors, and `Edit` targets an existing file by naming a source view plus
+  ordinary one-based line numbers. The whole selected range is validated against the file before
+  anything is written, not just its first and last line; an unchanged target that merely moved is
+  relocated within 50 lines and the move is reported. A failed edit returns a fresh bounded view of
+  the current file, and a successful one returns the changed region as a new view. Output from
+  `Bash` is never a source view: code found with `rg` must be read through `Read`, `Search`, or
+  `InspectCode` before it can be edited.
+- **Breaking.** `Edit` drops the `replace_all` and `replace_unique` operations; a repeated change is
+  made with `Search` plus range edits.
+- **Breaking.** The session snapshot format is now version 3. Sessions written by earlier releases
+  are refused with the existing unsupported-format error rather than resumed, because their stored
+  messages teach the removed anchor syntax.
 
 ### Fixed
 
