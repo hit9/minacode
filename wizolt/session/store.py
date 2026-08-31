@@ -415,6 +415,7 @@ class SessionSnapshotStore:
             created_at = raw_created_at.strip()
         else:
             created_at = local_timestamp()
+        max_source_view_number = max((int(view.key.split(".", 1)[1]) for view in source_views), default=0)
         session = Session(
             cwd=data.get("cwd", cwd),
             config=config,
@@ -435,7 +436,10 @@ class SessionSnapshotStore:
             transcript_incomplete=bool(data.get("_transcript_incomplete")),
             history=SessionSnapshotCodec.history(data.get("history", []), blobs),
             source_views={view.key: view for view in source_views},
-            source_view_counter=max((int(view.key.split(".", 1)[1]) for view in source_views), default=0),
+            # The counter is durable independently of the live view set. Compaction may prune the
+            # highest (or every) view before a restart; deriving the next id only from survivors
+            # would then reuse an expired public id for different evidence.
+            source_view_counter=max(int(data.get("source_view_counter", 0) or 0), max_source_view_number),
             pending_user_inputs=[item for value in data.get("pending_user_inputs", []) if (item := QueuedInput.from_json(value)) is not None],
             uid=data.get("uid", uid),
             resumed=True,

@@ -16,6 +16,27 @@ from wizolt.source.view import EDIT, READ, SEARCH, SourceSpan, SourceViewDraft
 
 
 @dataclass(frozen=True)
+class TextBlock:
+    """A non-source output part whose omitted middle is retained under the result's tr.N key."""
+
+    head: str
+    tail: str
+    estimated_tokens: int
+    omitted_tokens: int
+    budget_tokens: int
+    note_recall: str = ""
+    note_file: str = ""
+    note_hint: str = ""
+
+    def render(self) -> str:
+        attrs = f'omitted="middle" max_tokens="{self.budget_tokens}" estimated_tokens="{self.estimated_tokens}" omitted_tokens="{self.omitted_tokens}"'
+        for name, value in (("recall", self.note_recall), ("file", self.note_file), ("hint", self.note_hint)):
+            attrs += f" {name}={_quote(value)}" if value else ""
+        note = f"<bounded_output {attrs}/>"
+        return "\n".join(part for part in (self.head.rstrip(), note, self.tail.lstrip()) if part)
+
+
+@dataclass(frozen=True)
 class SourceBlock:
     """A draft plus per-line markers (e.g. Search's `>` match / ` ` context prefix).
 
@@ -112,7 +133,7 @@ class ToolOutput:
     """
 
     retained_text: str
-    parts: tuple[str | SourceBlock, ...]
+    parts: tuple[str | TextBlock | SourceBlock, ...]
 
     @classmethod
     def of(cls, value: str | ToolOutput) -> ToolOutput:
@@ -120,7 +141,7 @@ class ToolOutput:
         return value if isinstance(value, ToolOutput) else cls(value, (value,))
 
     @classmethod
-    def rendered(cls, parts: Sequence[str | SourceBlock]) -> ToolOutput:
+    def rendered(cls, parts: Sequence[str | TextBlock | SourceBlock]) -> ToolOutput:
         """An output whose retained text is its own unkeyed rendering: what tools return."""
         output = cls("", tuple(parts))
         return cls(output.render([None] * len(output.drafts)), tuple(parts))
@@ -139,10 +160,13 @@ class ToolOutput:
         A None entry renders the unkeyed form. This output's own `retained_text` is not used.
         """
         key_iter = iter(keys)
-        return "\n".join(part.render(next(key_iter, None) or "") if isinstance(part, SourceBlock) else part for part in self.parts)
+        return "\n".join(
+            part.render(next(key_iter, None) or "") if isinstance(part, SourceBlock) else part.render() if isinstance(part, TextBlock) else part
+            for part in self.parts
+        )
 
     def project(self, *, max_tokens: int, estimate: Callable[[str], int]) -> ToolOutput:
-        """Clip source blocks so the model text fits `max_tokens`; literal parts are kept whole.
+        """Clip source blocks and literal text so the model text fits `max_tokens`.
 
         The budget covers the whole result rather than each block, because source-bearing output
         skips the generic character bounding downstream: a batched Read would otherwise return one
@@ -159,29 +183,61 @@ class ToolOutput:
         """
         if not self.has_source or estimate(self.render([None] * len(self.drafts))) <= max_tokens:
             return self
-        literal = sum(estimate(part) if isinstance(part, str) else 0 for part in self.parts)
-        remaining = max_tokens - literal
-        if remaining <= 0:
-            # Literal parts alone exhaust the budget; keep the head of each block as evidence.
-            remaining = max(1, max_tokens // 2)
-        pending = sum(1 for part in self.parts if isinstance(part, SourceBlock))
-        parts: list[str | SourceBlock] = []
+        remaining = max_tokens
+        pending = len(self.parts)
+        parts: list[str | TextBlock | SourceBlock] = []
         for part in self.parts:
-            if not isinstance(part, SourceBlock):
-                parts.append(part)
-                continue
             budget = max(1, remaining // pending)
             pending -= 1
-            size = estimate(part.render())
+            size = estimate(part.render() if isinstance(part, TextBlock) else part.render() if isinstance(part, SourceBlock) else part)
             if size <= budget:
                 parts.append(part)
                 remaining = max(0, remaining - size)
                 continue
-            clipped = _clip(part, budget, estimate)
+            clipped = (
+                _clip(part, budget, estimate)
+                if isinstance(part, SourceBlock)
+                else _clip_text(part.render() if isinstance(part, TextBlock) else part, budget, max_tokens, size, estimate)
+            )
             clipped_size = estimate(clipped.render())
             remaining = max(0, remaining - clipped_size)
-            parts.append(replace(clipped, estimated_tokens=size, omitted_tokens=max(0, size - clipped_size), budget_tokens=max_tokens))
+            if isinstance(clipped, SourceBlock):
+                clipped = replace(clipped, estimated_tokens=size, omitted_tokens=max(0, size - clipped_size), budget_tokens=max_tokens)
+            parts.append(clipped)
         return ToolOutput(self.retained_text, tuple(parts))
+
+
+def _clip_text(text: str, budget: int, max_tokens: int, size: int, estimate: Callable[[str], int]) -> TextBlock:
+    """Keep a line-friendly head and tail of ordinary text inside one part's budget."""
+    placeholder = TextBlock("", "", size, size, max_tokens)
+    available = max(1, budget - estimate(placeholder.render()))
+    # Token estimates are not necessarily character counts. Start from their observed ratio and
+    # shrink until the rendered block fits; the loop is logarithmic even for a multi-megabyte diff.
+    keep = min(len(text), max(1, len(text) * available // max(1, size)))
+    while keep > 1:
+        head_size = max(1, keep * 2 // 5)
+        tail_size = max(0, keep - head_size)
+        head = _head_excerpt(text, head_size)
+        tail = _tail_excerpt(text, tail_size)
+        clipped = TextBlock(head, tail, size, max(0, size - estimate(head) - estimate(tail)), max_tokens)
+        if estimate(clipped.render()) <= budget:
+            return clipped
+        keep //= 2
+    return TextBlock(text[:1], "", size, max(0, size - estimate(text[:1])), max_tokens)
+
+
+def _head_excerpt(text: str, limit: int) -> str:
+    window = text[:limit]
+    snapped = window.rsplit("\n", 1)[0]
+    return snapped if len(snapped) >= limit // 2 else window
+
+
+def _tail_excerpt(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    window = text[-limit:]
+    snapped = window.split("\n", 1)[-1]
+    return snapped if len(snapped) >= limit // 2 else window
 
 
 # (span index, offset in span, marker, line): one rendered row, kept addressable while clipping.

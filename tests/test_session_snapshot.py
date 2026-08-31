@@ -289,6 +289,28 @@ def test_source_view_delta_appends_new_views_and_drops_pruned(tmp_path):
     assert restored.get_source_view(dropped) is None
 
 
+def test_source_view_counter_survives_pruning_and_restart(tmp_path):
+    """Expired public ids are never reassigned to different evidence after a restart."""
+    from wizolt.tools import ReadTool
+
+    s = session_with_data_dir(tmp_path)
+    path = tmp_path / "a.py"
+    path.write_text("one\ntwo\nthree\n")
+    first = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py", "ranges": [[1, 1]]}]).call().drafts))[0]
+    second = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py", "ranges": [[2, 2]]}]).call().drafts))[0]
+    assert (first, second) == ("view.1", "view.2")
+    s.prune_source_views(set())
+    s.messages.append({"role": "user", "content": "keep this session durable"})
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    new = restored.register_source_drafts(list(ReadTool(restored, [{"path": "a.py", "ranges": [[3, 3]]}]).call().drafts))[0]
+
+    assert restored.get_source_view(first) is None
+    assert restored.get_source_view(second) is None
+    assert new == "view.3"
+
+
 def test_loading_drops_a_view_whose_span_blob_is_gone(tmp_path):
     """A view is only as good as the text behind it. When the blob its span points at is missing
     from the log, the view is dropped rather than restored empty: an id that resolves to no

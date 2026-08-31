@@ -21,6 +21,7 @@ from wizolt.source import (
     SourceSpan,
     SourceView,
     SourceViewDraft,
+    TextBlock,
     ToolOutput,
     relocate_target,
     relocate_witness,
@@ -77,7 +78,7 @@ class ReadTool(Tool):
         return any(not (self.session.in_cwd(path) or self.session.owns_asset(path)) for path, _ in self.targets())
 
     def call(self) -> ToolOutput:
-        parts: list[str | SourceBlock] = []
+        parts: list[str | TextBlock | SourceBlock] = []
         per_path: dict[str, list[tuple[int, int]]] = {}
         order: list[str] = []
         for path, ranges in self.targets():

@@ -10,7 +10,7 @@ Behavior lives on the values it belongs to -- `view.range_lines(...)`, `block.re
 which take current file lines rather than a view and therefore have no receiver to live on.
 """
 
-from wizolt.source.output import SourceBlock, ToolOutput
+from wizolt.source.output import SourceBlock, TextBlock, ToolOutput
 from wizolt.source.relocate import relocate_target, relocate_witness, same_position
 from wizolt.source.view import (
     EDIT,
@@ -48,6 +48,7 @@ __all__ = [
     "SourceSpan",
     "SourceView",
     "SourceViewDraft",
+    "TextBlock",
     "ToolOutput",
     "relocate_target",
     "relocate_witness",

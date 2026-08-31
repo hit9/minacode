@@ -27,7 +27,7 @@ from wizolt.base import (
 from wizolt.context import ContextManager
 from wizolt.model import ModelClient
 from wizolt.session import Session, TurnDiff
-from wizolt.source import SourceBlock, ToolOutput
+from wizolt.source import SourceBlock, TextBlock, ToolOutput
 from wizolt.tools import (
     TOOL_REGISTRY,
     AskSpec,
@@ -528,14 +528,14 @@ class ToolRunner:
         key = ""
         if retain:
             key = self.session.store_tool_result(call.name, call.args, retained)
-            bounded = [index for index, part in enumerate(projected.parts) if isinstance(part, SourceBlock) and part.bounded]
+            bounded = [index for index, part in enumerate(projected.parts) if isinstance(part, TextBlock) or (isinstance(part, SourceBlock) and part.bounded)]
             if bounded:
                 path = self.context.materialize_output(key, retained)
                 hint = self.context.OMITTED_OUTPUT_HINT if path else self.context.OMITTED_OUTPUT_RECALL_HINT
                 parts = list(projected.parts)
                 for index in bounded:
                     part = parts[index]
-                    if isinstance(part, SourceBlock):
+                    if isinstance(part, (SourceBlock, TextBlock)):
                         parts[index] = replace(part, note_recall=key, note_file=path, note_hint=hint)
                 projected = ToolOutput(projected.retained_text, tuple(parts))
         keys = self.session.register_source_drafts(list(projected.drafts))

@@ -10,7 +10,7 @@ from wizolt.base import (
 )
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
-from wizolt.source import READ, SourceBlock, SourceSpan, SourceViewDraft, ToolOutput
+from wizolt.source import READ, SourceBlock, SourceSpan, SourceViewDraft, TextBlock, ToolOutput
 from wizolt.tools import CodeIndex, ReadTool
 
 
@@ -217,11 +217,11 @@ def _block(name, count, start=1):
     return SourceBlock.plain(draft)
 
 
-def test_projection_spends_one_budget_across_blocks_and_keeps_literal_parts(tmp_path):
+def test_projection_spends_one_budget_across_blocks_and_keeps_small_literal_parts(tmp_path):
     """Blocks share the result's budget, and a block that comes in under its share returns the
     rest: a small file beside a huge one is kept whole rather than clipped to an equal slice.
-    Literal parts (a Search header, an Edit diff) are never clipped -- they are what the source
-    blocks below them mean."""
+    Small literal wrappers stay whole; a large diff is bounded separately from the source blocks
+    whose edit authority must remain line-granular."""
     small, large = _block("small", 3), _block("large", 400)
     output = ToolOutput.rendered(["<Search matches=2>", small, large, "</Search>"])
     budget = estimate(small.render()) + estimate(large.render()) // 4
@@ -244,9 +244,32 @@ def test_projection_keeps_evidence_when_literal_parts_alone_fill_the_budget(tmp_
 
     projected = output.project(max_tokens=100, estimate=estimate)
 
-    assert projected.parts[0] == "x" * 4000
+    assert isinstance(projected.parts[0], TextBlock)
+    assert "<bounded_output" in projected.parts[0].render()
     assert projected.parts[1].bounded
     assert projected.parts[1].draft.line_count >= 1
+
+
+def test_large_edit_diff_and_source_share_the_normal_output_budget(tmp_path, monkeypatch):
+    """A source-bearing Edit must not bypass output bounding through its ordinary diff text."""
+    from wizolt.tools import EditTool
+
+    path = tmp_path / "large.py"
+    path.write_text("old\n", encoding="utf-8")
+    s = session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    read = ReadTool(s, [{"path": "large.py"}]).call()
+    source = s.register_source_drafts(list(read.drafts))[0]
+    body = "".join(f"line_{index} = {index}\n" for index in range(12000))
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+
+    result = EditTool(s, ["large.py", source, [{"op": "replace", "start": 1, "end": 1, "content": body}]]).call()
+    message = runner.finish(call("Edit", ["large.py", source, []]), result)
+
+    assert message.count("<bounded_output") >= 2  # the diff and the large fresh source block
+    assert 'recall="tr.1"' in message
+    assert runner.context.estimated_text_tokens(message) < MAX_TOOL_OUTPUT_TOKENS * 1.2
+    assert path.read_text(encoding="utf-8") == body
 
 
 def test_projection_of_an_output_with_no_source_is_returned_unchanged(tmp_path):

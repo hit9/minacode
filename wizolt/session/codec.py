@@ -309,6 +309,7 @@ class SessionSnapshotCodec:
             "active_transcript_messages": cls.active_transcript_messages(session), "transcript_sync": TRANSCRIPT_SYNC_VERSION,
             "pending_user_inputs": [item.to_json() for item in session.pending_user_inputs],
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
+            "source_view_counter": session.source_view_counter,
             "compaction_usage": cls.usage(session.compaction_usage),
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
             "turn_diffs": [cls.turn_diff(diff, blobs) for diff in session.turn_diffs],
@@ -323,6 +324,7 @@ class SessionSnapshotCodec:
     def delta(cls, session: Session, saved: Json, blobs: dict[str, str]) -> Json:
         delta: Json = {
             "tool_counter": session.tool_counter,
+            "source_view_counter": session.source_view_counter,
             "usage": cls.usage(session.usage),
             "compaction_usage": cls.usage(session.compaction_usage),
             "state": cls.state(session.state),
@@ -529,6 +531,8 @@ class SessionSnapshotCodec:
         cls.merge_sequence(data, delta, "source_views")
         if "tool_counter" in delta:
             data["tool_counter"] = delta["tool_counter"]
+        if "source_view_counter" in delta:
+            data["source_view_counter"] = delta["source_view_counter"]
         if "usage" in delta:
             data["usage"] = delta["usage"]
         if "compaction_usage" in delta:
