@@ -36,6 +36,11 @@ EDIT = "Edit"
 _VIEW_KEY_RE = re.compile(r"^view\.(\d+)$")
 
 
+def ranges_label(spans: Sequence[SourceSpan]) -> str:
+    """The `lines="..."` value naming every visible span, shared by drafts and committed views."""
+    return ",".join(f"{span.start}:{span.end}" for span in spans)
+
+
 def source_error(category: str, detail: str) -> ToolError:
     """A ToolError whose first line is the stable error category."""
     return ToolError(f"{category} {detail}".rstrip())
@@ -107,7 +112,7 @@ class SourceViewDraft:
 
     def ranges_label(self) -> str:
         """The `lines="..."` value naming every visible span."""
-        return ",".join(f"{span.start}:{span.end}" for span in self.spans)
+        return ranges_label(self.spans)
 
     @classmethod
     def around(cls, path: str, display_path: str, lines: Sequence[str], center: int, producer: str = EDIT) -> SourceViewDraft:
@@ -156,7 +161,7 @@ class SourceView:
         return SourceViewDraft(self.path, self.display_path, self.total_lines, self.spans, self.producer)
 
     def ranges_label(self) -> str:
-        return self.draft().ranges_label()
+        return ranges_label(self.spans)
 
     def line(self, line: int) -> str | None:
         """The exact line this view shows at 1-based `line`, or None when it showed none."""

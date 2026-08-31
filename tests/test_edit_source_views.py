@@ -316,16 +316,252 @@ def test_edit_does_not_guess_unsafe_relocation(tmp_path, current):
     assert path.read_text(encoding="utf-8") == current
 
 
-def test_planned_edit_refuses_to_overwrite_external_change(tmp_path):
+@pytest.mark.parametrize(
+    ("disturb", "leftover"),
+    [
+        (lambda path: path.write_text("external\n", encoding="utf-8"), "external\n"),
+        (lambda path: path.unlink(), None),
+        (lambda path: (path.unlink(), path.mkdir())[0], None),
+    ],
+    ids=("rewritten", "deleted", "replaced-by-a-directory"),
+)
+def test_planned_edit_refuses_to_overwrite_what_changed_after_planning(tmp_path, disturb, leftover):
+    """Planning is side-effect free, so the file it computed against can change before the write.
+    The last thing a planned edit does is re-read the file and require it to be exactly what it
+    planned from -- rewritten, deleted, or turned into a directory, none of them get written."""
     s = session(tmp_path)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\n", encoding="utf-8")
     key = view(s, "code.txt")
     call = ToolCall("edit", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])
     plan = EditBatchPlan(s).build([call])
-    path.write_text("external\n", encoding="utf-8")
+    disturb(path)
 
     with pytest.raises(ToolError, match="planned edit is stale"):
         plan.planned[call.id].call(EditTool(s, call.args))
 
-    assert path.read_text(encoding="utf-8") == "external\n"
+    assert (path.read_text(encoding="utf-8") if leftover else None) == leftover
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["code.txt", "$VIEW"], "Edit requires path, source, and edits"),
+        ([1, "$VIEW", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "Edit path must be a string"),
+        (["code.txt", 12, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "Edit source must be a string"),
+        (["code.txt", "$VIEW", "replace line 1"], "Edit edits must be a non-empty array"),
+        (["code.txt", "$VIEW", []], "Edit edits must be a non-empty array"),
+        (["code.txt", "$VIEW", ["replace 1"]], "each edit must be an object"),
+        (["code.txt", "$VIEW", [{"op": "replace", "start": 1, "end": 1, "content": "x\n", "old": "a"}]], "Edit unexpected field: old"),
+        (["code.txt", "$VIEW", [{"op": "rewrite", "start": 1, "end": 1}]], "unknown edit op"),
+        (["code.txt", "$VIEW", [{"op": "create", "content": "x\n"}]], "source is forbidden for create"),
+        (["code.txt", "", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "replace requires source=view.N"),
+        (["code.txt", "$VIEW", [{"op": "create", "content": "x"}, {"op": "delete", "start": 1, "end": 1}]], "create cannot be mixed"),
+        (["code.txt", "$VIEW", [{"op": "replace", "start": "1", "end": 1, "content": "x\n"}]], "replace requires integer start"),
+        (["code.txt", "$VIEW", [{"op": "replace", "start": True, "end": 1, "content": "x\n"}]], "replace requires integer start"),
+        (["code.txt", "$VIEW", [{"op": "delete", "start": 1}]], "delete requires integer end"),
+        (["code.txt", "$VIEW", [{"op": "replace", "start": 2, "end": 1, "content": "x\n"}]], "replace requires 1 <= start <= end"),
+        (["code.txt", "$VIEW", [{"op": "replace", "start": 0, "end": 1, "content": "x\n"}]], "replace requires 1 <= start <= end"),
+        (["code.txt", "$VIEW", [{"op": "insert_after", "line": -1, "content": "x\n"}]], "insert_after line must be >= 0"),
+        (["code.txt", "$VIEW", [{"op": "insert_after", "line": 1}]], "insert_after requires content"),
+        (["code.txt", "$VIEW", [{"op": "insert_before", "line": 1, "content": None}]], "insert_before requires content"),
+        (["code.txt", "", [{"op": "create"}]], "create requires content"),
+        (["code.txt", "view.99", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "source missing view.99 is unknown or expired"),
+        (["other.txt", "$VIEW", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "source path mismatch"),
+    ],
+)
+def test_edit_rejects_malformed_calls_before_touching_the_file(tmp_path, args, message):
+    """Edit is the one tool that writes, so every malformed call must be refused by name before
+    any file is opened -- a half-understood call is not a smaller edit, it is a wrong one."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    (tmp_path / "other.txt").write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    resolved = [key if arg == "$VIEW" else arg for arg in args]
+
+    with pytest.raises(ToolError, match=message):
+        EditTool(s, resolved).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nb\n"
+    assert (tmp_path / "other.txt").read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_edit_path_mismatch_does_not_reveal_the_other_view(tmp_path):
+    """A view id is not an authorization token: naming the wrong path is refused, and the error
+    says nothing about what the mismatched view holds."""
+    s = session(tmp_path)
+    (tmp_path / "secret.txt").write_text("private line\n", encoding="utf-8")
+    (tmp_path / "other.txt").write_text("other line\n", encoding="utf-8")
+    key = view(s, "secret.txt")
+
+    with pytest.raises(ToolError) as error:
+        EditTool(s, ["other.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]]).call()
+
+    assert "private line" not in str(error.value)
+    assert error.value.recovery is None
+
+
+def test_insertion_relocates_by_its_boundary_witness(tmp_path, monkeypatch):
+    """An insertion has no content of its own to validate, so it is proved by the lines around it.
+    When those lines are intact but have moved, the insertion moves with them and says so."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    path.write_text("HEAD\na\nb\nc\nd\n", encoding="utf-8")  # every line shifts down by one
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("ins", "Edit", ["code.txt", key, [{"op": "insert_after", "line": 2, "content": "NEW\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "HEAD\na\nb\nNEW\nc\nd\n"
+    assert s.tool_errors == []
+    record = next(record for record in s.tool_records if record.name == "Edit")
+    assert f"relocated {key} line 2 -> current line 3" in record.output
+
+
+def test_insertion_before_relocates_and_reports_the_line_it_lands_on(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    path.write_text("HEAD\na\nb\nc\nd\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("ins", "Edit", ["code.txt", key, [{"op": "insert_before", "line": 3, "content": "NEW\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "HEAD\na\nb\nNEW\nc\nd\n"
+    record = next(record for record in s.tool_records if record.name == "Edit")
+    assert f"relocated {key} line 3 -> current line 4" in record.output
+
+
+def test_boundary_witness_disambiguates_an_insertion_among_repeated_lines(tmp_path, monkeypatch):
+    """`pass` appears three times; the anchor line alone could land anywhere. The witness carries
+    the neighbours too, so only the intended boundary matches -- and when the neighbours are
+    themselves repeated, nothing matches uniquely and the call is refused instead of guessed."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.py"
+    path.write_text("def a():\n    pass\ndef b():\n    pass\ndef c():\n    pass\n", encoding="utf-8")
+    key = view(s, "code.py")
+    path.write_text("import os\ndef a():\n    pass\ndef b():\n    pass\ndef c():\n    pass\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    # view line 4 is b()'s `pass`, one of three identical lines; its neighbours name which one.
+    runner.run([ToolCall("ins", "Edit", ["code.py", key, [{"op": "insert_after", "line": 4, "content": "    # b\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "import os\ndef a():\n    pass\ndef b():\n    pass\n    # b\ndef c():\n    pass\n"
+    assert s.tool_errors == []
+
+
+def test_ambiguous_insertion_boundary_is_refused(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.py"
+    path.write_text("x\npass\npass\npass\npass\npass\n", encoding="utf-8")
+    key = view(s, "code.py")
+    # The witness for line 4 is five identical `pass` lines; after the shift it matches twice.
+    path.write_text("x\ny\npass\npass\npass\npass\npass\npass\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("ins", "Edit", ["code.py", key, [{"op": "insert_after", "line": 4, "content": "NEW\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "x\ny\npass\npass\npass\npass\npass\npass\n"
+    assert s.tool_errors and "cannot relocate" in s.tool_errors[0].error
+
+
+@pytest.mark.parametrize(
+    ("edits", "message"),
+    [
+        ([{"op": "replace", "start": 2, "end": 2, "content": "b\n"}], "requested content already matches target range"),
+        (
+            # Delete line 2 and put the same text back beside it: each half is a real change, the
+            # pair is not, and saying "already matches" would misdescribe what happened.
+            [{"op": "delete", "start": 2, "end": 2}, {"op": "insert_before", "line": 3, "content": "b\n"}],
+            "edits cancel out; check requested content",
+        ),
+    ],
+    ids=("already-matches", "cancel-out"),
+)
+def test_an_edit_that_would_change_nothing_is_an_error_with_a_fresh_view(tmp_path, edits, message):
+    """A call that leaves the file identical is a misunderstanding, not a success: reporting it as
+    done would tell the model its change landed. The error names why and returns the current text
+    of the targets as a view, so the next attempt can be aimed rather than re-read."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    key = view(s, "code.txt")
+
+    with pytest.raises(ToolError, match=message) as error:
+        EditTool(s, ["code.txt", key, edits]).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
+    assert "<source" in rendered(error.value.recovery, s)
+
+
+def test_preview_reports_a_no_op_without_writing(tmp_path):
+    """The confirmation preview runs the same resolution as the write, so a call that changes
+    nothing is caught before the user is ever asked to approve it."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "code.txt")
+
+    with pytest.raises(ToolError, match="edit produced no changes"):
+        EditTool(s, ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "a\n"}]]).preview()
+
+    assert path.read_text(encoding="utf-8") == "a\nb\n"
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [(9, "line 9 is outside view"), (0, "line 0 is outside view"), (2, "line 2 was not projected in")],
+    ids=("past-the-file", "line-zero", "not-projected"),
+)
+def test_insertion_boundary_must_be_a_line_the_view_actually_showed(tmp_path, line, message):
+    """An insertion is anchored to a line the model saw. A line past the file, line zero on a file
+    that is not empty, or a line inside the gap between two visible spans is refused by name."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("".join(f"line{index}\n" for index in range(1, 9)), encoding="utf-8")
+    key = view(s, "code.txt", ranges=[[1, 1], [5, 6]])  # line 2 falls in the gap
+
+    with pytest.raises(ToolError, match=message):
+        EditTool(s, ["code.txt", key, [{"op": "insert_after", "line": line, "content": "x\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "".join(f"line{index}\n" for index in range(1, 9))
+
+
+def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, monkeypatch):
+    """Regression: the no-op recovery view was built only from targets whose content already
+    matched, so a pair of edits that cancelled out produced a view with no spans over a file that
+    has content -- and rendering that raised ValueError out of the batch planner, past every
+    ToolError handler, taking the turn with it."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    messages = runner.run(
+        [
+            ToolCall(
+                "wash",
+                "Edit",
+                ["code.txt", key, [{"op": "delete", "start": 2, "end": 2}, {"op": "insert_before", "line": 3, "content": "b\n"}]],
+            )
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
+    assert len(messages) == 1  # the call still gets exactly one result
+    assert "edits cancel out" in s.tool_errors[0].error
+    assert "2 | b" in s.tool_errors[0].error  # and a view of what the target actually holds

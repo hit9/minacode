@@ -487,17 +487,17 @@ class ToolRunner:
         d = d or ToolDisplay()
         tool_class = TOOL_REGISTRY.get(call.name)
         tool_output = ToolOutput.of(output)
+        retain = not failed and store and (tool_class is None or tool_class.STORES_RESULT)
         key = ""
         bound = True
         if tool_output.has_source:
             # Source-bearing output is projected, keyed, and rendered here on the main thread:
             # view ids follow model call order, and the retained plain text is stored under tr.N.
-            model_text, key = self._source_output(call, tool_output, failed=failed, store=store, tool_class=tool_class)
+            model_text, key = self._source_output(call, tool_output, retain=retain)
             bound = False
         else:
             model_text = tool_output.retained_text
-            if not failed and store and (tool_class is None or tool_class.STORES_RESULT):
-                key = self.session.store_tool_result(call.name, call.args, model_text)
+            key = self.session.store_tool_result(call.name, call.args, model_text) if retain else ""
         if failed:
             self.session.record_tool_error(key or "-", call.name, call.args, model_text)
         elif key:
@@ -516,25 +516,17 @@ class ToolRunner:
             self.emit(toolblocks.finish_display(self.session, call, key, model_text, failed=failed, elapsed=elapsed, d=d, worker_rule=self.worker_rule))
         return self.tool_message(call, key, model_text, failed=failed, display=d.display, bound=bound)
 
-    def _source_output(
-        self,
-        call: ToolCall,
-        tool_output: ToolOutput,
-        *,
-        failed: bool,
-        store: bool,
-        tool_class: type[Tool] | None,
-    ) -> tuple[str, str]:
+    def _source_output(self, call: ToolCall, tool_output: ToolOutput, *, retain: bool) -> tuple[str, str]:
         """Project source blocks, store the retained plain text, register views, and render.
 
         Returns (model_text, tr.N key or ""). The note inside a bounded block names the
         retained key and its materialized file, so the model can Read the omitted middle back
-        into a fresh view.
+        into a fresh view; without a retained copy to point at there is nothing to name.
         """
         projected = tool_output.project(max_tokens=MAX_TOOL_OUTPUT_TOKENS, estimate=self.context.estimated_text_tokens)
         retained = tool_output.retained_text
         key = ""
-        if not failed and store and (tool_class is None or tool_class.STORES_RESULT):
+        if retain:
             key = self.session.store_tool_result(call.name, call.args, retained)
             bounded = [index for index, part in enumerate(projected.parts) if isinstance(part, SourceBlock) and part.bounded]
             if bounded:

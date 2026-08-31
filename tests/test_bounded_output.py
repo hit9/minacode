@@ -10,7 +10,14 @@ from wizolt.base import (
 )
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
+from wizolt.source import READ, SourceBlock, SourceSpan, SourceViewDraft, ToolOutput
 from wizolt.tools import CodeIndex, ReadTool
+
+
+def estimate(text: str) -> int:
+    """One character per token: projection only needs a monotonic cost, and this makes the
+    budget arithmetic in these tests readable."""
+    return len(text)
 
 
 def test_session_tool_result_store_prunes_old_records(tmp_path):
@@ -203,3 +210,46 @@ def test_working_context_does_not_repeat_durable_tool_errors(tmp_path):
 
     assert "Recent tool errors:" not in context
     assert "error 5" not in context
+
+def _block(name, count, start=1):
+    lines = tuple(f"{name} line {index}\n" for index in range(count))
+    draft = SourceViewDraft(f"/w/{name}.py", f"{name}.py", start + count - 1, (SourceSpan(start, lines),), READ)
+    return SourceBlock.plain(draft)
+
+
+def test_projection_spends_one_budget_across_blocks_and_keeps_literal_parts(tmp_path):
+    """Blocks share the result's budget, and a block that comes in under its share returns the
+    rest: a small file beside a huge one is kept whole rather than clipped to an equal slice.
+    Literal parts (a Search header, an Edit diff) are never clipped -- they are what the source
+    blocks below them mean."""
+    small, large = _block("small", 3), _block("large", 400)
+    output = ToolOutput.rendered(["<Search matches=2>", small, large, "</Search>"])
+    budget = estimate(small.render()) + estimate(large.render()) // 4
+
+    projected = output.project(max_tokens=budget, estimate=estimate)
+    kept, clipped = projected.parts[1], projected.parts[2]
+
+    assert [part for part in projected.parts if isinstance(part, str)] == ["<Search matches=2>", "</Search>"]
+    assert kept == small and not kept.bounded  # under its share, so it survives intact
+    assert clipped.bounded and clipped.draft.total_lines == large.draft.total_lines
+    assert estimate(projected.render([None, None])) <= budget * 1.1
+    assert len(clipped.draft.spans) == 2  # a visible head and a visible tail, middle dropped
+
+
+def test_projection_keeps_evidence_when_literal_parts_alone_fill_the_budget(tmp_path):
+    """A pathological result whose prose already exceeds the budget still returns some source:
+    dropping the block entirely would leave the model an id it cannot see any lines behind."""
+    block = _block("code", 200)
+    output = ToolOutput.rendered(["x" * 4000, block])
+
+    projected = output.project(max_tokens=100, estimate=estimate)
+
+    assert projected.parts[0] == "x" * 4000
+    assert projected.parts[1].bounded
+    assert projected.parts[1].draft.line_count >= 1
+
+
+def test_projection_of_an_output_with_no_source_is_returned_unchanged(tmp_path):
+    output = ToolOutput.of("plain bash output")
+
+    assert output.project(max_tokens=1, estimate=estimate) is output

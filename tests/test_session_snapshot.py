@@ -2,6 +2,8 @@
 import itertools
 import json
 
+import pytest
+
 from test_session_persistence import log_path, read_jsonl, read_lines, session_with_data_dir
 
 from wizolt.base import SESSION_EVENT_KEY
@@ -266,8 +268,10 @@ def test_source_view_delta_appends_new_views_and_drops_pruned(tmp_path):
     assert restored.get_source_view(dropped) is None
 
 
-def test_loading_drops_views_with_missing_or_malformed_blobs(tmp_path):
-    """A view whose span blob is missing is dropped, never invented; Edit then reports source missing."""
+def test_loading_drops_a_view_whose_span_blob_is_gone(tmp_path):
+    """A view is only as good as the text behind it. When the blob its span points at is missing
+    from the log, the view is dropped rather than restored empty: an id that resolves to no
+    content would let an Edit validate against nothing."""
     from wizolt.tools import ReadTool
 
     s = session_with_data_dir(tmp_path)
@@ -276,12 +280,69 @@ def test_loading_drops_views_with_missing_or_malformed_blobs(tmp_path):
     key = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py"}]).call().drafts))[0]
     s.save_snapshot()
 
-    lines = read_lines(log_path(s))
-    for line in lines:
-        if "source_views" in line:
-            line["source_views"] = []
+    lines = [line for line in read_lines(log_path(s)) if "blob" not in line]  # drop every stored blob
     with open(log_path(s), "w") as file:
         file.write("\n".join(json.dumps(line) for line in lines) + "\n")
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert restored.get_source_view(key) is None
+
+
+def _persisted_view(**overrides):
+    """One encoded view, as the codec writes it, with `overrides` applied.
+
+    Spans 1:3 and 5:5 of a five-line file: sorted, non-overlapping, and non-touching, which is
+    what normalization guarantees and therefore what load is entitled to insist on.
+    """
+    view = {
+        "key": "view.1",
+        "path": "/w/a.py",
+        "display_path": "a.py",
+        "total_lines": 5,
+        "producer": "Read",
+        "round": 1,
+        "step": 2,
+        "spans": [{"start": 1, "blob": "b3"}, {"start": 5, "blob": "b1"}],
+    }
+    view.update(overrides)
+    return view
+
+
+_BLOBS = {"b3": "one\ntwo\nthree\n", "b1": "five\n", "empty": ""}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "note"),
+    [
+        ({"key": "view"}, "malformed key"),
+        ({"key": "tr.1"}, "someone else's key space"),
+        ({"path": ""}, "no canonical path"),
+        ({"total_lines": "four"}, "non-numeric line count"),
+        ({"total_lines": -1}, "negative line count"),
+        ({"round": "later"}, "non-numeric round"),
+        ({"spans": ["1:3"]}, "span that is not an object"),
+        ({"spans": [{"start": "one", "blob": "b3"}]}, "non-numeric span start"),
+        ({"spans": [{"start": 0, "blob": "b3"}]}, "span before line 1"),
+        ({"spans": [{"start": 1, "blob": "gone"}]}, "span pointing at a blob that is not there"),
+        ({"spans": [{"start": 1, "blob": "empty"}]}, "span with no lines"),
+        ({"spans": [{"start": 1, "blob": "b3"}, {"start": 3, "blob": "b1"}]}, "overlapping spans"),
+        ({"spans": [{"start": 1, "blob": "b3"}, {"start": 4, "blob": "b1"}]}, "touching spans normalization would have merged"),
+        ({"spans": [{"start": 5, "blob": "b1"}, {"start": 1, "blob": "b3"}]}, "spans out of order"),
+        ({"spans": [{"start": 1, "blob": "b3"}, {"start": 5, "blob": "b3"}]}, "span running past total_lines"),
+        ({"total_lines": 2}, "spans that do not fit the file they claim"),
+    ],
+)
+def test_loading_drops_structurally_invalid_views(overrides, note):
+    """Persisted views are data on disk that later authorizes writes, so load validates rather than
+    repairs: anything it cannot read exactly as written is dropped, and nothing is guessed."""
+    assert SessionSnapshotCodec.source_views([_persisted_view(**overrides)], _BLOBS) == [], note
+
+
+def test_loading_keeps_a_well_formed_view():
+    """The other half of the check above: the base fixture really is loadable, so each rejection
+    above is caused by its own override rather than by the shape they all share."""
+    views = SessionSnapshotCodec.source_views([_persisted_view(), "not a view", {"key": "view.2"}], _BLOBS)
+
+    assert [view.key for view in views] == ["view.1"]
+    assert [(span.start, span.lines) for span in views[0].spans] == [(1, ("one\n", "two\n", "three\n")), (5, ("five\n",))]
+    assert (views[0].total_lines, views[0].producer, views[0].round, views[0].step) == (5, "Read", 1, 2)

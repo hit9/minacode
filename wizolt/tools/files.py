@@ -740,9 +740,14 @@ class EditTool(Tool):
         return prefix + "; requested content already matches target range"
 
     def no_op_recovery(self, path: str, view: SourceView | None, original: str, replacements: list[tuple[int, int, list[str]]]) -> ToolOutput:
-        """The no-op failure's fresh view: the current target ranges as a new view."""
+        """The no-op failure's fresh view: what the requested targets currently hold.
+
+        Every target is shown, not only the ones whose content already matched: the model asked to
+        change these lines and nothing happened, so these lines are exactly what it needs to see.
+        An insertion has no range of its own, so its boundary line stands in for it.
+        """
         lines = split_lines(original)
-        ranges = [(start + 1, end) for start, end, replacement in replacements if lines[start:end] == replacement]
+        ranges = [(start + 1, end) if end > start else (max(1, start), min(len(lines), start + 1)) for start, end, _ in replacements]
         display = view.display_path if view else self.session.relpath(path)
         draft = SourceViewDraft(view.path if view else path, display, len(lines), SourceSpan.build(lines, ranges), EDIT)
         block = SourceBlock.plain(draft)

@@ -520,11 +520,6 @@ class Session:
         self.source_views = {key: view for key, view in self.source_views.items() if key in referenced}
         return before - len(self.source_views)
 
-    @property
-    def source_view_bytes(self) -> int:
-        """Diagnostic: total bytes retained in live source-view span text."""
-        return sum(len(line) for view in self.source_views.values() for span in view.spans for line in span.lines)
-
     def enqueue_user_input(self, value: str | UserInput) -> None:
         if isinstance(value, UserInput) and value.images:
             message = self.images.message(value)

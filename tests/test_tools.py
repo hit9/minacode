@@ -806,3 +806,30 @@ def test_read_merges_one_view_per_path_across_request_items(tmp_path):
     assert a_view.range_lines(5, 6) == ("a5\n", "a6\n")
     with pytest.raises(ToolError, match="source range unseen"):
         a_view.range_lines(6, 9)
+
+
+def test_search_skips_a_candidate_it_cannot_hydrate(tmp_path):
+    """ripgrep nominates a path; the view has to come from reading that path now. When the read
+    fails -- the file was removed, or grew past the size limit, between discovery and capture --
+    the path is dropped from the result rather than reported with text nothing can vouch for."""
+    (tmp_path / "keep.py").write_text("needle here\n", encoding="utf-8")
+    (tmp_path / "vanishes.py").write_text("needle here\n", encoding="utf-8")
+    s = session(tmp_path)
+    tool = SearchTool(s, [{"pattern": "needle", "path": "."}])
+    original = SearchTool.find_candidates
+
+    def then_remove(self, request):
+        rows = original(self, request)
+        os.unlink(tmp_path / "vanishes.py")
+        return rows
+
+    SearchTool.find_candidates = then_remove
+    try:
+        out = tool.call()
+    finally:
+        SearchTool.find_candidates = original
+
+    keys = s.register_source_drafts(list(out.drafts))
+    assert [s.get_source_view(key).display_path for key in keys] == ["keep.py"]
+    assert "vanishes.py" not in out.retained_text
+    assert '<Search pattern="needle" matches=1>' in out.retained_text

@@ -52,8 +52,11 @@ class SourceBlock:
         retained `tr.N` copy gets -- retained text is a record, not editable evidence.
         """
         draft = self.draft
-        if draft.total_lines == 0 and not draft.spans:
-            return "\n".join([self._open_tag(key), "(empty file)", self._close_tag()])
+        if not draft.spans:
+            # An empty file is the one view that legitimately shows nothing. A block with no spans
+            # over a file that has content means its producer selected nothing; render it as the
+            # empty block it is rather than failing while building an error message.
+            return "\n".join([self._open_tag(key), "(empty file)" if draft.total_lines == 0 else "(no lines selected)", self._close_tag()])
         width = len(str(max(span.end for span in draft.spans)))
         rows: list[str] = []
         for index, (span, offset, line) in enumerate(self._rows()):
@@ -85,6 +88,14 @@ class SourceBlock:
 
     def _close_tag(self) -> str:
         return {READ: "</Read>", SEARCH: "</file>"}.get(self.draft.producer, "</source>")
+
+    def overhead(self, estimate: Callable[[str], int]) -> int:
+        """What this block costs before a single line of source: its tags and its omission note.
+
+        Clipping has to pay for these out of the block's budget. Counting only the numbered rows
+        would let every clipped block quietly exceed its share by its own wrapper.
+        """
+        return estimate("\n".join((self._open_tag("view.000"), self._note(), self._close_tag())))
 
 
 def _quote(value: str) -> str:
@@ -140,6 +151,11 @@ class ToolOutput:
         visible tail; the omitted middle is not part of the returned block, so it cannot be
         targeted by guessing its line numbers. Projection is pure and key-independent, so it is
         safe to run before view ids are allocated.
+
+        The budget is a target, not a hard cap: `estimate` is approximate, and the runner adds the
+        recall key, asset path, and hint to each omission note afterwards, which it cannot know
+        before finding out that anything was clipped. The overshoot is bounded by one note per
+        clipped block.
         """
         if not self.has_source or estimate(self.render([None] * len(self.drafts))) <= max_tokens:
             return self
@@ -180,41 +196,37 @@ def _clip(block: SourceBlock, budget: int, estimate: Callable[[str], int]) -> So
     returned spans are only the visible head and tail groups.
     """
     draft = block.draft
+    budget = max(1, budget - block.overhead(estimate))
+    width = max(1, len(str(max(span.end for span in draft.spans))))
     rows: list[_Row] = []
+    costs: list[int] = []  # a row's cost is asked for repeatedly; a large file has many rows
     for span_index, span in enumerate(draft.spans):
         for offset, line in enumerate(span.lines):
             marker = block.markers[len(rows)] if len(rows) < len(block.markers) else ""
             rows.append((span_index, offset, marker, line))
-    width = max(1, len(str(max(span.end for span in draft.spans))))
+            costs.append(estimate(f"{marker}{span.start + offset:>{width}} | {line.rstrip(chr(10))}"))
 
-    def cost(row: _Row) -> int:
-        span_index, offset, marker, line = row
-        return estimate(f"{marker}{draft.spans[span_index].start + offset:>{width}} | {line.rstrip(chr(10))}")
-
-    head: list[_Row] = []
+    head = 0  # rows taken from the front
     used = 0
-    for row in rows:
-        if used + cost(row) > budget and head:
-            break
-        used += cost(row)
-        head.append(row)
-    tail: list[_Row] = []
+    while head < len(rows) and (used + costs[head] <= budget or not head):
+        used += costs[head]
+        head += 1
+    tail = len(rows)  # first row taken from the back
     tail_used = 0
-    for row in reversed(rows[len(head) :]):
-        if tail_used + cost(row) > budget - used and tail:
-            break
-        tail_used += cost(row)
-        tail.append(row)
-    tail.reverse()
-    chosen = [*head, *tail] or rows[:1]  # never an empty view
+    while tail > head and (tail_used + costs[tail - 1] <= budget - used or tail == len(rows)):
+        tail_used += costs[tail - 1]
+        tail -= 1
+    chosen = [*rows[:head], *rows[tail:]] or rows[:1]  # never an empty view
     if len(chosen) == len(rows):
         return block  # everything fit after all (estimates differ slightly); nothing is omitted
+
     spans: list[SourceSpan] = []
     markers: list[str] = []
     head_spans = 0
     position = 0
     for span_index, group in _group(chosen):
-        head_spans += position + len(group) <= len(head)
+        if position + len(group) <= head:
+            head_spans += 1
         position += len(group)
         spans.append(SourceSpan(draft.spans[span_index].start + group[0][1], tuple(row[3] for row in group)))
         markers.extend(row[2] for row in group)

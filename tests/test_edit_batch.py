@@ -398,3 +398,69 @@ def test_large_edit_warning_rides_the_edit_result(tmp_path):
 
     assert "<warnings>" in result.retained_text and "large-edit" in result.retained_text
     assert (tmp_path / "big.py").read_text(encoding="utf-8") == body  # advisory only: the edit stands
+
+
+def test_batch_refuses_a_range_an_earlier_insertion_split(tmp_path, monkeypatch):
+    """The range's lines are all still there, but an earlier edit in this batch pushed something
+    between them. They are no longer one contiguous target, and quietly replacing across the new
+    line would delete it, so the call is refused."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    key = view(s, "code.txt")
+
+    runner(s).run(
+        [
+            ToolCall("split", "Edit", ["code.txt", key, [{"op": "insert_after", "line": 2, "content": "X\n"}]]),
+            ToolCall("across", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 3, "content": "BC\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nb\nX\nc\nd\n"  # the insertion stands, X survives
+    assert s.tool_errors and "were split by an earlier edit in this batch" in s.tool_errors[0].error
+
+
+def test_batch_accepts_two_views_of_one_path(tmp_path, monkeypatch):
+    """Two reads of one file give two ids. The plan indexes its lines by the first view it saw, so
+    a later call naming the other one is aligned to the same lines rather than refused -- as long
+    as the text behind it still matches what the file held when planning began."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    whole = view(s, "code.txt")
+    tail = view(s, "code.txt", ranges=[[3, 4]])
+
+    assert whole != tail
+    runner(s).run(
+        [
+            ToolCall("first", "Edit", ["code.txt", whole, [{"op": "insert_after", "line": 1, "content": "X\n"}]]),
+            ToolCall("second", "Edit", ["code.txt", tail, [{"op": "replace", "start": 4, "end": 4, "content": "D\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nX\nb\nc\nD\n"
+    assert s.tool_errors == []
+
+
+def test_batch_relocates_a_view_line_the_file_no_longer_has_room_for(tmp_path, monkeypatch):
+    """The file shrank before the batch, so the view's line 5 is past its end and no line origin
+    can describe it. The planned index is then only a starting guess, and the exact target -- still
+    present, still unique -- is found where it actually is."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\ne\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    path.write_text("a\nb\ne\n", encoding="utf-8")  # c and d removed elsewhere; e moves up
+
+    runner(s).run([ToolCall("edit", "Edit", ["code.txt", key, [{"op": "replace", "start": 5, "end": 5, "content": "E\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "a\nb\nE\n"
+    assert s.tool_errors == []
+    record = next(record for record in s.tool_records if record.name == "Edit")
+    assert f"relocated {key} lines 5:5 -> current lines 3:3" in record.output
