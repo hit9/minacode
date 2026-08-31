@@ -86,9 +86,12 @@ class UpdateChecker:
     @staticmethod
     def upgrade_command() -> list[str]:
         """Best-effort package-manager command to upgrade wizolt, based on how it was installed."""
-        executable = os.path.realpath(sys.executable).replace(os.sep, "/")
-        if "/uv/tools/" in executable:
+        # Match on sys.prefix, not realpath(sys.executable): in uv tool and pipx venvs,
+        # bin/python is a symlink to the base interpreter, and realpath escapes the venv
+        # that identifies the install source.
+        prefix = sys.prefix.replace(os.sep, "/")
+        if "/uv/tools/" in prefix:
             return ["uv", "tool", "upgrade", "wizolt"]
-        if "/pipx/venvs/" in executable:
+        if "/pipx/venvs/" in prefix:
             return ["pipx", "upgrade", "wizolt"]
         return [sys.executable, "-m", "pip", "install", "--upgrade", "wizolt"]

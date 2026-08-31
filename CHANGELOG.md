@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `wizolt update` (including `/upgrade`) under uv tool and pipx installs previously misread the
+  install source because the venv's `bin/python` is a symlink, ran
+  `python -m pip install --upgrade wizolt`, and failed with `No module named pip`; the upgrade
+  command and the startup update prompt now detect uv tool and pipx installs correctly.
+
 ## 0.37.1 - 2026-08-29
 
 ### Fixed

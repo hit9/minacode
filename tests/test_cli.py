@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import time
@@ -166,25 +167,43 @@ def test_cli_update_reports_missing_package_manager(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(
-    ("executable", "expected"),
+    ("prefix", "expected"),
     [
-        ("/home/u/.local/share/uv/tools/wizolt/bin/python", ["uv", "tool", "upgrade", "wizolt"]),
-        ("/home/u/.local/pipx/venvs/wizolt/bin/python", ["pipx", "upgrade", "wizolt"]),
+        ("/home/u/.local/share/uv/tools/wizolt", ["uv", "tool", "upgrade", "wizolt"]),
+        ("/home/u/.local/pipx/venvs/wizolt", ["pipx", "upgrade", "wizolt"]),
     ],
 )
-def test_upgrade_command_detects_installer(monkeypatch, executable, expected):
-    monkeypatch.setattr(cli.sys, "executable", executable)
-    monkeypatch.setattr(cli.os.path, "realpath", lambda path: path)
+def test_upgrade_command_detects_installer(monkeypatch, prefix, expected):
+    monkeypatch.setattr(cli.sys, "prefix", prefix)
 
     assert cli.UpdateChecker.upgrade_command() == expected
 
 
 def test_upgrade_command_falls_back_to_pip(monkeypatch):
     executable = "/home/u/venvs/foo/bin/python"
+    monkeypatch.setattr(cli.sys, "prefix", "/home/u/venvs/foo")
     monkeypatch.setattr(cli.sys, "executable", executable)
-    monkeypatch.setattr(cli.os.path, "realpath", lambda path: path)
 
     assert cli.UpdateChecker.upgrade_command() == [executable, "-m", "pip", "install", "--upgrade", "wizolt"]
+
+
+def test_upgrade_command_detects_uv_tool_venv_symlink(monkeypatch, tmp_path):
+    """uv tool venvs symlink bin/python to the base interpreter; realpath escapes the venv.
+
+    The venv marker must therefore come from sys.prefix, which stays inside the venv.
+    """
+    base = tmp_path / "base"
+    base.mkdir()
+    venv_bin = tmp_path / "uv" / "tools" / "wizolt" / "bin"
+    venv_bin.mkdir(parents=True)
+    python_link = venv_bin / "python"
+    python_link.symlink_to(base / "python")
+
+    monkeypatch.setattr(cli.sys, "executable", str(python_link))
+    monkeypatch.setattr(cli.sys, "prefix", str(tmp_path / "uv" / "tools" / "wizolt"))
+
+    assert "/uv/tools/" not in os.path.realpath(str(python_link))
+    assert cli.UpdateChecker.upgrade_command() == ["uv", "tool", "upgrade", "wizolt"]
 
 
 def test_startup_does_not_import_the_provider_sdks():
