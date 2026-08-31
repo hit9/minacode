@@ -565,3 +565,42 @@ def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, mon
     assert len(messages) == 1  # the call still gets exactly one result
     assert "edits cancel out" in s.tool_errors[0].error
     assert "2 | b" in s.tool_errors[0].error  # and a view of what the target actually holds
+
+
+def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
+    """A batch of edits after an external shift relocates every operation under the same rules as a
+    single edit, and reports each relocation separately in the one result. The batch planner maps
+    each op's view line to where it now sits after earlier ops, so the replace still finds its
+    target and the insertion still lands beside its witness."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("x\na\ntarget\nc\nd\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    path.write_text("HEAD\nx\na\ntarget\nc\nd\n", encoding="utf-8")  # every line shifts down one
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            ToolCall(
+                "batch",
+                "Edit",
+                [
+                    "code.txt",
+                    key,
+                    [
+                        {"op": "replace", "start": 3, "end": 3, "content": "TARGET2\n"},
+                        {"op": "insert_after", "line": 4, "content": "TAIL2\n"},
+                    ],
+                ],
+            )
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "HEAD\nx\na\nTARGET2\nc\nTAIL2\nd\n"
+    assert s.tool_errors == []
+    record = next(record for record in s.tool_records if record.name == "Edit")
+    assert f"relocated {key} lines 3:3 -> current lines 4:4" in record.output
+    assert f"relocated {key} line 4 -> current line 5" in record.output
+    assert record.output.count("relocated ") == 2
