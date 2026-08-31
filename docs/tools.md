@@ -55,10 +55,11 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     re-reading it first. Successful edits appear in [`/diff`](usage.md#reviewing-changes).
 
     Two costs come with this. A source view lives only as long as the conversation that mentions
-    it: once compaction drops the message it came from, the id is gone and the agent has to read
-    the file again. And output from `Bash` is never a source view, however it was produced, so
-    code found with `rg` or `cat` is read once more through `Read`, `Search`, or `InspectCode`
-    before it can be edited.
+    it: once compaction drops the message it came from, the id expires. Using an expired id is
+    refused rather than guessed, and the refusal comes back with the requested lines as they are
+    now, under a new id — so recovering costs one more `Edit`, not a re-read. And output from
+    `Bash` is never a source view, however it was produced, so code found with `rg` or `cat` is
+    read once more through `Read`, `Search`, or `InspectCode` before it can be edited.
 
     :::{figure} ../snapshots/wizolt-edit-preview.png
     :alt: An Edit confirmation previewing the proposed diff

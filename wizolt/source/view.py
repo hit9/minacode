@@ -41,9 +41,13 @@ def ranges_label(spans: Sequence[SourceSpan]) -> str:
     return ",".join(f"{span.start}:{span.end}" for span in spans)
 
 
-def source_error(category: str, detail: str) -> ToolError:
-    """A ToolError whose first line is the stable error category."""
-    return ToolError(f"{category} {detail}".rstrip())
+def source_error(category: str, detail: str, recovery: object = None) -> ToolError:
+    """A ToolError whose first line is the stable error category.
+
+    `recovery` carries the structured fresh view the runner registers and renders beside the
+    message, so a refusal can hand back current evidence without the caller parsing error text.
+    """
+    return ToolError(f"{category} {detail}".rstrip(), recovery=recovery)
 
 
 @dataclass(frozen=True)

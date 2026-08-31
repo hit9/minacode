@@ -350,6 +350,11 @@ class EditTool(Tool):
         'delete range. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"delete","start":10,"end":12}]}',
     )
     MUTATES = True
+    # A recovery view answers the edit that failed, so it spans the requested lines plus context
+    # rather than a fixed window. Past this many lines the request is better served by a Read: the
+    # point is to save one round trip, not to page a file back through an error message.
+    RECOVERY_CONTEXT_LINES = 3
+    RECOVERY_MAX_LINES = 60
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -396,7 +401,7 @@ class EditTool(Tool):
     def call(self) -> ToolOutput:
         path, source_name, edits = self.parse()
         creating = edits[0].op == "create"
-        view = self.resolve_view(path, source_name, creating)
+        view = self.resolve_view(path, source_name, creating, edits)
         if self._validate_target(path, creating):
             with open(path, encoding="utf-8") as file:
                 original = file.read()
@@ -479,7 +484,7 @@ class EditTool(Tool):
     def preview(self) -> str:
         path, source_name, edits = self.parse()
         creating = edits[0].op == "create"
-        view = self.resolve_view(path, source_name, creating)
+        view = self.resolve_view(path, source_name, creating, edits)
         if self._validate_target(path, creating):
             with open(path, encoding="utf-8") as file:
                 original = file.read()
@@ -558,8 +563,15 @@ class EditTool(Tool):
                 edits.append(Edit(op=op, content=self.normalize_text(str(item.get("content") or ""))))
         return path, source_name, edits
 
-    def resolve_view(self, path: str, source_name: str, creating: bool) -> SourceView | None:
-        """Load and validate the named view for an existing-file call, or None for create."""
+    def resolve_view(self, path: str, source_name: str, creating: bool, edits: list[Edit]) -> SourceView | None:
+        """Load and validate the named view for an existing-file call, or None for create.
+
+        An expired id is the one failure the model cannot fix by thinking harder: the view left
+        active context, and nothing about `view.12` says what it held. So the refusal carries the
+        requested lines as they are now, read fresh from the path the call named. That is not the
+        old view reconstructed -- it cannot be -- it is current evidence for the same intent, and
+        it costs the model one retry instead of a Read plus a retry.
+        """
         if creating:
             if source_name:
                 raise ToolError("source is forbidden for create; create writes a new file")
@@ -568,10 +580,42 @@ class EditTool(Tool):
             raise ToolError("Edit requires source=view.N for an existing file; Read, Search, or InspectCode first")
         view = self.session.get_source_view(source_name)
         if view is None:
-            raise source_error(SOURCE_MISSING, f"{source_name} is unknown or expired; Read or Search again to obtain a current view")
+            recovery = self.current_view_recovery(path, edits)
+            hint = "use the fresh view below" if recovery else "Read or Search again to obtain a current view"
+            raise source_error(SOURCE_MISSING, f"{source_name} is unknown or expired; {hint}", recovery=recovery)
         if view.path != path:
+            # Deliberately no fresh view: the model named two different files in one call, and
+            # answering with the content of either one would encourage it to pick by content.
             raise source_error(SOURCE_PATH_MISMATCH, f"Edit path and {source_name} path differ; use the view returned for this path")
         return view
+
+    def current_view_recovery(self, path: str, edits: list[Edit]) -> ToolOutput | None:
+        """The lines this call asked to change, as they are in the file right now.
+
+        Returns None when the path cannot be shown without approval or cannot be read: an expired
+        id is not a reason to project a file the user has not agreed to open. A request too large
+        to answer this way falls back to a bounded window, which tells the model the file is there
+        and that the range it wants needs a Read of its own.
+        """
+        if not (self.session.in_cwd(path) or self.session.owns_asset(path)) or os.path.isdir(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as file:
+                lines = file.readlines()
+        except (OSError, UnicodeDecodeError):
+            return None
+        ranges = [self.recovery_range(edit, len(lines)) for edit in edits]
+        spans = SourceSpan.build(lines, ranges)
+        if sum(len(span.lines) for span in spans) > self.RECOVERY_MAX_LINES:
+            spans = SourceViewDraft.around(path, path, lines, ranges[0][0] - 1).spans
+        block = SourceBlock.plain(SourceViewDraft(path, self.session.relpath(path), len(lines), spans, EDIT))
+        return ToolOutput(block.render(), (block,))
+
+    @classmethod
+    def recovery_range(cls, edit: Edit, total: int) -> tuple[int, int]:
+        """The 1-based inclusive range a failed edit needs to see, with context on both sides."""
+        start, end = (edit.start, edit.end) if edit.op in {"replace", "delete"} else (edit.line, edit.line)
+        return max(1, start - cls.RECOVERY_CONTEXT_LINES), min(total, end + cls.RECOVERY_CONTEXT_LINES)
 
     def _validate_target(self, path: str, creating: bool) -> bool:
         """Validate an edit/create target and return whether its current contents should be read."""

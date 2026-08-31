@@ -542,11 +542,17 @@ class ToolRunner:
         return projected.render(keys), key
 
     def _render_source_output(self, recovery: object | None) -> str:
-        """Register a ToolError's recovery drafts and render them with their fresh view ids."""
+        """Register a ToolError's recovery drafts and render them with their fresh view ids.
+
+        Projected like any other source output: a failure message skips the generic bounding, so
+        this is the only thing keeping a recovery view inside the budget. Only the lines that
+        survive projection are registered, so a clipped one still cannot authorize what it hid.
+        """
         if not isinstance(recovery, ToolOutput) or not recovery.has_source:
             return ""
-        keys = self.session.register_source_drafts(list(recovery.drafts))
-        return recovery.render(keys)
+        projected = recovery.project(max_tokens=MAX_TOOL_OUTPUT_TOKENS, estimate=self.context.estimated_text_tokens)
+        keys = self.session.register_source_drafts(list(projected.drafts))
+        return projected.render(keys)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None, bound: bool = True) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or tooloutput.short_call(self.session, call))

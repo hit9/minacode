@@ -230,3 +230,91 @@ def test_empty_file_insertion_rejects_once_another_writer_filled_it(tmp_path, mo
 
     assert path.read_text(encoding="utf-8") == "written elsewhere\n"
     assert s.tool_errors and "the empty file now has content" in s.tool_errors[0].error
+
+
+def test_expired_view_is_answered_with_the_current_lines_it_asked_for(tmp_path, monkeypatch):
+    """A view id dies when compaction drops the message that named it, and nothing about `view.1`
+    tells the model what it held. The refusal therefore reads the path the call named and returns
+    the requested lines as they are now, so recovering costs one retry instead of a Read and a
+    retry. The returned view is a real one: the same edit against it applies."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "app.py"
+    path.write_text("".join(f"line {index}\n" for index in range(1, 21)), encoding="utf-8")
+    key = view(s, "app.py")
+    s.prune_source_views(set())  # compaction expires it
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    edits = [{"op": "replace", "start": 10, "end": 12, "content": "X\n"}]
+
+    runner.run([ToolCall("stale", "Edit", ["app.py", key, edits])])
+
+    error = s.tool_errors[0].error
+    assert "source missing" in error and "use the fresh view below" in error
+    fresh = s.get_source_view("view.2")
+    assert [(span.start, span.end) for span in fresh.spans] == [(7, 15)]  # the range plus context
+    assert path.read_text(encoding="utf-8").splitlines()[9] == "line 10"
+
+    runner.run([ToolCall("retry", "Edit", ["app.py", "view.2", edits])])
+
+    assert path.read_text(encoding="utf-8").splitlines()[9] == "X"
+    assert len(s.tool_errors) == 1  # the retry did not fail
+
+
+def test_expired_view_recovery_covers_every_edit_in_the_call(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "app.py"
+    path.write_text("".join(f"line {index}\n" for index in range(1, 41)), encoding="utf-8")
+    key = view(s, "app.py")
+    s.prune_source_views(set())
+
+    with pytest.raises(ToolError) as error:
+        EditTool(
+            s,
+            ["app.py", key, [{"op": "replace", "start": 5, "end": 5, "content": "x\n"}, {"op": "insert_after", "line": 30, "content": "y\n"}]],
+        ).call()
+
+    spans = error.value.recovery.drafts[0].spans
+    assert [(span.start, span.end) for span in spans] == [(2, 8), (27, 33)]
+
+
+def test_expired_view_recovery_falls_back_to_a_window_for_a_huge_request(tmp_path):
+    """Answering an edit that named hundreds of lines would page the file back through an error
+    message. Past the limit the model is told where it is and left to Read the range itself."""
+    s = session(tmp_path)
+    path = tmp_path / "app.py"
+    path.write_text("".join(f"line {index}\n" for index in range(1, 301)), encoding="utf-8")
+    key = view(s, "app.py")
+    s.prune_source_views(set())
+
+    with pytest.raises(ToolError) as error:
+        EditTool(s, ["app.py", key, [{"op": "replace", "start": 100, "end": 250, "content": "x\n"}]]).call()
+
+    spans = error.value.recovery.drafts[0].spans
+    assert sum(len(span.lines) for span in spans) <= EditTool.RECOVERY_MAX_LINES
+    assert [(span.start, span.end) for span in spans] == [(94, 100)]
+
+
+@pytest.mark.parametrize("outside", [True, False], ids=("outside-the-workspace", "unreadable"))
+def test_expired_view_recovery_never_opens_a_file_it_may_not_show(tmp_path, outside):
+    """An expired id is not a reason to project a file the user has not approved reading, and a
+    path that cannot be read has nothing factual to offer. Both fall back to the plain refusal."""
+    s = session(tmp_path / "work")
+    (tmp_path / "work").mkdir()
+    if outside:
+        target = tmp_path / "outside.py"
+        target.write_text("secret = 1\n", encoding="utf-8")
+    else:
+        target = tmp_path / "work" / "gone.py"
+        target.write_text("a\n", encoding="utf-8")
+    key = view(s, str(target))
+    s.prune_source_views(set())
+    if not outside:
+        target.unlink()
+
+    with pytest.raises(ToolError) as error:
+        EditTool(s, [str(target), key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]]).call()
+
+    assert "Read or Search again to obtain a current view" in str(error.value)
+    assert error.value.recovery is None
+    assert "secret" not in str(error.value)

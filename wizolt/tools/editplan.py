@@ -109,7 +109,7 @@ class EditBatchPlan:
     def plan_call(self, call: ToolCall, tool: EditTool) -> None:
         path, source_name, edits = tool.parse()
         creating = edits[0].op == "create"
-        view = tool.resolve_view(path, source_name, creating)
+        view = tool.resolve_view(path, source_name, creating, edits)
         state = self.file_state(tool, path, creating, view)
         before, created = state.text(), not state.exists
         before_lines = [line.text for line in state.lines]

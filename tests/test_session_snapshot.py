@@ -229,6 +229,27 @@ def test_source_views_survive_a_snapshot_roundtrip(tmp_path):
     assert [line for span in view.spans for line in span.lines] == ["one\n", "two\n", "three\n"]
 
 
+def test_an_edit_still_resolves_its_view_after_a_restart(tmp_path):
+    """The point of persisting views: a turn interrupted after a Read must be resumable. A fresh
+    process loads the session and the id the model was shown still edits the file it named, with
+    the counter continuing past it rather than reissuing a live key."""
+    from wizolt.tools import EditTool, ReadTool
+
+    s = session_with_data_dir(tmp_path)
+    path = tmp_path / "a.py"
+    path.write_text("alpha\nbeta\ngamma\n")
+    key = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py"}]).call().drafts))[0]
+    s.messages.append({"role": "assistant", "content": f"about to edit {key}"})
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    EditTool(restored, ["a.py", key, [{"op": "replace", "start": 2, "end": 2, "content": "BETA\n"}]]).call()
+
+    assert path.read_text() == "alpha\nBETA\ngamma\n"
+    assert restored.source_view_counter == 1
+    assert restored.register_source_drafts(list(ReadTool(restored, [{"path": "a.py"}]).call().drafts)) == ["view.2"]
+
+
 def test_source_view_span_text_uses_content_addressed_blobs(tmp_path):
     """Span text is stored as a content-addressed blob, deduplicating equal text across views and diffs."""
     from wizolt.tools import ReadTool
