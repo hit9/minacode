@@ -374,7 +374,7 @@ class Compactor:
         and a handful of very large messages inside the kept tail leaves the request over budget
         with nothing left to compact -- which is the failure COMPACT_MINIMUM_RECENT was added for.
         Bounding by both means small messages give the full window and large ones collapse it to
-        the last exchange, which is what the old anchor achieved by accident."""
+        the last exchange, which is what the per-line content verification achieved by accident."""
         limit = self.COMPACT_RECENT_MESSAGES if recent is None else recent
         share = max(1, self.ctx.request_token_budget() // 4)
         start = len(messages)

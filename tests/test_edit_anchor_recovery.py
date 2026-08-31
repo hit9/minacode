@@ -1,94 +1,126 @@
-"""edit anchor recovery (split from tests/test_edit_tool.py)."""
+"""edit failure recovery (split from tests/test_edit_tool.py)."""
+
 import pytest
-from test_edit_tool import anchor, session
+from test_edit_tool import session, view
 
 from wizolt.base import ToolCall, ToolError
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
-from wizolt.tools import CodeIndex, EditTool, ReadTool
+from wizolt.source import ToolOutput, render_tool_output
+from wizolt.tools import CodeIndex, EditTool
 
 
-def test_single_anchor_stale_guides_content_check(tmp_path):
+def rendered(out, s):
+    assert isinstance(out, ToolOutput)
+    return render_tool_output(out, s.register_source_drafts(list(out.drafts)))
+
+
+def test_stale_target_error_guides_fresh_view(tmp_path):
+    s = session(tmp_path)
     path = tmp_path / "note.txt"
     path.write_text("old\n", encoding="utf-8")
+    key = view(s, "note.txt")
+    EditTool(s, ["note.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "changed\n"}]]).call()
 
     with pytest.raises(ToolError) as error:
-        EditTool(session(tmp_path), ["note.txt", [{"op": "insert_before", "start": anchor(0, "wrong\n"), "content": "x\n"}]]).call()
+        EditTool(s, ["note.txt", key, [{"op": "insert_before", "line": 1, "content": "x\n"}]]).call()
 
     message = str(error.value)
-    assert "stale anchor" in message
-    assert "retry with a returned anchor only if its content is the line you meant" in message
-    assert "prefer replace_unique" in message
-    assert "<current-file-context hashline-numbered>" in message
-    assert "not an inferred target" in message
-    assert "anchor=1:" + ReadTool.line_hash("old\n") + " | old" in message
+    assert "cannot relocate" in message
+    assert "use the fresh view below or Read again" in message
+    assert path.read_text(encoding="utf-8") == "changed\n"
 
-def test_range_stale_anchor_error_does_not_guess_current_range(tmp_path):
-    path = tmp_path / "note.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
 
-    with pytest.raises(ToolError) as error:
-        EditTool(session(tmp_path), ["note.txt", [{"op": "replace", "start": anchor(0, "wrong\n"), "end": anchor(2, "c\n"), "content": "x\n"}]]).call()
-
-    message = str(error.value)
-    assert "stale anchor" in message and "retry with a returned anchor" in message
-    assert "<current-target-ranges hashline-numbered>" not in message
-    assert "<current-file-context hashline-numbered>" in message
-    assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
-
-def test_anchor_out_of_range_reports_file_length(tmp_path):
+def test_out_of_range_line_reports_view_bounds(tmp_path):
+    s = session(tmp_path)
     path = tmp_path / "note.txt"
     path.write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "note.txt")
 
-    with pytest.raises(ToolError, match="anchor line 10 out of range; file has 2 lines") as error:
-        EditTool(session(tmp_path), ["note.txt", [{"op": "replace", "start": "10:abcde", "end": "10:abcde", "content": "x\n"}]]).call()
+    with pytest.raises(ToolError, match="lines 10:10 are outside view"):
+        EditTool(s, ["note.txt", key, [{"op": "replace", "start": 10, "end": 10, "content": "x\n"}]]).call()
 
-    assert "<current-target-ranges" not in str(error.value)
-    assert "<current-file-context hashline-numbered>" in str(error.value)
-    assert "anchor=1:" + ReadTool.line_hash("a\n") + " | a" in str(error.value)
-    assert "anchor=2:" + ReadTool.line_hash("b\n") + " | b" in str(error.value)
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
-def test_anchor_out_of_range_empty_file_returns_bounded_factual_context(tmp_path):
+
+def test_empty_file_insertion_nonzero_rejected(tmp_path):
+    s = session(tmp_path)
     path = tmp_path / "empty.txt"
     path.write_text("", encoding="utf-8")
+    key = view(s, "empty.txt")
 
-    with pytest.raises(ToolError) as error:
-        EditTool(
-            session(tmp_path),
-            ["empty.txt", [{"op": "insert_before", "start": "1:abcde", "content": "x\n"}]],
-        ).call()
+    with pytest.raises(ToolError, match="only insert_after with line 0 is valid"):
+        EditTool(s, ["empty.txt", key, [{"op": "insert_before", "line": 1, "content": "x\n"}]]).call()
 
-    message = str(error.value)
-    assert "file has 0 lines" in message
-    assert "not an inferred target" in message
-    assert "(empty file)" in message
     assert path.read_text(encoding="utf-8") == ""
 
-def test_stale_anchor_error_display_is_oneline_but_tool_result_keeps_guidance(tmp_path, monkeypatch):
+
+def test_failure_recovery_is_bounded_fresh_view(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "note.txt"
+    path.write_text("".join(f"line{i}\n" for i in range(20)), encoding="utf-8")
+    key = view(s, "note.txt")
+    EditTool(s, ["note.txt", key, [{"op": "replace", "start": 11, "end": 11, "content": "CHANGED\n"}]]).call()
+
+    with pytest.raises(ToolError) as error:
+        EditTool(s, ["note.txt", key, [{"op": "replace", "start": 11, "end": 11, "content": "x\n"}]]).call()
+
+    recovery = error.value.recovery
+    assert isinstance(recovery, ToolOutput)
+    text = rendered(recovery, s)
+    assert "<source" in text
+    rows = [line for line in text.splitlines() if " | " in line]
+    assert 7 >= len(rows) >= 5  # at most seven current lines around the requested coordinate
+
+
+def test_edit_description_does_not_mention_anchor():
+    assert "source view" in EditTool.DESCRIPTION
+    assert "anchor" not in EditTool.DESCRIPTION
+
+
+def test_success_fresh_block_is_immediately_editable(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    key = view(s, "code.txt")
+
+    first = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]).call()
+    fresh_key = s.register_source_drafts(list(first.drafts))[0]
+    EditTool(s, ["code.txt", fresh_key, [{"op": "insert_after", "line": 2, "content": "x\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nB\nx\nc\n"
+
+
+def test_success_fresh_block_clamps_to_file_bounds(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    key = view(s, "code.txt")
+
+    first = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "A\n"}]]).call()
+    text = rendered(first, s)
+
+    assert "1 | A" in text
+    assert "4 | d" in text
+    assert "5 |" not in text
+
+
+def test_failed_edit_error_text_keeps_fresh_view_for_the_model(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\nd\n", encoding="utf-8")
-    out = []
-    runner = ToolRunner(s, ContextManager(s), output_fn=out.append)
+    key = view(s, "code.txt")
+    EditTool(s, ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "A\n"}]]).call()
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("bad", "Edit", ["code.txt", [{"op": "replace", "start": anchor(0, "wrong\n"), "end": anchor(2, "wrong\n"), "content": "x\n"}]])])
+    runner.run([ToolCall("bad", "Edit", ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]])])
 
-    # Terminal side: the reject display collapses to one truncated line (no multi-line blowout).
-    assert len(out) == 1
-    items = list(out[0].walk())
-    assert len(items) == 1
-    rendered_line = items[0][0]
-    assert "\n" not in rendered_line.text
-    assert "..." in rendered_line.text
-    # Model side: the full retry guidance is preserved without an untrusted guessed range.
     assert len(s.tool_errors) == 1
-    message = s.tool_errors[0].error
-    assert "retry with a returned anchor" in message
-    assert "<current-target-ranges hashline-numbered>" not in message
-    assert "<current-file-context hashline-numbered>" in message
+    assert "source target changed" in s.tool_errors[0].error
+    assert "Read again" in s.tool_errors[0].error
+
 
 def test_batch_stale_range_does_not_guess_after_prior_shift(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -96,6 +128,7 @@ def test_batch_stale_range_does_not_guess_after_prior_shift(tmp_path, monkeypatc
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
+    key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     runner.run(
@@ -105,85 +138,21 @@ def test_batch_stale_range_does_not_guess_after_prior_shift(tmp_path, monkeypatc
                 "Edit",
                 [
                     "code.txt",
+                    key,
                     [
-                        {"op": "insert_before", "start": anchor(0, "a\n"), "content": "x\n"},
-                        {"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"},
+                        {"op": "insert_before", "line": 1, "content": "x\n"},
+                        {"op": "replace", "start": 2, "end": 2, "content": "B\n"},
                     ],
                 ],
             ),
             ToolCall(
                 "second",
                 "Edit",
-                ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(2, "c\n"), "content": "Y\n"}]],
+                ["code.txt", key, [{"op": "replace", "start": 2, "end": 3, "content": "Y\n"}]],
             ),
         ]
     )
 
     assert path.read_text(encoding="utf-8") == "x\na\nB\nc\n"
     assert len(s.tool_errors) == 1
-    assert "original line was changed in this batch" in s.tool_errors[0].error
-    assert "<current-target-ranges" not in s.tool_errors[0].error
-    assert "<current-file-context hashline-numbered>" in s.tool_errors[0].error
-
-def test_stale_anchor_context_is_bounded_around_requested_line(tmp_path):
-    path = tmp_path / "note.txt"
-    path.write_text("".join(f"line{i}\n" for i in range(20)), encoding="utf-8")
-
-    with pytest.raises(ToolError) as error:
-        EditTool(
-            session(tmp_path),
-            ["note.txt", [{"op": "replace", "start": anchor(10, "wrong\n"), "end": anchor(10, "wrong\n"), "content": "x\n"}]],
-        ).call()
-
-    context = str(error.value).split("<current-file-context hashline-numbered>", 1)[1].split("</current-file-context>", 1)[0]
-    anchor_rows = [line for line in context.splitlines() if line.startswith("anchor=")]
-    assert len(anchor_rows) == 7
-    assert "| line7" in anchor_rows[0]
-    assert "| line13" in anchor_rows[-1]
-
-def test_edit_refunds_neighborhood_anchors_around_change(tmp_path):
-    path = tmp_path / "code.txt"
-    path.write_text("".join(f"l{i}\n" for i in range(10)), encoding="utf-8")
-
-    result = EditTool(session(tmp_path), ["code.txt", [{"op": "replace", "start": anchor(4, "l4\n"), "end": anchor(4, "l4\n"), "content": "L4\n"}]]).call()
-
-    # Change on line 5 (1-based); the window adds three lines of context on each side: 2..8.
-    assert "<invalidate>5:5</invalidate>" in result
-    assert "anchor=2:" + ReadTool.line_hash("l1\n") + " | l1" in result
-    assert "anchor=5:" + ReadTool.line_hash("L4\n") + " | L4" in result
-    assert "anchor=8:" + ReadTool.line_hash("l7\n") + " | l7" in result
-    assert "anchor=1:" + ReadTool.line_hash("l0\n") + " | l0" not in result
-    assert "anchor=9:" + ReadTool.line_hash("l8\n") + " | l8" not in result
-
-def test_edit_neighborhood_clamps_to_file_bounds(tmp_path):
-    path = tmp_path / "code.txt"
-    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
-
-    first = EditTool(session(tmp_path), ["code.txt", [{"op": "replace", "start": anchor(0, "a\n"), "end": anchor(0, "a\n"), "content": "A\n"}]]).call()
-    assert "anchor=1:" + ReadTool.line_hash("A\n") + " | A" in first
-    assert "anchor=4:" + ReadTool.line_hash("d\n") + " | d" in first
-
-    last = EditTool(session(tmp_path), ["code.txt", [{"op": "replace", "start": anchor(3, "d\n"), "end": anchor(3, "d\n"), "content": "D\n"}]]).call()
-    assert "anchor=1:" + ReadTool.line_hash("A\n") + " | A" in last
-    assert "anchor=4:" + ReadTool.line_hash("D\n") + " | D" in last
-
-def test_edit_anchor_description_notes_bash_view_carries_no_anchors():
-    schema = EditTool.params_schema()
-    edit = schema["properties"]["edits"]["items"]
-    assert "replace_unique" in edit["properties"]["op"]["description"]
-    for key in ("start", "end"):
-        assert "a file viewed through Bash carries no anchors" in edit["properties"][key]["description"]
-        assert "verifying its content, otherwise Read again" in edit["properties"][key]["description"]
-    content_description = edit["properties"]["content"]["description"]
-    assert "replace_all/replace_unique" in content_description
-    assert "explicit empty string deletes the match" in content_description
-    assert "new" not in edit["properties"]
-    assert "lines before start and after end are preserved automatically" in content_description
-    assert "do not copy it merely to keep it" in content_description
-    assert "may independently equal neighboring text" in content_description
-    assert "correspond exactly to the start/end anchor lines" not in content_description
-    assert "replace_unique replaces text that occurs exactly once" in EditTool.DESCRIPTION
-    assert "preserves it automatically" in EditTool.DESCRIPTION
-    assert "Prefer replace_unique for a small edit" in EditTool.DESCRIPTION
-    assert any("without copying the anchor as context" in example for example in EditTool.EXAMPLE)
-    assert any("replace one exact block without anchors" in example for example in EditTool.EXAMPLE)
+    assert "were replaced or deleted by an earlier edit in this batch" in s.tool_errors[0].error

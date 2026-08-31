@@ -180,14 +180,14 @@ Core tools include:
 
 - `Read`, `Search`, and `InspectCode` for files, text, and indexed symbols.
 - `ViewImage` for supported local image files, with an optional `question` answered by the vision model when one is configured.
-- `Edit` for anchored file changes.
+- `Edit` for source-view based file changes.
 - `Bash` and `Job` for foreground and background commands.
 - `Recall` for complete stored tool results and `RecallContext` for compacted conversation segments.
 - `Note` for durable goal, plan, check, and learned facts.
 - `Ask` for decisions that require the user.
 - `Skill` for on-demand instruction packs and `MCP` for connected server capabilities.
 
-Read-only tools can run concurrently. Edit, Bash, Job, and MCP actions that can change state ask for confirmation unless yolo mode is active. Anchored edits reject stale file locations. Recommend working in Git and reviewing `/diff`.
+Read-only tools can run concurrently. Edit, Bash, Job, and MCP actions that can change state ask for confirmation unless yolo mode is active. Edits validate their target against the numbered source view and reject stale locations. Recommend working in Git and reviewing `/diff`.
 
 Provider-side tools are not part of this local registry. They run at the provider without a confirmation prompt when enabled through `builtin_tools` or `extra_body`; apply the privacy and trust guidance above.
 
@@ -224,7 +224,7 @@ Use the smallest relevant check:
 - Streaming failure: set `provider.stream = false` temporarily and retry.
 - Stalled generation: distinguish `timeout` inactivity from total `response_timeout`; inspect the exact error before increasing either.
 - Image rejected: the failed image remains available at its session-owned path. Use `ViewImage` explicitly; configure `[vision] provider = "<entry>"` when the active model cannot inspect it directly.
-- Tool did not run: check whether approval was declined, whether yolo is off, and whether the tool reported a validation or stale-anchor error.
+- Tool did not run: check whether approval was declined, whether yolo is off, and whether the tool reported a validation or stale-source error.
 - Missing earlier detail: use `Recall` for shortened tool output or `RecallContext` for compacted conversation.
 - Skill not found: run `/skills`, verify the directory and `SKILL.md` frontmatter, then check whether a higher-precedence source overrides the name.
 - Session not found: compare the current project, try `/sessions all`, then search by full id or a more specific name.

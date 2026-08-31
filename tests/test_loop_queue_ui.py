@@ -213,7 +213,7 @@ def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypa
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
     content = "".join(f"line {index}\n" for index in range(50))
 
-    runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
+    runner.run([call("Edit", ["new.txt", "", [{"op": "create", "content": content}]])])
 
     assert outputs[0].startswith("  Edit  new.txt\n    ├ preview")
     assert "+line 49" in outputs[0]

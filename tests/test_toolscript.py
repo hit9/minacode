@@ -11,7 +11,7 @@ from wizolt.context import ContextManager
 from wizolt.render import UiPrinter
 from wizolt.runner import ToolRunner
 from wizolt.session import Session, bootstrap_features
-from wizolt.tools import MCPTool, ReadTool, Tool, ToolScript, toolblocks, tooloutput
+from wizolt.tools import MCPTool, Tool, ToolScript, toolblocks, tooloutput
 
 OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
@@ -478,8 +478,8 @@ class TestNestedBuiltinCalls:
         assert "ToolScript ok" in content
         assert "calls: 1 [tr.1]" in content
         assert "hello" in content
-        assert '<Read path="f.txt">' in content
-        assert '<Read path="f.txt">' in s.tool_results["tr.1"]
+        assert '<Read path="f.txt"' in content
+        assert '<Read path="f.txt"' in s.tool_results["tr.1"]
         assert "<MCPDescribe" in str(messages[1]["content"])
 
     def test_nested_read_rejects_json_format(self, tmp_path):
@@ -558,7 +558,7 @@ class TestNestedBuiltinCalls:
         assert "calls: 3 [tr.1-tr.3]" in content
         assert "done" in content
         for key in ("tr.1", "tr.2", "tr.3"):
-            assert '<Read path="f.txt">' in s.tool_results[key]
+            assert '<Read path="f.txt"' in s.tool_results[key]
 
     def test_nested_args_conversion_error_names_tool(self, tmp_path):
         s = _mcp_session(tmp_path)
@@ -573,9 +573,10 @@ class TestNestedEdit:
         path = tmp_path / "code.txt"
         path.write_text("a\nb\nc\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
-        start = ReadTool.anchor(1, "b\n")
         code = (
-            f'call("Edit", {{"path": "code.txt", "edits": [{{"op": "replace", "start": "{start}", "end": "{start}", "content": "B\\n"}}]}})\nprint("edited")\n'
+            'call("Read", {"path": "code.txt"})\n'
+            'call("Edit", {"path": "code.txt", "source": "view.1", "edits": [{"op": "replace", "start": 2, "end": 2, "content": "B\\n"}]})\n'
+            'print("edited")\n'
         )
         content = _run_script(s, code)
         assert "ToolScript ok" in content
@@ -585,13 +586,19 @@ class TestNestedEdit:
         path = tmp_path / "code.txt"
         path.write_text("a\nb\nc\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
-        bad = ReadTool.anchor(1, "wrong\n")
-        code = f'call("Edit", {{"path": "code.txt", "edits": [{{"op": "replace", "start": "{bad}", "end": "{bad}", "content": "B\\n"}}]}})\nprint("after")\n'
+        # The first edit succeeds against the fresh view; the second names the same view for a line
+        # the first edit already changed, which the source-view plan refuses instead of guessing.
+        code = (
+            'call("Read", {"path": "code.txt"})\n'
+            'call("Edit", {"path": "code.txt", "source": "view.1", "edits": [{"op": "replace", "start": 2, "end": 2, "content": "B\\n"}]})\n'
+            'call("Edit", {"path": "code.txt", "source": "view.1", "edits": [{"op": "replace", "start": 2, "end": 2, "content": "C\\n"}]})\n'
+            'print("after")\n'
+        )
         content = _run_script(s, code)
         assert "ToolScript failed" in content
-        assert "stale anchor" in content
+        assert "Read again" in content
         assert "after" not in content
-        assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
+        assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
 
 
 # ---------------------------------------------------------------------------

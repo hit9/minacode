@@ -172,16 +172,7 @@ def test_delegate_merges_worker_diffs_into_parent(tmp_path, monkeypatch):
                 [
                     call(
                         "Edit",
-                        [
-                            "f.txt",
-                            [
-                                {
-                                    "op": "create",
-                                    "content": "x\
-",
-                                }
-                            ],
-                        ],
+                        ["f.txt", "", [{"op": "create", "content": "x"}]],
                     )
                 ],
                 "editing",
@@ -220,16 +211,7 @@ def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
                     [
                         call(
                             "Edit",
-                            [
-                                "f.txt",
-                                [
-                                    {
-                                        "op": "create",
-                                        "content": "x\
-",
-                                    }
-                                ],
-                            ],
+                            ["f.txt", "", [{"op": "create", "content": "x"}]],
                         )
                     ],
                     "editing",
@@ -281,7 +263,7 @@ def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, 
         [
             (
                 {"role": "assistant", "content": "editing"},
-                [call("Edit", ["f.txt", [{"op": "create", "content": "x"}]])],
+                [call("Edit", ["f.txt", "", [{"op": "create", "content": "x"}]])],
                 "editing",
             ),
             (
@@ -353,13 +335,13 @@ def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypa
         [
             (
                 {"role": "assistant", "content": "editing"},
-                [call("Edit", ["f.txt", [{"op": "create", "content": "x"}]])],
+                [call("Edit", ["f.txt", "", [{"op": "create", "content": "x"}]])],
                 "editing",
             ),
             (
                 {"role": "assistant", "content": ""},
                 [
-                    ToolCall("edit-2", "Edit", ["g.txt", [{"op": "create", "content": "y"}]]),
+                    ToolCall("edit-2", "Edit", ["g.txt", "", [{"op": "create", "content": "y"}]]),
                     call("Read", [{"path": "missing.txt", "ranges": [[0, 1]]}]),
                 ],
                 "",

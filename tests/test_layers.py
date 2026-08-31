@@ -69,6 +69,7 @@ LAYERS = {
     "wizolt.mentions": 6,
     "wizolt.builtin_skills": 6,
     "wizolt.session": 7,
+    "wizolt.source": 8,
     "wizolt.image": 8,
     "wizolt.base": 9,
     "wizolt.config": 9,

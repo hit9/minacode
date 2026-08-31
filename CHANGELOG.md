@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- `Read`, `Search`, and `InspectCode` now return numbered source views (`view.N`) instead of
+  `line:hash` anchors, and `Edit` targets an existing file by naming a source view plus ordinary
+  one-based line numbers. A failed edit returns a fresh bounded view of the current file, and a
+  successful one returns the changed region as a new view.
+
 ### Fixed
 
 - `wizolt update` (including `/upgrade`) under uv tool and pipx installs previously misread the

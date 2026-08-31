@@ -20,6 +20,7 @@ from wizolt.context import ContextManager
 from wizolt.render import UiPrinter
 from wizolt.runner import ToolRunner
 from wizolt.session import HistorySegment, Session
+from wizolt.source import render_tool_output
 from wizolt.tools import (
     TOOL_REGISTRY,
     TOOLS,
@@ -79,17 +80,24 @@ def test_base_tool_helpers_validate_shared_argument_contracts(tmp_path):
     assert TOOL_REGISTRY["ViewImage"] is ViewImageTool
 
 
-def test_read_anchor_parsing_accepts_display_and_index_formats():
-    short = ReadTool.line_hash("line\n")
-    indexed = ReadTool.indexed_line_hash("line\n")
+def test_read_accepts_ranges_in_both_array_forms_and_renders_a_view(tmp_path):
+    """The old anchor string formats are gone; Read takes 1-based inclusive ranges either as one
+    [start, end] pair or as a list of pairs, and its output carries a `view.N` id once rendered
+    with the session's registered drafts."""
+    (tmp_path / "sample.py").write_text("a\nb\nc\nd\n", encoding="utf-8")
+    s = session(tmp_path)
 
-    # The model writes a 1-based line number; parsing returns the 0-based index behind it.
-    assert ReadTool.parse_anchor(f"anchor=7:{short} | line") == (6, short)
-    assert ReadTool.parse_anchor(f"7:{indexed}") == (6, indexed)
-    assert ReadTool.require_anchor(f"7:{short}") == (6, short)
-    assert ReadTool.parse_anchor("not-an-anchor") is None
-    with pytest.raises(ToolError, match="invalid anchor"):
-        ReadTool.require_anchor("not-an-anchor")
+    out = ReadTool(s, [{"path": "sample.py", "ranges": [[1, 2], [4, 4]]}]).call()
+    assert "source=" not in out.retained_text  # retained text carries no view id
+    keys = s.register_source_drafts(list(out.drafts))
+    rendered = render_tool_output(out, keys)
+    assert 'source="view.1"' in rendered
+    assert "1 | a" in rendered and "2 | b" in rendered and "4 | d" in rendered
+    assert "3 | c" not in rendered
+
+    # The single [start, end] form is accepted as one range.
+    single = ReadTool(s, [{"path": "sample.py", "ranges": [2, 3]}]).call()
+    assert "2 | b" in single.retained_text and "3 | c" in single.retained_text
 
 
 def test_strict_schema_handles_optional_enum_union_and_container_without_mutation():
@@ -189,7 +197,7 @@ def test_reading_a_materialized_tool_output_needs_no_confirmation(tmp_path):
     assert ReadTool(s, [{"path": str(outside)}]).needs_confirmation() is True
     assert SearchTool(s, [{"path": str(outside), "pattern": "private"}]).needs_confirmation() is True
     # Reading it really does return the full output the marker promised.
-    assert "line 19999" in ReadTool(s, [{"path": asset}]).call()
+    assert "line 19999" in ReadTool(s, [{"path": asset}]).call().retained_text
 
 
 def test_mcp_tool_handles_missing_manager_and_invalid_arguments(tmp_path):
@@ -231,48 +239,48 @@ def test_read_and_search_success_paths(tmp_path):
     read = ReadTool(s, [{"path": "sample.py", "ranges": [[1, 2], [3, 0]]}]).call()
     single_range = ReadTool(s, [{"path": "sample.py", "ranges": [1, 2]}]).call()
     full_default = ReadTool(s, [{"path": "sample.py"}]).call()
-    alpha_hash = ReadTool.line_hash("alpha\n")
-    needle_hash = ReadTool.line_hash("Needle\n")
-    omega_hash = ReadTool.line_hash("omega\n")
-    assert f"anchor=1:{alpha_hash} | alpha" in read
-    assert f"anchor=2:{needle_hash} | Needle" in read
-    assert f"anchor=3:{omega_hash} | omega" in read
-    assert f"anchor=1:{alpha_hash} | alpha" in single_range
-    assert f"anchor=2:{needle_hash} | Needle" in single_range
-    assert f"anchor=3:{omega_hash} | omega" in full_default
-    assert "<total_lines>3</total_lines>" in full_default  # Read reports the line count (replaces LineCount)
+    assert "<Read path=" in read.retained_text
+    assert "1 | alpha" in read.retained_text
+    assert "2 | Needle" in read.retained_text
+    assert "3 | omega" in read.retained_text
+    assert "1 | alpha" in single_range.retained_text
+    assert "2 | Needle" in single_range.retained_text
+    assert "3 | omega" in full_default.retained_text
+    assert "total_lines=3" in full_default.retained_text  # Read reports the line count
 
     found = SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
-    assert f"sample.py anchor=2:{needle_hash} | Needle" in found
+    assert '<Search pattern="needle" matches=1>' in found.retained_text
+    assert '<file path="sample.py"' in found.retained_text
+    assert "2 | Needle" in found.retained_text
 
     multiline = SearchTool(s, [{"pattern": "alpha\\nNeedle", "path": "sample.py"}]).call()
-    assert "sample.py anchor=1:" in multiline
+    assert '<file path="sample.py"' in multiline.retained_text
+    assert "1 | alpha" in multiline.retained_text
 
 
 def test_read_search_and_anchors_report_one_based_line_numbers(tmp_path):
-    """Read, Search, and Edit anchors must number lines the way `grep -n`, tracebacks, and diffs
-    do, so a line number seen in one place can be used in another without adjustment."""
+    """Read, Search, and Edit must number lines the way `grep -n`, tracebacks, and diffs do, so
+    a line number seen in one place can be used in another without adjustment."""
     s = session(tmp_path)
     lines = ["alpha", "beta", "Needle", "omega"]  # grep -n numbers these 1..4
     (tmp_path / "sample.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    beta_hash = ReadTool.line_hash("beta\n")
-    needle_hash = ReadTool.line_hash("Needle\n")
 
     # A 1-based inclusive range returns exactly the requested lines, and no others.
     read = ReadTool(s, [{"path": "sample.py", "ranges": [[2, 3]]}]).call()
-    assert "<range>2:3</range>" in read
-    assert f"anchor=2:{beta_hash} | beta" in read
-    assert f"anchor=3:{needle_hash} | Needle" in read
-    assert "alpha" not in read and "omega" not in read
+    assert 'lines="2:3"' in read.retained_text
+    assert "2 | beta" in read.retained_text
+    assert "3 | Needle" in read.retained_text
+    assert "alpha" not in read.retained_text and "omega" not in read.retained_text
 
     # Search agrees with Read on the same line, through both the ripgrep and the Python backend.
     found = SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
-    assert f"sample.py anchor=3:{needle_hash} | Needle" in found
+    assert "3 | Needle" in found.retained_text
     multiline = SearchTool(s, [{"pattern": "beta\\nNeedle", "path": "sample.py"}]).call()
-    assert "sample.py anchor=2:" in multiline
+    assert "2 | beta" in multiline.retained_text
 
-    # An anchor taken from that output edits the line it names, and nothing shifts by one.
-    EditTool(s, ["sample.py", [{"op": "replace", "start": f"3:{needle_hash}", "end": f"3:{needle_hash}", "content": "FOUND\n"}]]).call()
+    # A view taken from that output edits the line it names, and nothing shifts by one.
+    key = s.register_source_drafts(list(read.drafts))[0]
+    EditTool(s, ["sample.py", key, [{"op": "replace", "start": 3, "end": 3, "content": "FOUND\n"}]]).call()
     assert (tmp_path / "sample.py").read_text(encoding="utf-8") == "alpha\nbeta\nFOUND\nomega\n"
 
 
@@ -295,26 +303,25 @@ def test_read_echoes_ranges_the_model_could_have_written(tmp_path):
     assert ReadTool.payload_args({"path": "a.py"}) == ReadTool.payload_args({"path": "a.py", "ranges": None})
 
 
-def test_anchor_from_zero_based_session_relocates_instead_of_editing_the_wrong_line(tmp_path):
-    """A session started before line numbers became 1-based can replay an anchor that is one line
-    low. The content hash makes that recoverable: the anchor is relocated to the line it actually
-    describes, never silently applied to the neighbouring line it now points at."""
+def test_one_based_edit_targets_never_shift_the_wrong_line(tmp_path):
+    """View line numbers are 1-based and Edit uses the same 1-based inclusive start/end, so a line
+    number seen in one place edits exactly that line -- nothing is one off."""
     s = session(tmp_path)
     (tmp_path / "code.py").write_text("first\nsecond\nthird\n", encoding="utf-8")
-    third_hash = ReadTool.line_hash("third\n")
-    stale = f"2:{third_hash}"  # "third" was line 2 under the old numbering
 
-    EditTool(s, ["code.py", [{"op": "replace", "start": stale, "end": stale, "content": "THIRD\n"}]]).call()
+    out = ReadTool(s, [{"path": "code.py"}]).call()
+    key = s.register_source_drafts(list(out.drafts))[0]
 
+    # 1-based line 3 names "third", not the second line a 0-based scheme would hit.
+    EditTool(s, ["code.py", key, [{"op": "replace", "start": 3, "end": 3, "content": "THIRD\n"}]]).call()
     assert (tmp_path / "code.py").read_text(encoding="utf-8") == "first\nsecond\nTHIRD\n"
 
-    # When the line's content is duplicated there is no single line to relocate to, so the edit
-    # is refused rather than guessed at.
+    # A duplicated line is still targeted by its explicit line number; no guessing is involved.
     (tmp_path / "dup.py").write_text("head\nsame\nsame\n", encoding="utf-8")
-    same_hash = ReadTool.line_hash("same\n")
-    ambiguous = f"1:{same_hash}"  # "same" was line 1 under the old numbering
-    with pytest.raises(ToolError, match="stale anchor"):
-        EditTool(s, ["dup.py", [{"op": "replace", "start": ambiguous, "end": ambiguous, "content": "x\n"}]]).call()
+    dup = ReadTool(s, [{"path": "dup.py"}]).call()
+    dup_key = s.register_source_drafts(list(dup.drafts))[0]
+    EditTool(s, ["dup.py", dup_key, [{"op": "replace", "start": 2, "end": 2, "content": "ONE\n"}]]).call()
+    assert (tmp_path / "dup.py").read_text(encoding="utf-8") == "head\nONE\nsame\n"
 
 
 def test_recall_behaviors(tmp_path):
@@ -471,11 +478,11 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     direct_hidden = SearchTool(s, [{"pattern": "needle", "path": ".hidden.txt"}]).call()
     direct_ignored = SearchTool(s, [{"pattern": "needle", "path": "ignored_dir/inside.txt"}]).call()
 
-    assert "visible.txt anchor=1:" in found
-    assert ".hidden" not in found
-    assert "ignored" not in found
-    assert ".hidden.txt anchor=1:" not in direct_hidden
-    assert "ignored_dir/inside.txt anchor=1:" not in direct_ignored
+    assert "visible.txt" in found.retained_text
+    assert ".hidden" not in found.retained_text
+    assert "ignored" not in found.retained_text
+    assert ".hidden.txt" not in direct_hidden.retained_text
+    assert "ignored_dir/inside.txt" not in direct_ignored.retained_text
 
 
 def test_single_and_batch_payload_shapes_are_supported():
@@ -591,8 +598,8 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
 
     edit_params = EditTool.schema()["function"]["parameters"]
     assert edit_params["required"] == ["path", "edits"]
-    assert set(edit_params["properties"]) == {"path", "edits"}
-    assert "the line at end is itself replaced or deleted" in EditTool.schema()["function"]["description"]
+    assert set(edit_params["properties"]) == {"edits", "path", "source"}
+    assert "source=view.N from Read, Search, or InspectCode" in EditTool.schema()["function"]["description"]
 
     recall_keys = RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
     assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"
@@ -637,7 +644,7 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     with pytest.raises(ToolError):
         ReadTool(s, [{"path": "sample.py", "ranges": []}]).call()
     with pytest.raises(ToolError):
-        EditTool(s, ["a.txt", [{"op": "replace_all", "old": "", "content": "a\n"}]]).call()
+        EditTool(s, ["a.txt", [{"op": "bogus", "content": "a\n"}]]).call()
     with pytest.raises(ToolError):
         BashTool(s, []).call()
     with pytest.raises(ToolError):

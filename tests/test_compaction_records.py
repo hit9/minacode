@@ -56,15 +56,25 @@ def test_compaction_prunes_unreferenced_tool_records(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
     old_key = s.store_tool_result("Bash", ["old"], "old output")
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    read_out = ReadTool(s, [{"path": "a.txt"}]).call()
+    read_view = s.register_source_drafts(list(read_out.drafts))[0]
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], read_out.retained_text)
+    kept_out = ReadTool(s, [{"path": "a.txt", "ranges": [[1, 1]]}]).call()
+    kept_view = s.register_source_drafts(list(kept_out.drafts))[0]
     current_key = s.store_tool_result("Bash", ["current"], "current output")
 
-    context.apply_compaction({"summary": "summary"}, [{"role": "tool", "content": f"tool {current_key} Bash current"}])
+    context.apply_compaction(
+        {"summary": "summary"},
+        [{"role": "tool", "content": f"tool {current_key} Bash current"}, {"role": "user", "content": f"still using {kept_view}"}],
+    )
 
     assert old_key not in s.tool_results
     assert read_key not in s.tool_results
     assert {record.key for record in s.tool_records} == {current_key}
     assert set(s.tool_results) == {current_key}
+    # Views behind pruned Read records expire with them; a view still named in active context lives on.
+    assert s.get_source_view(read_view) is None
+    assert s.get_source_view(kept_view) is not None
 
 
 def test_compaction_keeps_current_turn_tool_records(tmp_path):
@@ -91,15 +101,18 @@ def test_compaction_drops_unreferenced_read_edit_records(tmp_path):
     path.write_text("a\nb\nc\n", encoding="utf-8")
     s = session(tmp_path)
     context = ContextManager(s)
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    edit_key = s.store_tool_result(
-        "Edit",
-        ["a.txt"],
-        EditTool(s, ["a.txt", [{"op": "delete", "start": "1:" + ReadTool.line_hash("b\n"), "end": "1:" + ReadTool.line_hash("b\n")}]]).call(),
-    )
+    read_out = ReadTool(s, [{"path": "a.txt"}]).call()
+    read_view = s.register_source_drafts(list(read_out.drafts))[0]
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], read_out.retained_text)
+    edit_out = EditTool(s, ["a.txt", read_view, [{"op": "delete", "start": 2, "end": 2}]]).call()
+    edit_view = s.register_source_drafts(list(edit_out.drafts))[0]
+    edit_key = s.store_tool_result("Edit", ["a.txt", read_view], edit_out.retained_text)
 
     context.apply_compaction({"summary": "summary"}, [])
 
     assert read_key not in s.tool_results
     assert edit_key not in s.tool_results
     assert s.tool_records == []
+    # Neither the Read view nor the Edit's fresh view is named in active context, so both expire.
+    assert s.get_source_view(read_view) is None
+    assert s.get_source_view(edit_view) is None

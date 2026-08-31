@@ -15,17 +15,18 @@ import code_symbol_index as csi
 
 from wizolt.base import Json, ToolArgs, ToolError
 from wizolt.session import Session
+from wizolt.source import INSPECT, SEARCH, SourceBlock, SourceViewDraft, ToolOutput, render_tool_output, spans_from_lines
 from wizolt.tools.base import Tool
-from wizolt.tools.files import ReadTool
 
 
 class SearchTool(Tool):
     NAME = "Search"
     DESCRIPTION = (
         "Search UTF-8 text files with case-insensitive regex, through ripgrep where it is installed; skips binary/hidden/gitignored "
-        "files and returns path anchor=line:hash matches. Prefer it over grep or rg in a shell: matches come back with anchors you "
-        "can edit from directly, where shell output carries none and costs you a re-read. The batch form runs several unrelated "
-        "queries -- each with its own pattern, path, and glob -- in one call, so a whole investigation is one round trip."
+        "files and returns grouped source views. Prefer it over grep or rg in a shell: matches come back as editable numbered "
+        "source (source=view.N) you can Edit directly, where shell output carries none and costs you a re-read. The batch form "
+        "runs several unrelated queries -- each with its own pattern, path, and glob -- in one call, so a whole investigation is "
+        "one round trip."
     )
     EXAMPLE = (
         'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
@@ -59,8 +60,47 @@ class SearchTool(Tool):
     def needs_confirmation(self) -> bool:
         return any(not (self.session.in_cwd(request["path"]) or self.session.owns_asset(request["path"])) for request in self.requests())
 
-    def call(self) -> str:
-        return "\n\n".join(self.search(request) for request in self.requests())
+    def call(self) -> ToolOutput:
+        """Run every query, then hydrate each candidate file once and render source views.
+
+        Ripgrep (or the Python fallback) only discovers candidate paths and lines; the visible
+        rows are re-derived by running the requested regex over the file's current content, so a
+        file that changed between discovery and capture still yields current results. All visible
+        spans for one path across all queries are unioned into one view shared by every query
+        result that mentions the path.
+        """
+        requests = self.requests()
+        candidates: dict[str, set[int]] = {}  # path -> query indices that matched it
+        for index, request in enumerate(requests):
+            for path, _ in self.find_candidates(request):
+                candidates.setdefault(path, set()).add(index)
+        counts = [0] * len(requests)
+        blocks: dict[str, SourceBlock] = {}
+        for path, query_indices in candidates.items():
+            lines = self.read_current(path)
+            if lines is None:
+                continue
+            visible: dict[int, bool] = {}
+            for index in query_indices:
+                request = requests[index]
+                regex = self.compile_regex(str(request["pattern"]), multiline=True)
+                context = int(request["context"])
+                match_indices = self.match_indices(lines, regex)
+                counts[index] += len(match_indices)
+                for match in match_indices:
+                    visible[match] = True
+                    for line_index in range(max(0, match - context), min(len(lines), match + context + 1)):
+                        visible.setdefault(line_index, False)
+            blocks[path] = self.build_block(path, lines, visible)
+        parts: list[str | SourceBlock] = []
+        for index, request in enumerate(requests):
+            parts.append(f"<Search pattern={json.dumps(request['pattern'])} matches={counts[index]}>")
+            for path in sorted(path for path, query_indices in candidates.items() if index in query_indices):
+                if path in blocks:
+                    parts.append(blocks[path])
+            parts.append("</Search>")
+        retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
+        return ToolOutput(retained, tuple(parts))
 
     def short_args(self) -> list[str]:
         rows = []
@@ -141,28 +181,26 @@ class SearchTool(Tool):
         hidden = rel not in {"", "."} and any(part.startswith(".") for part in rel.split("/") if part and part != ".")
         return hidden or self.ignored(path, patterns)
 
-    def search(self, request: Json) -> str:
-        """Search one request, preferring ripgrep and falling back to a Python scan.
+    def find_candidates(self, request: Json) -> list[tuple[str, int]]:
+        """Discover (path, 0-based match line) pairs for one request.
 
-        Three cases, in order: a hidden or gitignored target returns no rows without touching disk; a
-        multiline pattern skips ripgrep, which matches within a line; anything else tries ripgrep and
-        falls back when it is absent or exits in a way the caller cannot interpret. The fallback is a
-        requirement rather than an optimization, because ripgrep is not a dependency.
+        Prefers ripgrep; falls back to a Python scan. Both backends are candidate finders only:
+        matches are re-derived from the current file content during hydration.
         """
         patterns = self.gitignore_patterns(str(request["path"]))
-        rows = [] if self.default_ignored(str(request["path"]), patterns) else None
-        rows = rows if rows is not None or "\n" in str(request["pattern"]) else self.rg_matches(request)
-        rows = rows if rows is not None else self.python_matches(request)
-        header = f"<SearchToolResult pattern={json.dumps(request['pattern'])} matches={len(rows)}>"
-        return "\n".join([header, *rows, "</SearchToolResult>"])
+        if self.default_ignored(str(request["path"]), patterns):
+            return []
+        if "\n" not in str(request["pattern"]):
+            rows = self.rg_candidates(request)
+            if rows is not None:
+                return rows
+        return self.python_candidates(request)
 
-    def rg_matches(self, request: Json) -> list[str] | None:
+    def rg_candidates(self, request: Json) -> list[tuple[str, int]] | None:
         rg = shutil.which("rg")
         if not rg:
             return None
         cmd = [rg, "--json", "--line-number", "--with-filename", "--color=never", "--ignore-case", "--max-filesize", "2M"]
-        if request["context"]:
-            cmd.extend(["-C", str(request["context"])])
         if request["glob"]:
             cmd.extend(["--glob", str(request["glob"])])
         cmd.extend([str(request["pattern"]), str(request["path"])])
@@ -173,23 +211,21 @@ class SearchTool(Tool):
             )
         if proc.returncode not in (0, 1):
             return None
-        rows = []
+        rows: list[tuple[str, int]] = []
         for line in proc.stdout.splitlines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") not in {"match", "context"}:
+            if event.get("type") != "match":
                 continue
             data = event.get("data") or {}
             path = data.get("path", {}).get("text")
             number = data.get("line_number")
-            text = data.get("lines", {}).get("text", "")
             if not path or not isinstance(number, int):
                 continue
-            prefix = ">" if event["type"] == "match" else " "
-            # ripgrep counts from 1; match_line takes the 0-based index the Python backend produces.
-            rows.append(self.match_line(prefix, path, number - 1, text))
+            # ripgrep counts from 1; hydration indexes from 0.
+            rows.append((path, number - 1))
         return rows
 
     def files(self, root: str, glob_pattern: str) -> list[str]:
@@ -217,43 +253,43 @@ class SearchTool(Tool):
                 found.append(path)
         return found
 
-    def python_matches(self, request: Json) -> list[str]:
+    def python_candidates(self, request: Json) -> list[tuple[str, int]]:
         regex = self.compile_regex(str(request["pattern"]), multiline=True)
-        rows = []
+        rows: list[tuple[str, int]] = []
         for path in self.files(str(request["path"]), str(request["glob"])):
-            for row, _ in self.file_matches(path, regex, int(request["context"])):
-                rows.append(row)
+            lines = self.read_current(path)
+            if lines is None:
+                continue
+            for match in self.match_indices(lines, regex):
+                rows.append((path, match))
         return rows
 
-    def file_matches(self, path: str, regex: re.Pattern[str], context: int) -> list[tuple[str, bool]]:
+    def read_current(self, path: str) -> list[str] | None:
         try:
             if os.path.getsize(path) > self.MAX_FILE_BYTES:
-                return []
+                return None
             with open(path, encoding="utf-8") as file:
-                lines = file.readlines()
+                return file.readlines()
         except (OSError, UnicodeDecodeError):
-            return []
-        rows: list[tuple[str, bool]] = []
-        content = "".join(lines)
-        starts = (
-            [content.count("\n", 0, match.start()) for match in regex.finditer(content)]
-            if "\n" in regex.pattern
-            else [index for index, line in enumerate(lines) if regex.search(line)]
-        )
-        for index in starts:
-            seen = set()
-            start = max(0, index - context)
-            end = min(len(lines), index + context + 1)
-            for line_index in range(start, end):
-                if line_index in seen:
-                    continue
-                seen.add(line_index)
-                prefix = ">" if line_index == index else " "
-                rows.append((self.match_line(prefix, path, line_index, lines[line_index]), line_index == index))
-        return rows
+            return None
 
-    def match_line(self, prefix: str, path: str, line_index: int, line: str) -> str:
-        return f"{prefix} {self.session.relpath(path)} {ReadTool.anchor_line(line_index, line)}"
+    def match_indices(self, lines: list[str], regex: re.Pattern[str]) -> list[int]:
+        if "\n" in regex.pattern:
+            content = "".join(lines)
+            return [content.count("\n", 0, match.start()) for match in regex.finditer(content)]
+        return [index for index, line in enumerate(lines) if regex.search(line)]
+
+    def build_block(self, path: str, lines: list[str], visible: dict[int, bool]) -> SourceBlock:
+        """One numbered source view for a path; `>` marks a match line, a space marks context."""
+        ranges = [(line_index + 1, line_index + 1) for line_index in sorted(visible)]
+        spans = spans_from_lines(lines, ranges)
+        markers = []
+        for span in spans:
+            for offset in range(len(span.lines)):
+                line_index = span.start - 1 + offset
+                markers.append("> " if visible.get(line_index) else "  ")
+        draft = SourceViewDraft(path, self.session.relpath(path), len(lines), spans, SEARCH)
+        return SourceBlock(draft, tuple(markers))
 
 
 class CodeIndex:
@@ -439,8 +475,9 @@ class InspectCodeTool(Tool):
     CHAIN_MODES: ClassVar[frozenset[str]] = frozenset({"callers", "callees"})
     OPTION_KEYS: ClassVar[tuple[str, ...]] = ("limit", "kind", "path", "symbol", "exact_only", "depth", "offset", "all_kinds", "ref_kind", "loose")
     DESCRIPTION = (
-        "Use the code index: find returns symbols; inspect returns anchors/members/references; outline returns a file symbol tree; "
-        "refs lists classified references; impls lists implementors; callers/callees walk the call chain."
+        "Use the code index: find returns symbols; inspect returns members/references plus a current source block; outline returns a file symbol tree; "
+        "refs lists classified references; impls lists implementors; callers/callees walk the call chain. Source shown is hydrated from the current file, "
+        "so an index with stale metadata falls back to a stale note instead of fake source."
     )
     EXAMPLE = (
         'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
@@ -471,7 +508,7 @@ class InspectCodeTool(Tool):
         options = {key: payload[key] for key in cls.OPTION_KEYS if key in payload}
         return [str(payload.get("mode") or ""), str(payload.get("target") or ""), *([options] if options else [])]
 
-    def call(self) -> str:
+    def call(self) -> ToolOutput:
         if len(self.args) not in (2, 3):
             raise ToolError("InspectCode requires mode, target[, options]")
         if not isinstance(self.args[0], str) or not isinstance(self.args[1], str):
@@ -520,8 +557,39 @@ class InspectCodeTool(Tool):
         try:
             output = self.inspect_text(mode, target, options, limit)
         except csi.CodeSymbolIndexError as error:
-            return self.process_result("InspectCodeToolResult", 1, "", str(error))
-        return self.process_result("InspectCodeToolResult", 0, str(output), "")
+            text = self.process_result("InspectCodeToolResult", 1, "", str(error))
+            return ToolOutput(text, (text,))
+        hydrated, blocks = self.hydrate(output)
+        parts: list[str | SourceBlock] = [hydrated, *blocks]
+        retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
+        return ToolOutput(retained, tuple(parts))
+
+    def hydrate(self, text: str) -> tuple[str, list[SourceBlock]]:
+        """Hydrate the indexed definition from the current file as an editable source block.
+
+        The index may identify a stale path or range; it never mints evidence itself. The
+        definition's current lines are emitted only when the file exists and the indexed
+        signature still matches; otherwise the block is omitted with an explicit stale note.
+        """
+        match = re.search(r"^  file: (.+)$\n^  range: (\d+):(\d+)$\n^  signature: (.*)$", text, re.MULTILINE)
+        if not match:
+            return text, []
+        path, start, end, signature = match.group(1), int(match.group(2)), int(match.group(3)), match.group(4)
+        resolved = self.session.resolve_path(path)
+        try:
+            with open(resolved, encoding="utf-8") as file:
+                lines = file.readlines()
+        except OSError:
+            note = f"\n\n<stale-index> definition file {path} no longer exists; Read it again for current source</stale-index>"
+            return text + note, []
+        if start < 1 or start > len(lines) or lines[start - 1].rstrip("\n") != signature:
+            note = f"\n\n<stale-index> index is stale for {path}; Read it again for current source</stale-index>"
+            return text + note, []
+        spans = spans_from_lines(lines, [(start, min(end, len(lines)))])
+        if not spans:
+            return text, []
+        draft = SourceViewDraft(resolved, self.session.relpath(resolved), len(lines), spans, INSPECT)
+        return text, [SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))]
 
     @staticmethod
     def _check_int_option(value: object, low: int, high: int | None, message: str) -> None:
@@ -541,7 +609,7 @@ class InspectCodeTool(Tool):
         if mode == "find":
             return csi.search(target, limit=limit or csi.DEFAULT_SEARCH_LIMIT, **common)
         if mode == "inspect":
-            return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, anchors=True, anchor_format="explicit", **common)
+            return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, **common)
         if mode == "refs":
             ref_kinds = options.get("ref_kind") or ("all" if options.get("all_kinds") else "behavioral")
             return csi.refs(target, limit=limit or csi.DEFAULT_MAX_REFERENCES, offset=int(options.get("offset") or 0), ref_kinds=ref_kinds, **common)

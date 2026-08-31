@@ -129,9 +129,10 @@ def test_read_tool_message_inlines_bounded_output(tmp_path):
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     call_obj = call("Read", [{"path": "large.txt", "ranges": [[1, 0]]}])
     output = ReadTool(s, call_obj.args).call()
-    key = s.store_tool_result("Read", call_obj.args, output)
 
-    message = runner.tool_message(call_obj, key, output)
+    # The runner projects the source block, stores the retained text under tr.N, and inlines the
+    # bounded marker (with the recall key) into the model-facing message.
+    message = runner.finish(call_obj, output)
 
     # A whole-file read prints no range: 1:0 is the "to the end of the file" sentinel, and
     # echoing it raw would show the model an empty-looking range it never wrote.

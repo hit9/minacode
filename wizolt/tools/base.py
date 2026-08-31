@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 
 from wizolt.base import ApprovalView, Json, ToolArgs, ToolError
 from wizolt.session import Session, TurnDiff
+from wizolt.source import ToolOutput
 
 
 class Tool:
@@ -203,7 +204,7 @@ class Tool:
     def short_args(self) -> list[str]:
         return [self.compact(arg) for arg in self.args]
 
-    def call(self) -> str:
+    def call(self) -> str | ToolOutput:
         raise NotImplementedError
 
     def strings(self, *, min_count: int = 0, max_count: int | None = None) -> list[str]:

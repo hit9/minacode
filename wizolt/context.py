@@ -65,6 +65,7 @@ class ContextManager:
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
     TOOL_RECORD_KEY: ClassVar[re.Pattern] = re.compile(r"\btr\.\d+\b")
     SEGMENT_KEY: ClassVar[re.Pattern] = re.compile(r"seg\.(\d+)")
+    SOURCE_VIEW_KEY: ClassVar[re.Pattern] = re.compile(r"\bview\.\d+\b")
 
     def __init__(self, session: Session, model: ModelClient | None = None):
         self.session = session
@@ -407,6 +408,7 @@ class ContextManager:
             turn_messages[:] = keep[:insert] + summary_block + keep[insert:]
             prune_context = [*self.session.messages, *turn_messages]
         self.prune_tool_records(prune_context)
+        self.prune_source_views(prune_context)
         # The recorded usage described the pre-compaction payload and no longer reflects what the
         # next request will carry (and a manual /compact ran a compaction request whose own usage
         # just overwrote the last-* fields). Clear them so the overdue guard and the status bar fall
@@ -423,6 +425,29 @@ class ContextManager:
         keep = set(self.TOOL_RECORD_KEY.findall(self.messages_text(keep_messages)))
         self.session.tool_records = [record for record in records if record.key in keep][-400:]
         self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
+
+    def prune_source_views(self, keep_messages: list[Json]) -> int:
+        """Drop source views whose ids are no longer named in active model context.
+
+        Retention roots are committed model messages, the active turn, and AgentState text; the
+        scan reads message content and assistant tool-call arguments (where Edit names its view),
+        plus the live goal/plan/known/check. Transcript-only history is not a root: a view expires
+        once it leaves active model context, and Edit then returns `source missing`.
+        """
+        rows = [ImageInputs.label_text(message) for message in keep_messages]
+        for message in keep_messages:
+            for raw in message.get("tool_calls") or []:
+                function = raw.get("function") if isinstance(raw, dict) else None
+                if not isinstance(function, dict):
+                    continue
+                args = function.get("arguments")
+                if isinstance(args, str):
+                    rows.append(args)
+                elif args is not None:
+                    rows.append(json.dumps(args, ensure_ascii=False))
+        rows.append(self.session.state.format(include_summary=True))
+        referenced = set(self.SOURCE_VIEW_KEY.findall("\n".join(rows)))
+        return self.session.prune_source_views(referenced)
 
     def latest_user_index(self, messages: list[Json]) -> int | None:
         for index in range(len(messages) - 1, -1, -1):

@@ -11,6 +11,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from wizolt.base import (
+    MAX_TOOL_OUTPUT_TOKENS,
     ActiveResource,
     ApprovalView,
     Json,
@@ -26,6 +27,7 @@ from wizolt.base import (
 from wizolt.context import ContextManager
 from wizolt.model import ModelClient
 from wizolt.session import Session, TurnDiff
+from wizolt.source import SourceBlock, ToolOutput, as_tool_output, project_output, render_tool_output
 from wizolt.tools import (
     TOOL_REGISTRY,
     AskSpec,
@@ -57,8 +59,8 @@ class ToolRunner:
     on every provider.
 
     A batch is segmented rather than flat. Independent read-only calls run concurrently; mutating and
-    interactive ones stay ordered, and edits in one segment are planned together so their anchors
-    resolve against the file the earlier edits will have left behind.
+    interactive ones stay ordered, and edits in one segment are planned together so their line
+    origins resolve against the file the earlier edits will have left behind.
 
     Concurrency covers only `call()`. Every side effect — display, session bookkeeping, the returned
     messages — is applied on this thread in the model's original order. A declined confirmation
@@ -177,7 +179,7 @@ class ToolRunner:
         if self._vision_client is not None:
             self._vision_client.cancel()
 
-    def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
+    def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str | ToolOutput:
         if isinstance(tool, DelegateTool):
             tool.runner = self
             return tool.call()
@@ -265,7 +267,7 @@ class ToolRunner:
         # bookkeeping, tool messages) on this thread in request order, so output and the results
         # handed back to the model match the order the model issued the calls.
         cap = max(1, self.session.settings.max_parallel_tools)
-        outcomes: list[tuple[str, str, str | None, float] | None] = [None] * len(segment)
+        outcomes: list[tuple[str, str | ToolOutput, str | None, float, object | None] | None] = [None] * len(segment)
         with ThreadPoolExecutor(max_workers=min(len(segment), cap), thread_name_prefix="tool") as executor:
             futures = {executor.submit(self.execute_readonly, call): position for position, call in enumerate(segment)}
             for future in as_completed(futures):
@@ -304,14 +306,15 @@ class ToolRunner:
         except Exception:  # noqa: BLE001 - malformed third-party tool implementations are never parallel-safe.
             return False
 
-    def execute_readonly(self, call: ToolCall) -> tuple[str, str, str | None, float]:
-        # Pure execution for a parallel worker: returns (kind, output, display, elapsed) and performs
-        # no display or session writes (those happen in finalize_outcome on the main thread). Mirrors
-        # run_one's branches, minus confirmation (parallel_safe guarantees none is needed).
+    def execute_readonly(self, call: ToolCall) -> tuple[str, str | ToolOutput, str | None, float, object | None]:
+        # Pure execution for a parallel worker: returns (kind, output, display, elapsed, recovery)
+        # and performs no display or session writes (those happen in finalize_outcome on the main
+        # thread). Mirrors run_one's branches, minus confirmation (parallel_safe guarantees none is
+        # needed). Recovery is the structured source output a ToolError carries, if any.
         started = time.monotonic()
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            return "reject", f"ToolError: unknown tool {call.name}", None, 0.0
+            return "reject", f"ToolError: unknown tool {call.name}", None, 0.0, None
         tool = tool_class(self.session, call.args)
         display = None
         try:
@@ -320,19 +323,19 @@ class ToolRunner:
                 raise ToolError(call.error)
             output = tool.call()
         except ToolError as error:
-            return "reject", f"ToolError: {error}", display, time.monotonic() - started
+            return "reject", f"ToolError: {error}", display, time.monotonic() - started, getattr(error, "recovery", None)
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
-            return "error", f"ToolError: {error}", display, time.monotonic() - started
-        return "ok", output, display, time.monotonic() - started
+            return "error", f"ToolError: {error}", display, time.monotonic() - started, None
+        return "ok", output, display, time.monotonic() - started, None
 
-    def finalize_outcome(self, call: ToolCall, outcome: tuple[str, str, str | None, float], batch_suffix: str = "") -> str:
-        kind, output, display, elapsed = outcome
+    def finalize_outcome(self, call: ToolCall, outcome: tuple[str, str | ToolOutput, str | None, float, object | None], batch_suffix: str = "") -> str:
+        kind, output, display, elapsed, recovery = outcome
         d = ToolDisplay(batch_suffix=batch_suffix, display=display)
         if kind == "ok":
             return self.finish(call, output, elapsed=elapsed, d=d)
         if kind == "reject":
-            return self.reject(call, output, d=d)
-        return self.finish(call, output, failed=True, elapsed=elapsed, d=d)
+            return self.reject(call, str(output), d=d, recovery=recovery)
+        return self.finish(call, output, failed=True, elapsed=elapsed, d=d, recovery=recovery)
 
     def edit_segment_end(self, calls: list[ToolCall], start: int) -> int:
         end = start
@@ -349,7 +352,7 @@ class ToolRunner:
         call: ToolCall,
         batch_suffix: str = "",
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
-        plan_error: str = "",
+        plan_error: str | tuple[str, object | None] = "",
     ) -> tuple[str, str, Json | None]:
         """Run one tool call, returning (status, tool message, optional observation).
 
@@ -378,7 +381,11 @@ class ToolRunner:
         try:
             d.display = tooloutput.short_call(self.session, call, tool.short_args())
             if plan_error:
-                raise ToolError(plan_error)
+                # A batch plan failure carries (message, recovery); attach the recovery so the
+                # rendered failure still hands the model a fresh view.
+                message, recovery = plan_error if isinstance(plan_error, tuple) else (plan_error, None)
+                error = ToolError(message, recovery=recovery) if recovery is not None else ToolError(message)
+                raise error
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo and not tool.always_confirms():
                 d.auto = True
@@ -438,7 +445,7 @@ class ToolRunner:
                 d.vision_entry = tool.vision_entry_label
             observation = tool.model_observation()
         except ToolError as error:
-            return "failed", self.reject(call, f"ToolError: {error}", d=d), None
+            return "failed", self.reject(call, f"ToolError: {error}", d=d, recovery=getattr(error, "recovery", None)), None
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
             return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d), None
         return "ok", self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d), observation
@@ -449,34 +456,52 @@ class ToolRunner:
         output: str,
         *,
         d: ToolDisplay | None = None,
+        recovery: object | None = None,
     ) -> str:
+        """A refused or failed call. `recovery` is structured source output carried by a ToolError
+        (e.g. a fresh view from a stale Edit): its views are registered and rendered here, on the
+        main thread, without parsing error strings."""
         d = d or ToolDisplay()
-        self.session.record_tool_error("-", call.name, call.args, output)
+        recovery_output = isinstance(recovery, ToolOutput) and recovery.has_source
+        text = output + "\n" + self._render_source_output(recovery) if recovery_output else output
+        self.session.record_tool_error("-", call.name, call.args, text)
         self.emit(
             LogBlock.hierarchy(None, [LogLine("error", oneline(output.removeprefix("ToolError:").strip(), 220), LogRole.ERROR, LogEdge.END)])
             if d.nested_display
             else toolblocks.reject_display(self.session, call, output, d=d)
         )
-        return self.tool_message(call, "", output, failed=True, display=d.display)
+        return self.tool_message(call, "", text, failed=True, display=d.display, bound=not recovery_output)
 
     def finish(
         self,
         call: ToolCall,
-        output: str,
+        output: str | ToolOutput,
         *,
         failed: bool = False,
         elapsed: float | None = None,
         store: bool = True,
         turn_diff: TurnDiff | None = None,
         d: ToolDisplay | None = None,
+        recovery: object | None = None,
     ) -> str:
         d = d or ToolDisplay()
         tool_class = TOOL_REGISTRY.get(call.name)
-        key = self.session.store_tool_result(call.name, call.args, output) if not failed and store and (tool_class is None or tool_class.STORES_RESULT) else ""
+        tool_output = as_tool_output(output)
+        key = ""
+        bound = True
+        if tool_output.has_source:
+            # Source-bearing output is projected, keyed, and rendered here on the main thread:
+            # view ids follow model call order, and the retained plain text is stored under tr.N.
+            model_text, key = self._source_output(call, tool_output, failed=failed, store=store, tool_class=tool_class)
+            bound = False
+        else:
+            model_text = tool_output.retained_text
+            if not failed and store and (tool_class is None or tool_class.STORES_RESULT):
+                key = self.session.store_tool_result(call.name, call.args, model_text)
         if failed:
-            self.session.record_tool_error(key or "-", call.name, call.args, output)
+            self.session.record_tool_error(key or "-", call.name, call.args, model_text)
         elif key:
-            self.update_code_index(call, output)
+            self.update_code_index(call, model_text)
             if turn_diff and turn_diff.path and turn_diff.diff:
                 self.session.store_turn_diff(
                     key,
@@ -488,15 +513,56 @@ class ToolRunner:
                     round=self.session.state.round_count,
                 )
         if not (tool_class is not None and tool_class.SILENT) or failed:
-            self.emit(toolblocks.finish_display(self.session, call, key, output, failed=failed, elapsed=elapsed, d=d, worker_rule=self.worker_rule))
-        return self.tool_message(call, key, output, failed=failed, display=d.display)
+            self.emit(toolblocks.finish_display(self.session, call, key, model_text, failed=failed, elapsed=elapsed, d=d, worker_rule=self.worker_rule))
+        return self.tool_message(call, key, model_text, failed=failed, display=d.display, bound=bound)
 
-    def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
+    def _source_output(
+        self,
+        call: ToolCall,
+        tool_output: ToolOutput,
+        *,
+        failed: bool,
+        store: bool,
+        tool_class: type[Tool] | None,
+    ) -> tuple[str, str]:
+        """Project source blocks, store the retained plain text, register views, and render.
+
+        Returns (model_text, tr.N key or ""). The note inside a bounded block names the
+        retained key and its materialized file, so the model can Read the omitted middle back
+        into a fresh view.
+        """
+        projected = project_output(tool_output, max_tokens=MAX_TOOL_OUTPUT_TOKENS, estimate=self.context.estimated_text_tokens)
+        retained = tool_output.retained_text
+        key = ""
+        if not failed and store and (tool_class is None or tool_class.STORES_RESULT):
+            key = self.session.store_tool_result(call.name, call.args, retained)
+            bounded = [index for index, part in enumerate(projected.parts) if isinstance(part, SourceBlock) and part.bounded]
+            if bounded:
+                path = self.context.materialize_output(key, retained)
+                hint = self.context.OMITTED_OUTPUT_HINT if path else self.context.OMITTED_OUTPUT_RECALL_HINT
+                parts = list(projected.parts)
+                for index in bounded:
+                    part = parts[index]
+                    if isinstance(part, SourceBlock):
+                        parts[index] = replace(part, note_recall=key, note_file=path, note_hint=hint)
+                projected = ToolOutput(projected.retained_text, tuple(parts))
+        keys = self.session.register_source_drafts(list(projected.drafts))
+        return render_tool_output(projected, keys), key
+
+    def _render_source_output(self, recovery: object | None) -> str:
+        """Register a ToolError's recovery drafts and render them with their fresh view ids."""
+        if not isinstance(recovery, ToolOutput) or not recovery.has_source:
+            return ""
+        keys = self.session.register_source_drafts(list(recovery.drafts))
+        return render_tool_output(recovery, keys)
+
+    def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None, bound: bool = True) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or tooloutput.short_call(self.session, call))
         rows = [head]
         if failed:
             rows.append("status: failed")
-        rows.extend(["output:", self.context.bound_output(output, key).rstrip()])
+        body = self.context.bound_output(output, key).rstrip() if bound else output.rstrip()
+        rows.extend(["output:", body])
         return "\n".join(rows).strip()
 
     def update_code_index(self, call: ToolCall, output: str) -> None:

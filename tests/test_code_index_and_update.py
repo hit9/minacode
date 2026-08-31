@@ -202,7 +202,7 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     s.settings.yolo = True
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("bad", "Bash", []), ToolCall("create", "Edit", ["ok.txt", [{"op": "create", "content": "ok\n"}]])])
+    runner.run([ToolCall("bad", "Bash", []), ToolCall("create", "Edit", ["ok.txt", "", [{"op": "create", "content": "ok\n"}]])])
 
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1

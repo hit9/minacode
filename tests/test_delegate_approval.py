@@ -116,9 +116,8 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     status_tool = DelegateTool(parent, [{"action": "status"}])
     block = toolblocks.approval_display(parent, ToolCall("delegate-3", "Delegate", [{"action": "status"}]), status_tool, "confirm")
     assert not block.has_children
-    edit_tool = EditTool(parent, ["a.py", [{"op": "replace_all", "old": "x", "content": "y"}]])
-    (tmp_path / "a.py").write_text("x\n")
-    block = toolblocks.approval_display(parent, ToolCall("edit-1", "Edit", ["a.py", []]), edit_tool, "confirm")
+    edit_tool = EditTool(parent, ["new.py", "", [{"op": "create", "content": "x\n"}]])
+    block = toolblocks.approval_display(parent, ToolCall("edit-1", "Edit", ["new.py", "", [{"op": "create", "content": "x\n"}]]), edit_tool, "confirm")
     assert block.has_children
 
 def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tmp_path):

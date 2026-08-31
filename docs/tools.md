@@ -16,47 +16,42 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 * - Tool
   - What it does
 * - **`Read`**
-  - Opens selected line ranges from one or several UTF-8 files. Every returned line has an
-    anchor that later edits can verify.
+  - Opens selected line ranges from one or several UTF-8 files as a numbered source view.
 
     A shortened result looks like this:
 
-    ```html
-    <Read path="wizolt.py">
-      <file_stat mtime_ns="..." size="222039"/>
-      <total_lines>5031</total_lines>
-      <range>684:687</range>
-      <content hashline-numbered>
-        anchor=684:234ew | class Tool:
-        anchor=685:7xy0d |     NAME: ClassVar[str] = ""
-        anchor=686:5exvk |     DESCRIPTION: ClassVar[str] = ""
-      </content>
+    ```text
+    <Read path="wizolt.py" source="view.12" lines="684:686" total_lines=5031>
+    684 | class Tool:
+    685 |     NAME: ClassVar[str] = ""
+    686 |     DESCRIPTION: ClassVar[str] = ""
     </Read>
     ```
 
-    In `684:234ew`, `684` is the line number and `234ew` is a short hash of that line's content.
-    The line number locates the edit; the hash proves that the line has not changed since it was
-    read. Line numbers are one-based and ranges include both ends, matching what `grep -n`, your
-    editor, tracebacks, and diffs show, so `Read`, `Search`, and `InspectCode` all agree on which
-    line is which.
+    `view.12` is that file snapshot's id; `684` is the one-based line number. Line numbers and
+    ranges include both ends, matching what `grep -n`, your editor, tracebacks, and diffs show, so
+    `Read`, `Search`, and `InspectCode` all agree on which line is which. Only about the
+    requested rows are kept in the model's context; the rest stays available by id.
 * - **`ViewImage`**
   - Opens one local PNG, JPEG, WebP, or single-frame GIF. The active model reads it when it
     accepts images; on a text-only route a configured [vision model](configuration.md#vision-model)
     returns its text observation instead. Images outside the workspace require confirmation.
 * - **`Search`**
   - Finds text with case-insensitive regular expressions, optionally limited by path or filename
-    pattern. It skips hidden, binary, and gitignored files and returns editable anchors.
+    pattern. It skips hidden, binary, and gitignored files and returns the matches as numbered
+    source views you can edit from directly.
 * - **`InspectCode`**
   - Finds definitions, references, implementations, callers, callees, and file outlines through
     the [code index](#code-symbol-index). Use it for code structure rather than exact text.
 * - **`Edit`**
   - Creates or changes one UTF-8 file by inserting, replacing, or deleting content.
-    For an anchored change, `Edit` sends back the `line:hash` value returned by `Read`, `Search`,
-    or `InspectCode`. wizolt checks the current line immediately before writing and
-    <span class="marker">refuses the edit if the hash no longer matches</span>. A successful edit
-    also refunds the new anchors for the region it changed, so consecutive edits to the same file
-    keep going without re-reading it first. Successful edits
-    appear in [`/diff`](usage.md#reviewing-changes).
+    For an existing file, `Edit` names the numbered source view returned by `Read`, `Search`, or
+    `InspectCode` (`source=view.N`) and gives one-based line numbers. wizolt extracts the complete
+    target from that view and checks it against the file immediately before writing, and
+    <span class="marker">refuses the edit if the target changed</span>. When the exact target still
+    exists nearby, the edit relocates to it and reports the move. A successful edit returns a fresh
+    source view for the region it changed, so consecutive edits to the same file keep going without
+    re-reading it first. Successful edits appear in [`/diff`](usage.md#reviewing-changes).
 
     :::{figure} ../snapshots/wizolt-edit-preview.png
     :alt: An Edit confirmation previewing the proposed diff

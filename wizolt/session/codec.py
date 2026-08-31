@@ -14,7 +14,7 @@ import re
 from dataclasses import asdict, fields
 from typing import TYPE_CHECKING, ClassVar
 
-from wizolt.base import SESSION_EVENT_KEY, Json, ModelUsage, Text
+from wizolt.base import SESSION_EVENT_KEY, Json, ModelUsage, Text, split_lines
 from wizolt.image import ImageInputs
 
 if TYPE_CHECKING:
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from wizolt.session import (
         TurnDiff as TurnDiffT,
     )
+    from wizolt.source import SourceView
 
 
 TRANSCRIPT_SYNC_VERSION = 1
@@ -78,6 +79,7 @@ class SessionSnapshotCodec:
             "transcript_turn_diffs_len": transcript_diff_len, "transcript_turn_diffs_tail_digest": cls.digest(transcript_diff_tail),
             "history_len": len(session.history), "history_keys_digest": cls.digest([seg.key for seg in session.history]),
             "provider_overrides_digest": cls.digest(session.provider_overrides),
+            "source_views_len": len(session.source_views), "source_views_keys_digest": cls.digest([view.key for view in cls.ordered_views(session.source_views)]),
         }
         # fmt: on
 
@@ -184,6 +186,7 @@ class SessionSnapshotCodec:
                 bool(session.tool_errors),
                 bool(session.turn_diffs),
                 bool(session.history),
+                bool(session.source_views),
                 bool(state.goal or state.plan or state.known or state.check or state.summary),
             )
         )
@@ -311,6 +314,7 @@ class SessionSnapshotCodec:
             "turn_diffs": [cls.turn_diff(diff, blobs) for diff in session.turn_diffs],
             "transcript_turn_diffs": [cls.transcript_turn_diff(diff) for diff in session.transcript_turn_diffs],
             "history": [cls.history_segment(segment, blobs) for segment in session.history],
+            "source_views": [cls.source_view(view, blobs) for view in cls.ordered_views(session.source_views)],
             "provider_overrides": dict(session.provider_overrides),
         }
         # fmt: on
@@ -353,6 +357,7 @@ class SessionSnapshotCodec:
         cls.add_turn_diffs_delta(delta, session.turn_diffs, saved, blobs)
         cls.add_transcript_turn_diffs_delta(delta, session.transcript_turn_diffs, saved)
         cls.add_history_delta(delta, session.history, saved, blobs)
+        cls.add_source_views_delta(delta, session.source_views, saved, blobs)
         if cls.digest(session.provider_overrides) != saved.get("provider_overrides_digest", cls.digest({})):
             delta["provider_overrides"] = dict(session.provider_overrides)
         return delta
@@ -419,6 +424,98 @@ class SessionSnapshotCodec:
         elif cls.digest(keys) != saved_digest:
             delta["history_replace"] = [cls.history_segment(segment, blobs) for segment in current]
 
+    @staticmethod
+    def ordered_views(source_views: dict[str, SourceView]) -> list[SourceView]:
+        """Live views in ascending key order, so encoding is deterministic."""
+        return [source_views[key] for key in sorted(source_views, key=lambda key: int(key.split(".", 1)[1]))]
+
+    @classmethod
+    def source_view(cls, view: SourceView, blobs: dict[str, str]) -> Json:
+        """View metadata inline, span text as content-addressed blobs. Equal span text is written
+        once per unique content, like the TurnDiff snapshots beside it."""
+        return {
+            "key": view.key,
+            "path": view.path,
+            "display_path": view.display_path,
+            "total_lines": view.total_lines,
+            "producer": view.producer,
+            "round": view.round,
+            "step": view.step,
+            "spans": [{"start": span.start, "blob": cls.blob_ref("".join(span.lines), blobs)} for span in view.spans],
+        }
+
+    @staticmethod
+    def source_views(data: list[Json], blobs: dict[str, str]) -> list[SourceView]:
+        """Decode and validate persisted views. Malformed data is dropped, never repaired: a
+        missing or malformed span blob drops that view, and load never invents content."""
+        from wizolt.source import SourceSpan, SourceView, parse_view_key
+
+        views: list[SourceView] = []
+        for raw in data or []:
+            if not isinstance(raw, dict):
+                continue
+            key = str(raw.get("key") or "")
+            if parse_view_key(key) is None:
+                continue
+            path = str(raw.get("path") or "")
+            if not path:
+                continue
+            display_path = str(raw.get("display_path") or path)
+            try:
+                total_lines = int(raw.get("total_lines") or 0)
+                round_no = int(raw.get("round") or 0)
+                step = int(raw.get("step") or 0)
+            except (TypeError, ValueError):
+                continue
+            if total_lines < 0:
+                continue
+            producer = str(raw.get("producer") or "")
+            spans: list[SourceSpan] = []
+            valid = True
+            for raw_span in raw.get("spans") or []:
+                if not isinstance(raw_span, dict):
+                    valid = False
+                    break
+                try:
+                    start = int(raw_span.get("start") or 0)
+                except (TypeError, ValueError):
+                    valid = False
+                    break
+                ref = str(raw_span.get("blob") or "")
+                text = blobs.get(ref)
+                if start < 1 or text is None:
+                    valid = False
+                    break
+                lines = tuple(split_lines(text))
+                if not lines:
+                    valid = False
+                    break
+                span = SourceSpan(start, lines)
+                if spans and span.start <= spans[-1].end + 1:
+                    valid = False  # overlapping or touching spans
+                    break
+                if span.end > total_lines:
+                    valid = False
+                    break
+                spans.append(span)
+            if not valid:
+                continue
+            views.append(SourceView(key, path, display_path, total_lines, tuple(spans), producer, round_no, step))
+        return views
+
+    @classmethod
+    def add_source_views_delta(cls, delta: Json, current: dict[str, SourceView], saved: Json, blobs: dict[str, str]) -> None:
+        views = cls.ordered_views(current)
+        keys = [view.key for view in views]
+        last_len = int(saved.get("source_views_len", 0) or 0)
+        saved_digest = saved.get("source_views_keys_digest")
+        if cls.digest(keys[:last_len]) == saved_digest:
+            if len(views) > last_len:
+                delta["source_views"] = [cls.source_view(view, blobs) for view in views[last_len:]]
+        elif cls.digest(keys) != saved_digest:
+            # Pruning changed the bounded sequence: replace it wholesale, like the history window.
+            delta["source_views_replace"] = [cls.source_view(view, blobs) for view in views]
+
     @classmethod
     def merge(cls, data: Json, delta: Json) -> None:
         cls.merge_sequence(data, delta, "messages")
@@ -429,6 +526,7 @@ class SessionSnapshotCodec:
         cls.merge_sequence(data, delta, "turn_diffs")
         cls.merge_sequence(data, delta, "transcript_turn_diffs")
         cls.merge_sequence(data, delta, "history")
+        cls.merge_sequence(data, delta, "source_views")
         if "tool_counter" in delta:
             data["tool_counter"] = delta["tool_counter"]
         if "usage" in delta:

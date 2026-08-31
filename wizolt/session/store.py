@@ -70,7 +70,9 @@ class SessionSnapshotStore:
     format version and makes a log self-describing when read by hand. The full snapshot is line 2;
     `blob` lines and deltas append from line 3."""
 
-    FORMAT_VERSION: ClassVar[int] = 2
+    # v3: source views (view.N) replaced content-hashed line anchors; older sessions are refused
+    # because their assistant messages and tool results teach the removed anchor schema.
+    FORMAT_VERSION: ClassVar[int] = 3
     PROJECTS_DIR: ClassVar[str] = "projects"
     META_SUFFIX: ClassVar[str] = ".meta.json"
     _SLUG_RE: ClassVar[re.Pattern] = re.compile(r"[^A-Za-z0-9._-]+")
@@ -386,6 +388,7 @@ class SessionSnapshotStore:
         messages = SessionSnapshotCodec.persistable_messages(data.get("messages", []))
         tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
         turn_diffs = SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", []), blobs)
+        source_views = SessionSnapshotCodec.source_views(data.get("source_views", []), blobs)
         raw_transcript_messages = data.get("transcript_messages", [])
         raw_active_transcript_messages = data.get("active_transcript_messages", [])
         has_transcript = any(key in data for key in ("transcript_messages", "active_transcript_messages", "transcript_turn_diffs", "transcript_sync"))
@@ -431,6 +434,8 @@ class SessionSnapshotStore:
             transcript_turn_diffs=transcript_turn_diffs,
             transcript_incomplete=bool(data.get("_transcript_incomplete")),
             history=SessionSnapshotCodec.history(data.get("history", []), blobs),
+            source_views={view.key: view for view in source_views},
+            source_view_counter=max((int(view.key.split(".", 1)[1]) for view in source_views), default=0),
             pending_user_inputs=[item for value in data.get("pending_user_inputs", []) if (item := QueuedInput.from_json(value)) is not None],
             uid=data.get("uid", uid),
             resumed=True,

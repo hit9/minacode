@@ -18,6 +18,7 @@ from wizolt.render import UiPrinter
 from wizolt.runner import ToolRunner
 from wizolt.session import Session, SessionSnapshotStore, TurnDiff
 from wizolt.session.diffs import _find_unambiguous_move, net_diff_for_path, net_diff_sections
+from wizolt.tools import ReadTool
 from wizolt.tui import DiffViewState, TabbedViewState
 
 
@@ -286,7 +287,9 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
     s.settings.yolo = True
 
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    call = ToolCall("edit-1", "Edit", ["a.py", [{"op": "replace_all", "old": "old\n", "content": "new\n"}]])
+    read = ReadTool(s, [{"path": "a.py"}]).call()
+    key = s.register_source_drafts(list(read.drafts))[0]
+    call = ToolCall("edit-1", "Edit", ["a.py", key, [{"op": "replace", "start": 1, "end": 1, "content": "new\n"}]])
     status, _, observation = runner.run_one(call)
 
     assert status == "ok"

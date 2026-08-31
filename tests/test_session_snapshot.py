@@ -205,3 +205,83 @@ def test_turn_diff_snapshots_survive_a_roundtrip(tmp_path):
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
 
     assert [(d.key, d.path, d.before, d.after) for d in restored.turn_diffs] == [("tr.1", "x.py", "old\n", "new\n")]
+
+
+def test_source_views_survive_a_snapshot_roundtrip(tmp_path):
+    """A view the model was shown survives save/load, so a resumed assistant can still edit with it."""
+    from wizolt.tools import ReadTool
+
+    s = session_with_data_dir(tmp_path)
+    path = tmp_path / "a.py"
+    path.write_text("one\ntwo\nthree\n")
+    out = ReadTool(s, [{"path": "a.py"}]).call()
+    key = s.register_source_drafts(list(out.drafts))[0]
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    view = restored.get_source_view(key)
+
+    assert view is not None
+    assert view.path == str(path)
+    assert view.total_lines == 3
+    assert [line for span in view.spans for line in span.lines] == ["one\n", "two\n", "three\n"]
+
+
+def test_source_view_span_text_uses_content_addressed_blobs(tmp_path):
+    """Span text is stored as a content-addressed blob, deduplicating equal text across views and diffs."""
+    from wizolt.tools import ReadTool
+
+    s = session_with_data_dir(tmp_path)
+    path = tmp_path / "a.py"
+    path.write_text("one\ntwo\nthree\n")
+    s.register_source_drafts(list(ReadTool(s, [{"path": "a.py"}]).call().drafts))
+    s.store_turn_diff("tr.1", 1, "a.py", "-one\n+ONE\n", before="one\n", after="ONE\n", round=1)
+    s.save_snapshot()
+
+    lines = read_lines(log_path(s))
+    blobs = sorted(line["text"] for line in lines if "blob" in line)
+    assert blobs == ["ONE\n", "one\n", "one\ntwo\nthree\n"]
+    entry = [line for line in lines if "source_views" in line][-1]["source_views"][0]
+    assert entry["spans"][0]["blob"]
+    assert "lines" not in entry["spans"][0]
+
+
+def test_source_view_delta_appends_new_views_and_drops_pruned(tmp_path):
+    """A second save appends newly registered views; after pruning, the delta replaces the set."""
+    from wizolt.tools import ReadTool
+
+    s = session_with_data_dir(tmp_path)
+    path = tmp_path / "a.py"
+    path.write_text("one\ntwo\nthree\n")
+    keep = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py", "ranges": [[1, 1]]}]).call().drafts))[0]
+    s.save_snapshot()
+
+    dropped = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py", "ranges": [[2, 2]]}]).call().drafts))[0]
+    s.save_snapshot()
+    s.prune_source_views({keep})
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert restored.get_source_view(keep) is not None
+    assert restored.get_source_view(dropped) is None
+
+
+def test_loading_drops_views_with_missing_or_malformed_blobs(tmp_path):
+    """A view whose span blob is missing is dropped, never invented; Edit then reports source missing."""
+    from wizolt.tools import ReadTool
+
+    s = session_with_data_dir(tmp_path)
+    path = tmp_path / "a.py"
+    path.write_text("one\n")
+    key = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py"}]).call().drafts))[0]
+    s.save_snapshot()
+
+    lines = read_lines(log_path(s))
+    for line in lines:
+        if "source_views" in line:
+            line["source_views"] = []
+    with open(log_path(s), "w") as file:
+        file.write("\n".join(json.dumps(line) for line in lines) + "\n")
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert restored.get_source_view(key) is None

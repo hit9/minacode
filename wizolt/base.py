@@ -179,13 +179,23 @@ class ModelStreamIncomplete(ModelError): ...
 class ModelRequestRetry(WizoltError): ...
 
 
-class ToolError(WizoltError): ...
+class ToolError(WizoltError):
+    """A tool failure serialized back to the model.
+
+    `recovery` carries structured recovery output (e.g. a fresh source view from a stale Edit)
+    that the runner registers and renders on the main thread like successful output. Ordinary
+    errors carry None; typed as object to keep base.py free of the source-value import.
+    """
+
+    def __init__(self, message: str = "", *, recovery: object = None):
+        super().__init__(message)
+        self.recovery = recovery
 
 
 def split_lines(text: str) -> list[str]:
     """Canonical line model shared by Read, Edit, and persisted diffs: split on "\n" only, keeping
     the newline (like file.readlines()). str.splitlines(True) also breaks on \r, \v, \f, \x1c-\x1e,
-    \x85, \u2028, \u2029, which would number lines differently than Read and desync anchors."""
+    \x85, \u2028, \u2029, which would number lines differently than Read and desync its line numbers."""
     parts = text.split("\n")
     lines = [part + "\n" for part in parts[:-1]]
     if parts[-1]:

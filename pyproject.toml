@@ -69,7 +69,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["wizolt", "wizolt.builtin_skills", "wizolt.cli", "wizolt.model", "wizolt.mcp", "wizolt.providers", "wizolt.session", "wizolt.tools", "wizolt.tui"]
+packages = ["wizolt", "wizolt.builtin_skills", "wizolt.cli", "wizolt.model", "wizolt.mcp", "wizolt.providers", "wizolt.session", "wizolt.source", "wizolt.tools", "wizolt.tui"]
 
 [tool.setuptools.package-data]
 wizolt = ["builtin_skills/*/SKILL.md", "providers/catalog.json"]

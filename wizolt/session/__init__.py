@@ -35,6 +35,7 @@ from wizolt.session.store import (
     SessionSnapshotStore,
     local_timestamp,
 )
+from wizolt.source import SourceView, SourceViewDraft, view_key
 
 __all__ = [
     "TRANSCRIPT_SYNC_VERSION",
@@ -280,6 +281,10 @@ class Session:
     worker_tool_enabled: bool = False  # Delegate registration gate, frozen at construction from bool(config.worker_provider)
     _agent: Agent | None = None  # runtime handle of the worker's Agent; same lifetime as the worker Session
     tool_counter: int = 0
+    # Source views are owned by the Session: only it allocates keys and mutates the mapping, so
+    # read-only tools can create immutable drafts on worker threads without a lock.
+    source_view_counter: int = 0
+    source_views: dict[str, SourceView] = field(default_factory=dict)
     turn_diffs: list[TurnDiff] = field(default_factory=list)
     history: list[HistorySegment] = field(default_factory=list)
     jobs: dict[str, BackgroundJob] = field(default_factory=dict)
@@ -459,6 +464,64 @@ class Session:
             old = self.tool_records.pop(0)
             self.tool_results.pop(old.key, None)
         return key
+
+    def register_source_drafts(self, drafts: list[SourceViewDraft]) -> list[str]:
+        """Allocate `view.N` keys for `drafts` in call order, register them, return the keys.
+
+        Only the runner's main thread calls this, in model tool-call order, so keys are
+        deterministic regardless of parallel completion order. A key is never reused: the counter
+        is monotonic and re-registering an existing key is refused. Identical drafts (same path,
+        same span text) share one key, so one Search call with several queries pointing at the
+        same file resolves to a single view id.
+        """
+        keys: list[str] = []
+        existing = {self._draft_identity(key, view): key for key, view in self.source_views.items()}
+        for draft in drafts:
+            identity = self._draft_identity(draft.path, draft)
+            if identity in existing:
+                keys.append(existing[identity])
+                continue
+            self.source_view_counter += 1
+            key = view_key(self.source_view_counter)
+            if key in self.source_views:
+                raise RuntimeError(f"source view key already registered: {key}")
+            self.source_views[key] = SourceView(
+                key,
+                draft.path,
+                draft.display_path,
+                draft.total_lines,
+                draft.spans,
+                draft.producer,
+                self.state.round_count,
+                self.state.turn_step,
+            )
+            existing[identity] = key
+            keys.append(key)
+        return keys
+
+    @staticmethod
+    def _draft_identity(path: str, draft: SourceViewDraft | SourceView) -> tuple[object, ...]:
+        return (path, tuple((span.start, span.lines) for span in draft.spans))
+
+    def get_source_view(self, key: str) -> SourceView | None:
+        """The live view named by `key`, or None when it is unknown or expired."""
+        return self.source_views.get(key)
+
+    def prune_source_views(self, referenced: set[str]) -> int:
+        """Drop views whose public ids are not in `referenced`; return the number removed.
+
+        Referenced ids come from model-visible current state: committed messages, the active turn,
+        and AgentState text. Transcript-only history is not a retention root, so a view expires
+        once it leaves active model context.
+        """
+        before = len(self.source_views)
+        self.source_views = {key: view for key, view in self.source_views.items() if key in referenced}
+        return before - len(self.source_views)
+
+    @property
+    def source_view_bytes(self) -> int:
+        """Diagnostic: total bytes retained in live source-view span text."""
+        return sum(len(line) for view in self.source_views.values() for span in view.spans for line in span.lines)
 
     def enqueue_user_input(self, value: str | UserInput) -> None:
         if isinstance(value, UserInput) and value.images:

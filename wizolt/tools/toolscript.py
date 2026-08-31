@@ -404,7 +404,7 @@ class ToolScript(Tool):
 
     def _run_nested(self, runner: ToolRunner, call: ToolCall) -> tuple[str, str, object | None]:
         """Run one nested call through the runner. Edits go through a single-element plan so a nested
-        Edit behaves exactly like a top-level single Edit (anchor planning, stale checks, write-time
+        Edit behaves exactly like a top-level single Edit (source-view planning, stale checks, write-time
         verification) instead of a plan-less EditTool.call()."""
         if call.name == "Edit":
             plan = EditBatchPlan(self.session).build([call])

@@ -1,29 +1,46 @@
-"""File tools: reading, image viewing, and anchored editing."""
+"""File tools: reading, image viewing, and source-view editing."""
 
 from __future__ import annotations
 
 import difflib
-import hashlib
 import json
 import os
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import ClassVar
 
-from wizolt.base import Json, ModelError, Text, ToolArgs, ToolError, split_lines
+from wizolt.base import Json, ModelError, ToolArgs, ToolError, split_lines
 from wizolt.image import ImageRef
 from wizolt.session import Session, TurnDiff
+from wizolt.source import (
+    EDIT,
+    READ,
+    SOURCE_MISSING,
+    SOURCE_PATH_MISMATCH,
+    SOURCE_TARGET_CHANGED,
+    SourceBlock,
+    SourceView,
+    SourceViewDraft,
+    ToolOutput,
+    fresh_context_block,
+    insertion_witness,
+    range_lines,
+    relocate_target,
+    relocate_witness,
+    render_source_block,
+    render_tool_output,
+    same_position,
+    source_error,
+    spans_from_lines,
+)
 from wizolt.tools.base import Tool
 
 
 class ReadTool(Tool):
     NAME = "Read"
-    MAX_ANCHOR_DRIFT: ClassVar[int] = 50
-    _ANCHOR_RE: ClassVar[re.Pattern] = re.compile(r"(\d+):([0-9a-z]{5}|[0-9a-f]{8})")
     DESCRIPTION = (
-        "Read UTF-8 file line ranges; returns file stat, total lines, and anchor=line:hash(line_content) text. Large outputs are bounded in conversation; "
-        "use Recall(tr.N) for full stored output."
+        "Read UTF-8 file line ranges; returns a source view (source=view.N) with ordinary 1-based line numbers, and total lines. "
+        "Large outputs are bounded in conversation; use Recall(tr.N) for full stored output. Edit existing text only through a source id and "
+        "visible ordinary line numbers."
     )
     EXAMPLE = (
         'Read ranges. Example: {"path":"src/app.py","ranges":[[1,80],[120,180]]}',
@@ -61,65 +78,24 @@ class ReadTool(Tool):
     def ranges_arg(cls, value: object) -> object:
         return [value] if isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) and not isinstance(item, bool) for item in value) else value
 
-    @staticmethod
-    def line_hash(line: str) -> str:
-        # Hash the visible content only. The trailing newline is stripped so the anchor matches the
-        # line the model sees (anchor_line displays the stripped line), stays stable when only the
-        # final newline changes, and is consistent with indexed_line_hash.
-        return Text.base36(int(hashlib.sha1(line.rstrip("\n").encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
-
-    @classmethod
-    def anchor(cls, index: int, line: str) -> str:
-        # Line numbers are 0-based everywhere inside the tools (they index straight into the line
-        # list) and 1-based only in what the model reads, so they agree with the numbering it sees
-        # from grep, tracebacks, diffs, and InspectCode. This and parse_anchor are the pair that
-        # crosses that boundary; every caller on either side keeps working in 0-based indices.
-        return f"{index + 1}:{cls.line_hash(line)}"
-
-    @classmethod
-    def anchor_line(cls, index: int, line: str) -> str:
-        return f"anchor={cls.anchor(index, line)} | {line.rstrip(chr(10))}"
-
-    @staticmethod
-    def indexed_line_hash(line: str) -> str:
-        return hashlib.sha256(line.rstrip("\n").encode("utf-8")).hexdigest()[:8]
-
-    @staticmethod
-    def parse_anchor(value: str) -> tuple[int, str] | None:
-        """Return the anchor's 0-based line index and hash. The counterpart to `anchor`: the model
-        writes a 1-based number, callers get an index they can use against a line list directly. An
-        anchor carried over from a session written before line numbers became 1-based decodes one
-        line early, which the hash check and `relocated_anchor` correct, so the index can be -1."""
-        text = value.split("|", 1)[0].strip()
-        if text.startswith("anchor="):
-            text = text.removeprefix("anchor=").strip()
-        match = ReadTool._ANCHOR_RE.fullmatch(text)
-        return (int(match.group(1)) - 1, match.group(2).lower()) if match else None
-
-    @staticmethod
-    def require_anchor(anchor: str) -> tuple[int, str]:
-        """Parse an anchor or raise the standard ToolError guiding the model to a real one."""
-        parsed = ReadTool.parse_anchor(anchor)
-        if parsed is None:
-            raise ToolError('invalid anchor; use the "anchor=line:hash" value from Read, Search, or InspectCode')
-        return parsed
-
-    @classmethod
-    def anchor_matches(cls, line: str, expected: str) -> bool:
-        return expected == cls.line_hash(line) or expected == cls.indexed_line_hash(line)
-
-    @classmethod
-    def relocated_anchor(cls, lines: list[str], index: int, expected: str) -> int | None:
-        matches = [current for current, line in enumerate(lines) if cls.anchor_matches(line, expected)]
-        if len(matches) != 1 or abs(matches[0] - index) > cls.MAX_ANCHOR_DRIFT:
-            return None
-        return matches[0]
-
     def needs_confirmation(self) -> bool:
         return any(not (self.session.in_cwd(path) or self.session.owns_asset(path)) for path, _ in self.targets())
 
-    def call(self) -> str:
-        return "\n\n".join(self.read_one(path, ranges) for path, ranges in self.targets())
+    def call(self) -> ToolOutput:
+        parts: list[str | SourceBlock] = []
+        per_path: dict[str, list[tuple[int, int]]] = {}
+        order: list[str] = []
+        for path, ranges in self.targets():
+            if path not in per_path:
+                per_path[path] = []
+                order.append(path)
+            per_path[path].extend(ranges)
+        for path in order:
+            # One block and one view per file: ranges across separate request items for the same
+            # path are unioned, normalized, and merged, matching the model-facing lines label.
+            parts.extend(self.read_one(path, per_path[path]).parts)
+        retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
+        return ToolOutput(retained, tuple(parts))
 
     def short_args(self) -> list[str]:
         # This echoes the call back to the model, not just the terminal, so it has to read as a
@@ -153,22 +129,22 @@ class ReadTool(Tool):
             targets.append((self.session.resolve_path(path), ranges))
         return targets
 
-    def read_one(self, path: str, ranges: list[tuple[int, int]]) -> str:
+    def read_one(self, path: str, ranges: list[tuple[int, int]]) -> ToolOutput:
         with open(path, encoding="utf-8") as file:
             lines = file.readlines()
-        out = [f"<Read path={json.dumps(self.session.relpath(path))}>", self.file_stat(path), f"<total_lines>{len(lines)}</total_lines>"]
+        total = len(lines)
+        resolved = []
         for requested_start, requested_end in ranges:
             # Requested bounds are 1-based and inclusive; `end` 0 still means "to the end of the
-            # file". A start of 0 is not a valid line number but unambiguously means the top, so it
-            # reads as line 1 rather than failing.
-            start = min(max(requested_start, 1) - 1, len(lines))
-            end = max(start, len(lines) if requested_end == 0 else min(len(lines), requested_end))
-            out.append(f"<range>{start + 1}:{end}</range>")
-            out.append("<content hashline-numbered>")
-            out.extend(self.anchor_line(i, lines[i]) for i in range(start, end))
-            out.append("</content>")
-        out.append("</Read>")
-        return "\n".join(out)
+            # file". A start of 0 is not a valid line number but unambiguously means the top.
+            start = min(max(requested_start, 1) - 1, total)
+            end = max(start, total if requested_end == 0 else min(total, requested_end))
+            if end > start:
+                resolved.append((start + 1, end))
+        spans = spans_from_lines(lines, resolved)
+        draft = SourceViewDraft(path, self.session.relpath(path), total, spans, READ)
+        block = SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))
+        return ToolOutput(render_source_block(block), (block,))
 
 
 class ViewImageTool(Tool):
@@ -272,10 +248,10 @@ class ViewImageTool(Tool):
 @dataclass
 class Edit:
     op: str
-    start: str = ""
-    end: str = ""
+    start: int = 0  # 1-based inclusive first line of a replace/delete range
+    end: int = 0  # 1-based inclusive last line of a replace/delete range
+    line: int = 0  # 1-based anchor line of an insertion; 0 = existing-empty-file insert_after
     content: str = ""
-    old: str = ""
 
 
 @dataclass
@@ -284,6 +260,7 @@ class EditApplyResult:
     changes: list[tuple[int, int, int, int]]
     replacements: list[tuple[int, int, list[str]]]
     replace_all: bool = False
+    relocations: list[str] = field(default_factory=list)  # "relocated ... -> ..." reports
 
 
 @dataclass
@@ -349,41 +326,37 @@ def _large_edit(edits: list[Edit]) -> EditWarning | None:
 
 
 class EditTool(Tool):
-    """Create or patch one file through content-verified anchors rather than line numbers.
+    """Create or patch one file through source views rather than bare line numbers.
 
-    An anchor pairs a line index with a hash of that line's content, so an edit carries proof of what
-    the model believed it was editing. A bare line number silently targets whatever moved into that
-    position; here a mismatch is refused and reported with the line actually found. That check is what
-    makes edits safe to plan and confirm before writing.
+    An edit names a source view (view.N) plus ordinary 1-based line numbers. The view is
+    evidence, not authority: the complete target is extracted from the view and validated against
+    the current file before anything is written. A mismatch relocates only when the exact target
+    still exists exactly once nearby; ambiguity or distance is refused instead of guessed,
+    because a wrong resolution corrupts a file silently.
 
-    Strict but not brittle: when the expected content still exists exactly once and has drifted only a
-    short distance, the anchor relocates to it, since earlier edits shifting lines is ordinary rather
-    than a conflict. Ambiguity or distance is refused instead of guessed, because a wrong resolution
-    corrupts a file silently.
-
-    A call that would change nothing is an error rather than a silent success — the model needs to
-    learn that its anchor or search text was wrong.
+    All operations in one call are resolved against the same view before any splice runs, and
+    splices apply in reverse index order so each one leaves the earlier indices untouched.
+    Every failure returns a small fresh view of the current file so the model can retry without
+    a separate Read. A call that would change nothing is an error rather than a silent success.
     """
 
     NAME = "Edit"
     DESCRIPTION = (
-        "Create or patch one UTF-8 file. op=create writes a new file; replace/delete cover the inclusive "
-        "start..end range (the line at end is itself replaced or deleted); insert_before/insert_after keep "
-        "the anchor line and only add content beside it; replace_unique replaces text that occurs exactly "
-        "once and refuses when it does not. Do not copy unchanged surrounding context into replacement or "
-        "insertion content; Edit preserves it automatically. Every operation that writes text uses the same "
-        "content field. Prefer replace_unique for a small edit when the exact old text is unique, because it "
-        "does not depend on anchors. "
+        "Create or patch one UTF-8 file. op=create writes a new file and is the only operation in its call; "
+        "replace/delete cover the inclusive 1-based start..end range inside the named source view (source=view.N from "
+        "Read, Search, or InspectCode); insert_before/insert_after keep the named line and only add content beside it "
+        "(insert_after with line 0 targets an existing empty file). Do not copy unchanged surrounding context into "
+        "replacement or insertion content; Edit preserves it automatically. "
         "Work in small steps: one call per cohesive change, and split a large rewrite across several "
         "calls, because everything one call writes is generated inside a single assistant message "
-        "and a timeout partway through loses all of it."
+        "and a timeout partway through loses all of it. Bash output is not a source: read the file "
+        "through Read, Search, or InspectCode before editing."
     )
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
-        'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
-        'insert after an anchored line without copying the anchor as context. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"10:1ab2c","content":"new_value = 1\\n"}]}',
-        'replace one exact block without anchors. Example: {"path":"src/app.py","edits":[{"op":"replace_unique","old":"value = 1\\n","content":"value = 2\\n"}]}',
-        'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","content":"NewName"}]}',
+        'replace range. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"replace","start":10,"end":12,"content":"new_value = 1\\n"}]}',
+        'insert after a visible line. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"insert_after","line":10,"content":"new_value = 1\\n"}]}',
+        'delete range. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"delete","start":10,"end":12}]}',
     )
     MUTATES = True
 
@@ -391,42 +364,24 @@ class EditTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         edit = cls.object_schema({
-            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all|replace_unique"},
-            "start": {
-                "type": "string",
-                "description": (
-                    "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
-                    "never invent or calculate it; after a stale-anchor error use a returned context anchor only after "
-                    "verifying its content, otherwise Read again; use replace_unique when the old text is exact and unique; "
-                    "a file viewed through Bash carries no anchors"
-                ),
-            },
-            "end": {
-                "type": "string",
-                "description": (
-                    "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
-                    "never invent or calculate it; after a stale-anchor error use a returned context anchor only after "
-                    "verifying its content, otherwise Read again; use replace_unique when the old text is exact and unique; "
-                    "a file viewed through Bash carries no anchors; "
-                    "inclusive — the line at end is itself replaced or deleted"
-                ),
-            },
+            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after"},
+            "start": {"type": "integer", "minimum": 1, "description": "First line of an inclusive 1-based replace/delete range; must be visible in the named source view"},
+            "end": {"type": "integer", "minimum": 1, "description": "Last line of an inclusive 1-based replace/delete range; the line at end is itself replaced or deleted"},
+            "line": {"type": "integer", "minimum": 0, "description": "1-based anchor line for insert_before/insert_after; must be visible in the named source view. Line 0 is accepted only for insert_after into an existing empty file whose view explicitly represents it"},
             "content": {
                 "type": "string",
                 "description": (
-                    "New text for create/replace/insert/replace_all/replace_unique. For replace: only the final replacement "
+                    "New text for create/replace/insert_before/insert_after. For replace: only the final replacement "
                     "text for the inclusive start..end range; lines before start and after end are preserved automatically "
                     "and must not be copied into content merely as context. For insert_before/insert_after: only the new "
-                    "text; the anchor line is preserved automatically, so do not copy it merely to keep it. For "
-                    "replace_all/replace_unique: the exact replacement for old; content must be present, and an explicit "
-                    "empty string deletes the match. The new text may independently equal neighboring text when that is the "
-                    "intended result. For create: the whole file."
+                    "text; the anchor line is preserved automatically, so do not copy it merely to keep it. An explicit "
+                    "empty string deletes the matched range (replace). For create: the whole file."
                 ),
             },
-            "old": {"type": "string", "description": "Text to find for replace_all/replace_unique"},
         }, ["op"])
         return cls.object_schema({
             "path": {"type": "string", "description": "File to create or patch"},
+            "source": {"type": "string", "description": "The view.N id returned by Read, Search, or InspectCode for this path. Required for every existing-file call; forbidden for create"},
             "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
         }, ["path", "edits"])
         # fmt: on
@@ -434,10 +389,10 @@ class EditTool(Tool):
     @classmethod
     def payload_args(cls, payload: Json) -> ToolArgs:
         path = payload.get("path", "")
+        source = payload.get("source") or ""
         raw_edits = payload.get("edits", [])
         if not isinstance(raw_edits, list):
-            return [path, raw_edits]
-
+            return [path, source, raw_edits]
         # Some models repeat the top-level path inside an edit operation. It is safe to discard
         # only an exact duplicate; a different nested path remains invalid and is rejected later.
         edits = []
@@ -445,12 +400,21 @@ class EditTool(Tool):
             if isinstance(item, dict) and item.get("path") == path:
                 item = {key: value for key, value in item.items() if key != "path"}
             edits.append(item)
-        return [path, edits]
+        return [path, source, edits]
 
-    def call(self) -> str:
-        path, original, created, result, edits = self.build()
+    def call(self) -> ToolOutput:
+        path, source_name, edits = self.parse()
+        creating = edits[0].op == "create"
+        view = self.resolve_view(path, source_name, creating)
+        if self._validate_target(path, creating):
+            with open(path, encoding="utf-8") as file:
+                original = file.read()
+            created = False
+        else:
+            original, created = "", True
+        result = self.apply(original, edits, view)
         if result.content == original and not created:
-            raise ToolError(self.no_changes_error(original, result))
+            raise ToolError(self.no_changes_error(original, result), recovery=self.no_op_recovery(path, view, original, result))
         if created:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
@@ -459,29 +423,27 @@ class EditTool(Tool):
         self.last_diff = self.diff(path, original, result.content)
         self.last_before = original
         self.last_after = result.content
-        parts = [
-            f"<Edit path={json.dumps(self.last_path)}>",
-            self.file_stat(path),
-            self.last_diff.rstrip(),
-        ]
+        lines = split_lines(result.content)
+        parts: list[str | SourceBlock] = [f"<Edit path={json.dumps(self.last_path)}>", self.last_diff.rstrip()]
         block = self.warnings_block(original, result.content, edits)
         if block:
             parts.append(block)
-        parts.append(self.edit_context(result.content, result.changes))
+        if result.relocations:
+            parts.append("\n".join(result.relocations))
+        parts.append(self.fresh_block(path, lines, result.changes))
         parts.append("</Edit>")
-        return "\n".join(parts)
+        retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
+        return ToolOutput(retained, tuple(parts))
 
     def warnings_block(self, before: str, after: str, edits: list[Edit]) -> str:
         """Render post-edit warnings as a `<warnings>` block, or "" when nothing fired. Warnings
-        are advisory only and never change the edit; anchors always name lines of the edited
-        file. Output is bounded: at most 3 warnings and 12 anchor lines, truncated with "..."
-        (the format_current_ranges convention)."""
+        are advisory only and never change the edit. Output is bounded: at most 3 warnings and 12
+        numbered lines, truncated with "..."."""
         collected = []
         for rule in EDIT_WARNINGS:
             warning = rule(before, after)
             if warning is not None:
                 collected.append(warning)
-        # Last, so a rule about the change itself is read before one about how it was delivered.
         if (large := _large_edit(edits)) is not None:
             collected.append(large)
         if not collected:
@@ -495,7 +457,7 @@ class EditTool(Tool):
                 if shown >= 12:
                     truncated = True
                     break
-                out.append(ReadTool.anchor_line(index, line))
+                out.append(f"{index + 1} | {line.rstrip(chr(10))}")
                 shown += 1
             if truncated:
                 break
@@ -511,7 +473,15 @@ class EditTool(Tool):
         return TurnDiff(key="", turn=0, path=path, diff=diff, before=getattr(self, "last_before", ""), after=getattr(self, "last_after", ""))
 
     def preview(self) -> str:
-        path, original, _, result, _ = self.build()
+        path, source_name, edits = self.parse()
+        creating = edits[0].op == "create"
+        view = self.resolve_view(path, source_name, creating)
+        if self._validate_target(path, creating):
+            with open(path, encoding="utf-8") as file:
+                original = file.read()
+        else:
+            original = ""
+        result = self.apply(original, edits, view)
         if result.content == original and os.path.exists(path):
             raise ToolError(self.no_changes_error(original, result))
         return self.diff(path, original, result.content) or f"Edit({path})"
@@ -531,42 +501,73 @@ class EditTool(Tool):
             )
         )
 
-    def parse(self) -> tuple[str, list[Edit]]:
-        if len(self.args) != 2:
-            raise ToolError("Edit requires path and edits")
+    @staticmethod
+    def _int_arg(item: Json, key: str, op: str) -> int:
+        value = item.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ToolError(f"{op} requires integer {key}")
+        return int(value)
+
+    def parse(self) -> tuple[str, str, list[Edit]]:
+        if len(self.args) != 3:
+            raise ToolError("Edit requires path, source, and edits")
         if not isinstance(self.args[0], str):
             raise ToolError("Edit path must be a string")
+        if not isinstance(self.args[1], str):
+            raise ToolError("Edit source must be a string")
         path = self.session.resolve_path(str(self.args[0]))
-        raw_edits = self.args[1]
+        source_name = str(self.args[1]).strip()
+        raw_edits = self.args[2]
         if not isinstance(raw_edits, list) or not raw_edits:
             raise ToolError("Edit edits must be a non-empty array")
         edits = []
         for item in raw_edits:
             if not isinstance(item, dict):
                 raise ToolError("each edit must be an object")
-            if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old"}):
+            if unexpected := sorted(set(item) - {"op", "start", "end", "line", "content"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             op = str(item.get("op") or "")
-            if op not in {"create", "replace", "delete", "insert_before", "insert_after", "replace_all", "replace_unique"}:
+            if op not in {"create", "replace", "delete", "insert_before", "insert_after"}:
                 raise ToolError("unknown edit op")
             if op == "create" and len(raw_edits) != 1:
                 raise ToolError("create cannot be mixed with other edits")
-            if op in {"replace", "delete"} and (not item.get("start") or not item.get("end")):
-                raise ToolError(f"{op} requires start and end anchors")
-            if op in {"insert_before", "insert_after"} and not item.get("start"):
-                raise ToolError(f"{op} requires start anchor")
-            if op in {"replace_all", "replace_unique"} and ("content" not in item or item["content"] is None):
-                raise ToolError(f"{op} requires content; use an explicit empty string to delete the match")
-            edits.append(
-                Edit(
-                    op=op,
-                    start=str(item.get("start") or ""),
-                    end=str(item.get("end") or ""),
-                    content=self.normalize_text(str(item.get("content") or "")),
-                    old=self.normalize_text(str(item.get("old") or "")),
-                )
-            )
-        return path, edits
+            if op == "create" and source_name:
+                raise ToolError("source is forbidden for create")
+            if op != "create" and not source_name:
+                raise ToolError(f"{op} requires source=view.N for an existing file; Read, Search, or InspectCode first")
+            if op in {"replace", "delete"}:
+                start = self._int_arg(item, "start", op)
+                end = self._int_arg(item, "end", op)
+                if start < 1 or end < start:
+                    raise ToolError(f"{op} requires 1 <= start <= end")
+                edits.append(Edit(op=op, start=start, end=end, content=self.normalize_text(str(item.get("content") or ""))))
+            elif op in {"insert_before", "insert_after"}:
+                line = self._int_arg(item, "line", op)
+                if line < 0:
+                    raise ToolError(f"{op} line must be >= 0")
+                if "content" not in item or item["content"] is None:
+                    raise ToolError(f"{op} requires content; use an explicit empty string to insert nothing")
+                edits.append(Edit(op=op, line=line, content=self.normalize_text(str(item.get("content") or ""))))
+            else:
+                if "content" not in item or item["content"] is None:
+                    raise ToolError("create requires content; use an explicit empty string to create an empty file")
+                edits.append(Edit(op=op, content=self.normalize_text(str(item.get("content") or ""))))
+        return path, source_name, edits
+
+    def resolve_view(self, path: str, source_name: str, creating: bool) -> SourceView | None:
+        """Load and validate the named view for an existing-file call, or None for create."""
+        if creating:
+            if source_name:
+                raise ToolError("source is forbidden for create; create writes a new file")
+            return None
+        if not source_name:
+            raise ToolError("Edit requires source=view.N for an existing file; Read, Search, or InspectCode first")
+        view = self.session.get_source_view(source_name)
+        if view is None:
+            raise source_error(SOURCE_MISSING, f"{source_name} is unknown or expired; Read or Search again to obtain a current view")
+        if view.path != path:
+            raise source_error(SOURCE_PATH_MISMATCH, f"Edit path and {source_name} path differ; use the view returned for this path")
+        return view
 
     def _validate_target(self, path: str, creating: bool) -> bool:
         """Validate an edit/create target and return whether its current contents should be read."""
@@ -588,64 +589,84 @@ class EditTool(Tool):
             return False
         raise ToolError("file does not exist; use op=create to create it")
 
-    def build(self) -> tuple[str, str, bool, EditApplyResult, list[Edit]]:
-        path, edits = self.parse()
-        creating = edits[0].op == "create"
-        if self._validate_target(path, creating):
-            with open(path, encoding="utf-8") as file:
-                original = file.read()
-            created = False
-        else:
-            original, created = "", True
-        result = self.apply(original, edits)
-        return path, original, created, result, edits
+    def apply(self, original: str, edits: list[Edit], view: SourceView | None) -> EditApplyResult:
+        """Resolve one call's edits against a real file's lines and splice them.
 
-    def apply(self, original: str, edits: list[Edit], anchor_resolver: Callable[[str], int] | None = None) -> EditApplyResult:
-        """Apply one call's edits to a file's lines, returning the new content and its change spans.
-
-        Anchors are resolved against the original lines before anything is spliced, and the splices are
-        then applied in reverse index order so each one leaves the earlier indices untouched. Resolving
-        as you go, or splicing forward, shifts every later anchor by the size of the previous edit.
-        Overlaps are rejected once the anchors are known and before any splice runs: two edits
-        claiming the same range cannot both be honored, and the model needs to be told rather than
-        silently obeyed.
-
-        `changes` is rebuilt afterwards in forward order with a running delta, because it describes
-        positions in the file that now exists rather than the one the anchors named.
+        Every operation is resolved against `view` (targets and boundary witnesses are extracted
+        from the view) and validated against the current lines at their original coordinates,
+        then relocated exactly within MAX_VIEW_DRIFT when unchanged. All resolutions happen
+        before any splice runs; splices then apply in reverse index order. Failures carry a fresh
+        view of the current file as structured recovery.
         """
         if edits[0].op == "create":
             lines = self.content_lines(edits[0].content, False)
-            return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [])
-        if any(edit.op == "replace_all" for edit in edits):
-            if any(edit.op != "replace_all" for edit in edits):
-                raise ToolError("replace_all cannot be mixed with anchored edits")
-            content = original
-            for edit in edits:
-                if not edit.old and content:
-                    raise ToolError("replace_all requires old")
-                if edit.old and edit.old not in content:
-                    raise ToolError("replace_all old text not found")
-                content = content.replace(edit.old, edit.content)
-            return EditApplyResult(content, [(0, 0, 0, len(split_lines(content)))], [], True)
+            return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [], relocations=[])
+        assert view is not None
         lines = split_lines(original)
-        resolve_anchor = anchor_resolver or (lambda anchor: self.resolve_anchor(lines, anchor))
-        replacements = []
+        replacements: list[tuple[int, int, list[str]]] = []
+        relocations: list[str] = []
         for edit in edits:
-            if edit.op == "replace_unique":
-                replacements.append(self._replace_unique_span(original, edit.old, edit.content))
-                continue
-            start = resolve_anchor(edit.start)
-            if edit.op in {"replace", "delete"}:
-                end = resolve_anchor(edit.end)
-                if end < start:
-                    raise ToolError("end anchor is before start anchor")
-                replacement = [] if edit.op == "delete" else self.content_lines(edit.content, end + 1 < len(lines))
-                replacements.append((start, end + 1, replacement))
-            elif edit.op in {"insert_before", "insert_after"}:
-                index = start if edit.op == "insert_before" else start + 1
-                replacements.append((index, index, self.content_lines(edit.content, index < len(lines))))
-            else:
-                raise ToolError("unknown edit op")
+            try:
+                if edit.op in {"replace", "delete"}:
+                    target = range_lines(view, edit.start, edit.end)
+                    index = edit.start - 1
+                    found = index
+                    if not same_position(lines, index, target):
+                        relocated = relocate_target(lines, index, target)
+                        if relocated is None:
+                            raise source_error(
+                                SOURCE_TARGET_CHANGED,
+                                f"exact target for {view.key} lines {edit.start}:{edit.end} differs and cannot relocate; use the fresh view below or Read again",
+                            )
+                        found = relocated
+                        relocations.append(f"relocated {view.key} lines {edit.start}:{edit.end} -> current lines {found + 1}:{found + len(target)}")
+                    replacement = [] if edit.op == "delete" else self.content_lines(edit.content, found + len(target) < len(lines))
+                    replacements.append((found, found + len(target), replacement))
+                else:
+                    after = edit.op == "insert_after"
+                    witness, boundary, index = insertion_witness(view, edit.line, after)
+                    if not witness and view.total_lines == 0:
+                        if lines:
+                            raise source_error(SOURCE_TARGET_CHANGED, "the empty file now has content; Read again for a current view")
+                        found = 0
+                    else:
+                        found = index
+                        if not same_position(lines, index - boundary, witness):
+                            relocated = relocate_witness(lines, index, witness, boundary)
+                            if relocated is None:
+                                raise source_error(
+                                    SOURCE_TARGET_CHANGED,
+                                    f"boundary at {view.key} line {edit.line} differs and cannot relocate; use the fresh view below or Read again",
+                                )
+                            found = relocated
+                            relocations.append(self._relocation_report(view, edit, found))
+                    replacement = self.content_lines(edit.content, found < len(lines))
+                    replacements.append((found, found, replacement))
+            except ToolError as error:
+                raise self._with_recovery(error, view, lines, edit) from error
+        return self.splice_lines(lines, replacements, relocations)
+
+    def _relocation_report(self, view: SourceView, edit: Edit, found: int) -> str:
+        if edit.op == "insert_after":
+            return f"relocated {view.key} line {edit.line} -> current line {found}"
+        return f"relocated {view.key} line {edit.line} -> current line {found + 1}"
+
+    def _with_recovery(self, error: ToolError, view: SourceView, lines: list[str], edit: Edit) -> ToolError:
+        """Attach a fresh bounded view of the current file around the requested coordinates."""
+        if edit.op in {"replace", "delete"}:
+            center = edit.start - 1
+        else:
+            center = max(0, edit.line - 1)
+        recovery = ToolOutput("", (fresh_context_block(view.path, view.display_path, lines, center),))
+        return ToolError(str(error), recovery=recovery)
+
+    @classmethod
+    def splice_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], relocations: list[str] | None = None) -> EditApplyResult:
+        """Overlap-check and splice resolved replacements in reverse index order.
+
+        `changes` is rebuilt afterwards in forward order with a running delta, because it
+        describes positions in the file that now exists rather than the one the edits named.
+        """
         previous = None
         for start, end, _ in sorted(replacements):
             if previous and (start < previous[1] or (start == previous[0] and end == previous[1])):
@@ -662,55 +683,7 @@ class EditTool(Tool):
             clear_end = 0 if len(replacement) != end - start else new_start + (end - start)
             changes.append((new_start, clear_end, new_start, new_end))
             delta += len(replacement) - (end - start)
-        return EditApplyResult("".join(new_lines), changes, replacements)
-
-    @staticmethod
-    def _replace_unique_span(content: str, old: str, new: str) -> tuple[int, int, list[str]]:
-        """Return the canonical line splice for one exact substring replacement.
-
-        Match counting and line reporting advance through the file once. When removing a newline
-        joins the replacement to the following row, that row joins the splice too so the returned
-        list remains the same line model that Read uses.
-        """
-        if not old:
-            raise ToolError("replace_unique requires old")
-        first = -1
-        count = 0
-        line = 0
-        scanned = 0
-        hit_lines = []
-        pos = content.find(old)
-        while pos != -1:
-            if first == -1:
-                first = pos
-            count += 1
-            line += content.count("\n", scanned, pos)
-            if (not hit_lines or hit_lines[-1] != line) and len(hit_lines) < 6:
-                hit_lines.append(line)
-            scanned = pos
-            pos = content.find(old, pos + len(old))
-        if not count:
-            raise ToolError("replace_unique old text not found")
-        if count > 1:
-            shown = ", ".join(str(line + 1) for line in hit_lines[:5])
-            if len(hit_lines) > 5:
-                shown += ", ..."
-            raise ToolError(f"replace_unique old text occurs {count} times at lines {shown}; it must occur exactly once")
-
-        lines = split_lines(content)
-        start = first
-        end = start + len(old)
-        span_start = content.count("\n", 0, start)
-        ends_at_boundary = content[end - 1 : end] == "\n"
-        span_end = content.count("\n", 0, end) + int(not ends_at_boundary)
-        line_start = content.rfind("\n", 0, start) + 1
-        next_newline = content.find("\n", end)
-        line_end = end if ends_at_boundary else len(content) if next_newline == -1 else next_newline + 1
-        replacement = content[line_start:start] + new + content[end:line_end]
-        if replacement and not replacement.endswith("\n") and span_end < len(lines):
-            replacement += lines[span_end]
-            span_end += 1
-        return span_start, span_end, split_lines(replacement)
+        return EditApplyResult("".join(new_lines), changes, replacements, relocations=relocations or [])
 
     def no_changes_error(self, original: str, result: EditApplyResult) -> str:
         return self.no_changes_error_from_lines(split_lines(original), result.replacements, result.replace_all)
@@ -725,55 +698,29 @@ class EditTool(Tool):
         matching = [(start, end) for start, end, replacement in replacements if lines[start:end] == replacement]
         if len(matching) != len(replacements):
             return prefix + "; edits cancel out; check requested content"
-        return prefix + "; requested content already matches target range\n" + cls.format_current_ranges(lines, matching)
+        return prefix + "; requested content already matches target range"
 
-    @classmethod
-    def format_current_ranges(cls, lines: list[str], ranges: list[tuple[int, int]]) -> str:
-        out = ["<current-target-ranges hashline-numbered>"]
-        shown_lines = 0
-        range_index = -1
-        for range_index, (start, end) in enumerate(ranges[:3]):
-            out.append(f"<target start={start + 1} end={end}>")
-            if start == end:
-                out.append("(empty range)")
-            else:
-                for index in range(start, end):
-                    if shown_lines >= 12:
-                        out.append("...")
-                        break
-                    line = lines[index]
-                    out.append(ReadTool.anchor_line(index, line))
-                    shown_lines += 1
-            out.append("</target>")
-            if shown_lines >= 12:
-                break
-        if len(ranges) > range_index + 1:
-            out.append("...")
-        out.append("</current-target-ranges>")
-        return "\n".join(out)
+    def no_op_recovery(self, path: str, view: SourceView | None, original: str, result: EditApplyResult) -> ToolOutput:
+        """The no-op failure's fresh view: the current target ranges as a new view."""
+        lines = split_lines(original)
+        ranges = [(start + 1, end) for start, end, replacement in result.replacements if lines[start:end] == replacement]
+        spans = spans_from_lines(lines, ranges)
+        display = view.display_path if view else self.session.relpath(path)
+        draft = SourceViewDraft(view.path if view else path, display, len(lines), spans, EDIT)
+        block = SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))
+        return ToolOutput(render_source_block(block), (block,))
 
-    def edit_context(self, content: str, changes: list[tuple[int, int, int, int]]) -> str:
-        lines = split_lines(content)
-        out = []
+    def fresh_block(self, path: str, lines: list[str], changes: list[tuple[int, int, int, int]]) -> SourceBlock:
+        """The fresh view after a successful edit: every changed hunk plus up to three unchanged
+        context lines on either side, as one new view the model can continue editing from."""
+        ranges = []
         for clear_start, clear_end, start, end in changes:
-            if start == 0 and end == len(lines):
-                # create and replace_all cover the whole file: the refund table would be the entire
-                # file's anchor list, ballooning one small edit into a full-context dump. Skip it;
-                # the model re-Reads for anchors when it keeps editing such files.
+            if end <= start:
                 continue
-            # Reported like every other range the model sees: 1-based, both ends inclusive.
-            out.append(f"<invalidate>{clear_start + 1}:{clear_end}</invalidate>")
-            # The refund window spans the change plus three lines of context on each side so a
-            # follow-up edit can anchor next to, not only inside, the changed hunk. Only the change
-            # itself is invalidated: the neighbors' anchors are still current.
-            context_start = max(0, start - 3)
-            context_end = min(len(lines), end + 3)
-            shown = lines[context_start:context_end]
-            if shown:
-                out.append("<content hashline-numbered>")
-                out.extend(ReadTool.anchor_line(context_start + index, line) for index, line in enumerate(shown))
-                out.append("</content>")
-        return "\n".join(out)
+            ranges.append((max(1, start - 2), min(len(lines), end + 3)))
+        spans = spans_from_lines(lines, ranges)
+        draft = SourceViewDraft(path, self.session.relpath(path), len(lines), spans, EDIT)
+        return SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))
 
     def content_lines(self, content: str, followed_by_more: bool) -> list[str]:
         content = self.normalize_text(content)
@@ -787,35 +734,3 @@ class EditTool(Tool):
     @staticmethod
     def normalize_text(value: str) -> str:
         return value.replace("\r\n", "\n").replace("\r", "\n")
-
-    def resolve_anchor(self, lines: list[str], anchor: str) -> int:
-        index, expected = ReadTool.require_anchor(anchor)
-        if 0 <= index < len(lines) and ReadTool.anchor_matches(lines[index], expected):
-            return index
-        relocated = ReadTool.relocated_anchor(lines, index, expected)
-        if relocated is not None:
-            return relocated
-        if not 0 <= index < len(lines):
-            raise ToolError(
-                f"anchor line {index + 1} out of range; file has {len(lines)} lines; Read again unless the returned context verifies the intended line\n"
-                + self.current_file_context(lines, index)
-            )
-        current = ReadTool.anchor_line(index, lines[index])
-        raise ToolError(
-            f"stale anchor {anchor}; current is {current}; retry with a returned anchor only if its content is the line you meant; "
-            "otherwise Read again; for a small exact edit whose old text is unique, prefer replace_unique\n" + self.current_file_context(lines, index)
-        )
-
-    @staticmethod
-    def current_file_context(lines: list[str], index: int) -> str:
-        """Return bounded factual context near a rejected anchor, without claiming a target."""
-        out = ["<current-file-context hashline-numbered>", "(near the requested line; not an inferred target)"]
-        if not lines:
-            out.append("(empty file)")
-        else:
-            center = min(max(index, 0), len(lines) - 1)
-            start = max(0, center - 3)
-            end = min(len(lines), center + 4)
-            out.extend(ReadTool.anchor_line(current, lines[current]) for current in range(start, end))
-        out.append("</current-file-context>")
-        return "\n".join(out)

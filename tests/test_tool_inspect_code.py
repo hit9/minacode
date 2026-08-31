@@ -27,8 +27,8 @@ def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
 
     result = InspectCodeTool(s, ["find", "Missing"]).call()
 
-    assert "* exit_code: 1" in result
-    assert "bad query" in result
+    assert "* exit_code: 1" in result.retained_text
+    assert "bad query" in result.retained_text
 
 def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -44,14 +44,14 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     monkeypatch.setattr(csi, "callers", lambda query, **kwargs: calls.append(("callers", query, kwargs)) or "callers ok")
     monkeypatch.setattr(csi, "callees", lambda query, **kwargs: calls.append(("callees", query, kwargs)) or "callees ok")
 
-    assert "search ok" in InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call()
-    assert "inspect ok" in InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call()
-    assert "outline ok" in InspectCodeTool(s, ["outline", "sample.py"]).call()
-    assert "outline ok" in InspectCodeTool(s, ["outline", "sample.py", {"limit": 300}]).call()
-    assert "refs ok" in InspectCodeTool(s, ["refs", "Example", {"all_kinds": True, "offset": 5}]).call()
-    assert "impls ok" in InspectCodeTool(s, ["impls", "Example", {"kind": "class"}]).call()
-    assert "callers ok" in InspectCodeTool(s, ["callers", "Example", {"depth": 2}]).call()
-    assert "callees ok" in InspectCodeTool(s, ["callees", "Example"]).call()
+    assert "search ok" in InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call().retained_text
+    assert "inspect ok" in InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call().retained_text
+    assert "outline ok" in InspectCodeTool(s, ["outline", "sample.py"]).call().retained_text
+    assert "outline ok" in InspectCodeTool(s, ["outline", "sample.py", {"limit": 300}]).call().retained_text
+    assert "refs ok" in InspectCodeTool(s, ["refs", "Example", {"all_kinds": True, "offset": 5}]).call().retained_text
+    assert "impls ok" in InspectCodeTool(s, ["impls", "Example", {"kind": "class"}]).call().retained_text
+    assert "callers ok" in InspectCodeTool(s, ["callers", "Example", {"depth": 2}]).call().retained_text
+    assert "callees ok" in InspectCodeTool(s, ["callees", "Example"]).call().retained_text
 
     assert calls[0] == (
         "search",
@@ -68,8 +68,6 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
             "exact_only": False,
             "format": "text",
             "limit": csi.DEFAULT_PAGE_LIMIT,
-            "anchors": True,
-            "anchor_format": "explicit",
         },
     )
     assert calls[2] == (
@@ -121,9 +119,9 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
         },
     )
 
-    assert "refs ok" in InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call,write"}]).call()
+    assert "refs ok" in InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call,write"}]).call().retained_text
     assert calls[8][2]["ref_kinds"] == "call,write"
-    assert "callees ok" in InspectCodeTool(s, ["callees", "Example", {"loose": True}]).call()
+    assert "callees ok" in InspectCodeTool(s, ["callees", "Example", {"loose": True}]).call().retained_text
     assert calls[9][2]["loose"] is True
 
     with pytest.raises(ToolError):
