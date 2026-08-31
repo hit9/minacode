@@ -35,7 +35,7 @@ from wizolt.session.store import (
     SessionSnapshotStore,
     local_timestamp,
 )
-from wizolt.source import SourceView, SourceViewDraft, view_key
+from wizolt.source import SourceView, SourceViewDraft
 
 __all__ = [
     "TRANSCRIPT_SYNC_VERSION",
@@ -484,7 +484,7 @@ class Session:
                 keys.append(existing[identity])
                 continue
             self.source_view_counter += 1
-            key = view_key(self.source_view_counter)
+            key = SourceView.make_key(self.source_view_counter)
             if key in self.source_views:
                 raise RuntimeError(f"source view key already registered: {key}")
             self.source_views[key] = SourceView(

@@ -20,7 +20,6 @@ from wizolt.context import ContextManager
 from wizolt.render import UiPrinter
 from wizolt.runner import ToolRunner
 from wizolt.session import HistorySegment, Session
-from wizolt.source import range_lines, render_tool_output
 from wizolt.tools import (
     TOOL_REGISTRY,
     TOOLS,
@@ -90,7 +89,7 @@ def test_read_accepts_ranges_in_both_array_forms_and_renders_a_view(tmp_path):
     out = ReadTool(s, [{"path": "sample.py", "ranges": [[1, 2], [4, 4]]}]).call()
     assert "source=" not in out.retained_text  # retained text carries no view id
     keys = s.register_source_drafts(list(out.drafts))
-    rendered = render_tool_output(out, keys)
+    rendered = out.render(keys)
     assert 'source="view.1"' in rendered
     assert "1 | a" in rendered and "2 | b" in rendered and "4 | d" in rendered
     assert "3 | c" not in rendered
@@ -258,7 +257,7 @@ def test_read_and_search_success_paths(tmp_path):
     assert "1 | alpha" in multiline.retained_text
 
 
-def test_read_search_and_anchors_report_one_based_line_numbers(tmp_path):
+def test_read_search_and_edit_report_one_based_line_numbers(tmp_path):
     """Read, Search, and Edit must number lines the way `grep -n`, tracebacks, and diffs do, so
     a line number seen in one place can be used in another without adjustment."""
     s = session(tmp_path)
@@ -742,7 +741,7 @@ def test_search_shares_one_view_per_file_across_queries(tmp_path, monkeypatch):
             monkeypatch.setattr(shutil, "which", lambda name: None)
         out = SearchTool(s, [{"pattern": "alpha", "path": "."}, {"pattern": "gamma", "path": "."}]).call()
         keys = s.register_source_drafts(list(out.drafts))
-        text = render_tool_output(out, keys)
+        text = out.render(keys)
 
         # Three blocks (a.py twice, b.py once) but two views: a.py's blocks share one id.
         assert len(keys) == 3
@@ -804,6 +803,6 @@ def test_read_merges_one_view_per_path_across_request_items(tmp_path):
     assert out.retained_text.count("<Read ") == 2
 
     # A range inside a span resolves; one crossing the gap between spans is refused as unseen.
-    assert range_lines(a_view, 5, 6) == ("a5\n", "a6\n")
+    assert a_view.range_lines(5, 6) == ("a5\n", "a6\n")
     with pytest.raises(ToolError, match="source range unseen"):
-        range_lines(a_view, 6, 9)
+        a_view.range_lines(6, 9)

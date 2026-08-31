@@ -6,7 +6,7 @@ import pytest
 from agent_harness import call
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
-from wizolt.base import SESSION_EVENT_KEY
+from wizolt.base import SESSION_EVENT_KEY, ToolError
 
 
 def test_delegate_context_continuity(tmp_path, monkeypatch):
@@ -579,3 +579,30 @@ def test_snapshot_restored_worker_shares_parent_skills_and_mcp(tmp_path, monkeyp
     worker = fresh.worker
     assert worker.skills is fresh.skills
     assert worker.mcp is fresh.mcp
+
+def test_worker_and_parent_source_views_do_not_cross(tmp_path, monkeypatch):
+    """A worker has its own Session, so it has its own view namespace. Both sides start at view.1
+    for different files, and a view id a worker mentions in its prose means nothing to the parent:
+    the parent's Edit resolves that id against its own registry or refuses it as missing."""
+    from wizolt.tools import EditTool, ReadTool
+
+    parent = _delegate_session(tmp_path)
+    (tmp_path / "parent.txt").write_text("parent line\n", encoding="utf-8")
+    (tmp_path / "worker.txt").write_text("worker line\n", encoding="utf-8")
+    model = FakeModelClient([({"role": "assistant", "content": "used view.1"}, [], "used view.1")])
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="o")
+    worker = parent.worker
+
+    parent_key = parent.register_source_drafts(list(ReadTool(parent, [{"path": "parent.txt"}]).call().drafts))[0]
+    worker_key = worker.register_source_drafts(list(ReadTool(worker, [{"path": "worker.txt"}]).call().drafts))[0]
+
+    assert parent_key == worker_key == "view.1"
+    assert parent.get_source_view("view.1").display_path == "parent.txt"
+    assert worker.get_source_view("view.1").display_path == "worker.txt"
+
+    # The parent's view.1 is its own file, so the worker's id cannot reach across to worker.txt.
+    with pytest.raises(ToolError, match="source path mismatch"):
+        EditTool(parent, ["worker.txt", worker_key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]]).call()
+    assert (tmp_path / "worker.txt").read_text(encoding="utf-8") == "worker line\n"

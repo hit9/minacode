@@ -15,7 +15,7 @@ import code_symbol_index as csi
 
 from wizolt.base import Json, ToolArgs, ToolError
 from wizolt.session import Session
-from wizolt.source import INSPECT, SEARCH, SourceBlock, SourceViewDraft, ToolOutput, render_tool_output, spans_from_lines
+from wizolt.source import INSPECT, SEARCH, SourceBlock, SourceSpan, SourceViewDraft, ToolOutput
 from wizolt.tools.base import Tool
 
 
@@ -99,8 +99,7 @@ class SearchTool(Tool):
                 if path in blocks:
                     parts.append(blocks[path])
             parts.append("</Search>")
-        retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
-        return ToolOutput(retained, tuple(parts))
+        return ToolOutput.rendered(parts)
 
     def short_args(self) -> list[str]:
         rows = []
@@ -282,7 +281,7 @@ class SearchTool(Tool):
     def build_block(self, path: str, lines: list[str], visible: dict[int, bool]) -> SourceBlock:
         """One numbered source view for a path; `>` marks a match line, a space marks context."""
         ranges = [(line_index + 1, line_index + 1) for line_index in sorted(visible)]
-        spans = spans_from_lines(lines, ranges)
+        spans = SourceSpan.build(lines, ranges)
         markers = []
         for span in spans:
             for offset in range(len(span.lines)):
@@ -558,11 +557,9 @@ class InspectCodeTool(Tool):
             output = self.inspect_text(mode, target, options, limit)
         except csi.CodeSymbolIndexError as error:
             text = self.process_result("InspectCodeToolResult", 1, "", str(error))
-            return ToolOutput(text, (text,))
+            return ToolOutput.of(text)
         hydrated, blocks = self.hydrate(output)
-        parts: list[str | SourceBlock] = [hydrated, *blocks]
-        retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
-        return ToolOutput(retained, tuple(parts))
+        return ToolOutput.rendered([hydrated, *blocks])
 
     def hydrate(self, text: str) -> tuple[str, list[SourceBlock]]:
         """Hydrate the indexed definition from the current file as an editable source block.
@@ -585,11 +582,10 @@ class InspectCodeTool(Tool):
         if start < 1 or start > len(lines) or lines[start - 1].rstrip("\n") != signature:
             note = f"\n\n<stale-index> index is stale for {path}; Read it again for current source</stale-index>"
             return text + note, []
-        spans = spans_from_lines(lines, [(start, min(end, len(lines)))])
+        spans = SourceSpan.build(lines, [(start, min(end, len(lines)))])
         if not spans:
             return text, []
-        draft = SourceViewDraft(resolved, self.session.relpath(resolved), len(lines), spans, INSPECT)
-        return text, [SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))]
+        return text, [SourceBlock.plain(SourceViewDraft(resolved, self.session.relpath(resolved), len(lines), spans, INSPECT))]
 
     @staticmethod
     def _check_int_option(value: object, low: int, high: int | None, message: str) -> None:

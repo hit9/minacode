@@ -448,14 +448,14 @@ class SessionSnapshotCodec:
     def source_views(data: list[Json], blobs: dict[str, str]) -> list[SourceView]:
         """Decode and validate persisted views. Malformed data is dropped, never repaired: a
         missing or malformed span blob drops that view, and load never invents content."""
-        from wizolt.source import SourceSpan, SourceView, parse_view_key
+        from wizolt.source import SourceSpan, SourceView
 
         views: list[SourceView] = []
         for raw in data or []:
             if not isinstance(raw, dict):
                 continue
             key = str(raw.get("key") or "")
-            if parse_view_key(key) is None:
+            if SourceView.parse_key(key) is None:
                 continue
             path = str(raw.get("path") or "")
             if not path:

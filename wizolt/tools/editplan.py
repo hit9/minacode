@@ -7,16 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from wizolt.base import ToolCall, ToolError
-from wizolt.source import (
-    SOURCE_TARGET_CHANGED,
-    SOURCE_TARGET_CONSUMED,
-    SourceView,
-    ToolOutput,
-    fresh_context_block,
-    insertion_witness,
-    range_lines,
-    source_error,
-)
+from wizolt.source import SOURCE_TARGET_CONSUMED, SourceView, ToolOutput, source_error
 from wizolt.tools.files import Edit, EditTool
 
 if TYPE_CHECKING:
@@ -158,12 +149,23 @@ class EditBatchPlan:
         return state
 
     def apply(self, tool: EditTool, state: FileState, edits: list[Edit], view: SourceView | None) -> ApplyResult:
+        """Apply one call to the planned file, then rebuild the planned lines with their origins.
+
+        The resolution itself is EditTool's, run against the planned text instead of the file on
+        disk: this plan only supplies where earlier edits in the batch moved each line to, and the
+        fresh view a failure hands back, which must describe the file as it still is on disk.
+        """
         if edits[0].op == "create":
             lines = tool.content_lines(edits[0].content, False)
             return self.ApplyResult(self.new_lines(lines), [(0, 0, 0, len(lines))], [], relocations=[])
         assert view is not None
-        replacements, relocations = self.resolve_batch(tool, state, edits, view)
-        result = tool.splice_lines([line.text for line in state.lines], replacements, relocations)
+        result = tool.apply(
+            state.text(),
+            edits,
+            view,
+            locate=lambda edit, first, last: self.planned_start(state, view, edit, first, last),
+            recover=lambda edit: tool.fresh_recovery(view, state.original, edit),
+        )
         lines = list(state.lines)
         consumed: set[tuple[str, int]] = set()
         for start, end, replacement in sorted(result.replacements, reverse=True):
@@ -171,56 +173,18 @@ class EditBatchPlan:
             lines[start:end] = self.new_lines(replacement)
         return self.ApplyResult(lines, result.changes, result.replacements, relocations=result.relocations, consumed=consumed)
 
-    def resolve_batch(self, tool: EditTool, state: FileState, edits: list[Edit], view: SourceView) -> tuple[list[tuple[int, int, list[str]]], list[str]]:
-        """Resolve every operation against the planned state.
-
-        Line origins say where an earlier edit in this batch moved a line to, so an untouched
-        target is found at its shifted index without any guessing. They cannot say anything about
-        a file that drifted before the batch began: for that, the planned index is only a starting
-        point, and EditTool's shared validation either confirms the exact target there or
-        relocates it exactly. Only lines an earlier edit in this batch actually consumed are
-        refused outright, because their content is gone rather than moved.
-        """
-        replacements: list[tuple[int, int, list[str]]] = []
-        relocations: list[str] = []
-        lines = [line.text for line in state.lines]
-        for edit in edits:
-            try:
-                if edit.op in {"replace", "delete"}:
-                    target = range_lines(view, edit.start, edit.end)
-                    start_idx = self.planned_start(state, view, edit.start, edit.end, f"{view.key} lines {edit.start}:{edit.end}")
-                    found, report = tool.locate_range(lines, view, edit, start_idx, target)
-                    if report:
-                        relocations.append(report)
-                    replacement = [] if edit.op == "delete" else tool.content_lines(edit.content, found + len(target) < len(lines))
-                    replacements.append((found, found + len(target), replacement))
-                else:
-                    after = edit.op == "insert_after"
-                    witness, boundary, index = insertion_witness(view, edit.line, after)
-                    if not witness and view.total_lines == 0:
-                        if state.lines:
-                            raise source_error(SOURCE_TARGET_CHANGED, "the empty file now has content; Read again for a current view")
-                        at = 0
-                    else:
-                        first = index + 1 - boundary
-                        start_idx = self.planned_start(state, view, first, first + len(witness) - 1, f"{view.key} line {edit.line} boundary")
-                        at, report = tool.locate_boundary(lines, view, edit, start_idx + boundary, boundary, witness)
-                        if report:
-                            relocations.append(report)
-                    replacements.append(tool.insertion_splice(lines, at, tool.content_lines(edit.content, at < len(lines))))
-            except ToolError as error:
-                raise self._with_recovery(error, state, view, edit) from error
-        return replacements, relocations
-
-    def planned_start(self, state: FileState, view: SourceView, start: int, end: int, label: str) -> int:
+    def planned_start(self, state: FileState, view: SourceView, edit: Edit, start: int, end: int) -> int:
         """Where the view's lines `start..end` (1-based, inclusive) sit in the planned state.
 
         Lines are found by their (view key, source line) origin; a different view of the same path
         is aligned to the state's base view when its text still matches the original file, so calls
         in one batch may mix views of one path. A line an earlier edit in this batch replaced or
-        deleted is refused. When the batch has not touched these lines at all, their view
-        coordinates are returned unchanged for exact validation against the planned text.
+        deleted is refused: its content is gone, and hunting for a copy of it elsewhere is exactly
+        the guess relocation must never make. When the batch has not touched these lines at all,
+        their view coordinates are returned unchanged, and EditTool validates or relocates from
+        there -- a file that drifted before the batch began leaves no trace in these origins.
         """
+        label = f"{view.key} lines {edit.start}:{edit.end}" if edit.op in {"replace", "delete"} else f"{view.key} line {edit.line} boundary"
         origins = [self.origin_key(state, view, line_no) for line_no in range(start, end + 1)]
         if any(origin in state.consumed for origin in origins):
             raise source_error(SOURCE_TARGET_CONSUMED, f"{label} were replaced or deleted by an earlier edit in this batch; Read again")
@@ -234,27 +198,9 @@ class EditBatchPlan:
 
     def origin_key(self, state: FileState, view: SourceView, line_no: int) -> tuple[str, int]:
         """The origin that identifies view line `line_no` in this file's planned state."""
-        if (
-            state.base_key
-            and state.base_key != view.key
-            and line_no - 1 < len(state.original)
-            and self.view_line_text(view, line_no) == state.original[line_no - 1]
-        ):
+        if state.base_key and state.base_key != view.key and line_no - 1 < len(state.original) and view.line(line_no) == state.original[line_no - 1]:
             return (state.base_key, line_no)
         return (view.key, line_no)
-
-    @staticmethod
-    def view_line_text(view: SourceView, line_no: int) -> str | None:
-        for span in view.spans:
-            if span.start <= line_no <= span.end:
-                return span.lines[line_no - span.start]
-        return None
-
-    def _with_recovery(self, error: ToolError, state: FileState, view: SourceView, edit: Edit) -> ToolError:
-        """Attach a fresh bounded view of the pre-batch file around the requested coordinates."""
-        center = (edit.start - 1) if edit.op in {"replace", "delete"} else max(0, edit.line - 1)
-        recovery = ToolOutput("", (fresh_context_block(view.path, view.display_path, state.original, center),))
-        return ToolError(str(error), recovery=recovery)
 
     @staticmethod
     def new_lines(lines: list[str]) -> list[Line]:

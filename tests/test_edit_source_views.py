@@ -7,7 +7,7 @@ from wizolt.base import ToolCall, ToolError
 from wizolt.context import ContextManager
 from wizolt.model import ModelClient
 from wizolt.runner import ToolRunner
-from wizolt.source import MAX_VIEW_DRIFT, ToolOutput, render_tool_output
+from wizolt.source import MAX_VIEW_DRIFT, ToolOutput
 from wizolt.tools import CodeIndex, EditTool, ReadTool
 from wizolt.tools.editplan import EditBatchPlan
 
@@ -15,11 +15,11 @@ from wizolt.tools.editplan import EditBatchPlan
 def rendered(out, s):
     """Render a ToolOutput with fresh view keys, the way the runner presents it to the model."""
     assert isinstance(out, ToolOutput)
-    return render_tool_output(out, s.register_source_drafts(list(out.drafts)))
+    return out.render(s.register_source_drafts(list(out.drafts)))
 
 
 def test_edit_accepts_read_view_evidence(tmp_path):
-    # The old test_edit_accepts_inspect_code_anchor: an Edit against a source view produced by
+    # An Edit against a source view produced by
     # Read (here standing in for InspectCode, which hydrates the same kind of block) applies.
     s = session(tmp_path)
     path = tmp_path / "note.txt"
@@ -281,7 +281,7 @@ def test_edit_relocates_unique_nearby_target(tmp_path):
     assert "relocated view.1 lines 3:3 -> current lines 4:4" in result.retained_text
 
 
-def test_edit_relocates_both_range_anchors(tmp_path):
+def test_edit_relocates_a_multi_line_range(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "note.txt"
     path.write_text("x\na\nb\nc\nd\n", encoding="utf-8")

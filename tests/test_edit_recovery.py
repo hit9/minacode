@@ -1,18 +1,20 @@
 """edit failure recovery (split from tests/test_edit_tool.py)."""
 
+import json
+
 import pytest
 from test_edit_tool import session, view
 
 from wizolt.base import ToolCall, ToolError
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
-from wizolt.source import ToolOutput, render_tool_output
+from wizolt.source import ToolOutput
 from wizolt.tools import CodeIndex, EditTool
 
 
 def rendered(out, s):
     assert isinstance(out, ToolOutput)
-    return render_tool_output(out, s.register_source_drafts(list(out.drafts)))
+    return out.render(s.register_source_drafts(list(out.drafts)))
 
 
 def test_stale_target_error_guides_fresh_view(tmp_path):
@@ -73,9 +75,21 @@ def test_failure_recovery_is_bounded_fresh_view(tmp_path):
     assert 7 >= len(rows) >= 5  # at most seven current lines around the requested coordinate
 
 
-def test_edit_description_does_not_mention_anchor():
+def test_no_model_facing_text_teaches_the_removed_anchor_protocol():
+    """The protocol is only as simple as the text that teaches it. Nothing the model reads --
+    tool descriptions, argument schemas, examples, or the system prompt -- may still describe
+    line hashes or anchors, and Bash must say outright that its output cannot be edited from."""
+    from wizolt.prompts import SYSTEM_PROMPT
+    from wizolt.tools import TOOL_REGISTRY, BashTool
+
     assert "source view" in EditTool.DESCRIPTION
-    assert "anchor" not in EditTool.DESCRIPTION
+    for tool in TOOL_REGISTRY.values():
+        text = json.dumps([tool.DESCRIPTION, tool.EXAMPLE, tool.params_schema()])
+        assert "anchor" not in text.lower(), tool.NAME
+        assert "hashline" not in text.lower(), tool.NAME
+    assert "anchor" not in SYSTEM_PROMPT.lower()
+    assert "never a source view" in BashTool.DESCRIPTION
+    assert "not a source view" in SYSTEM_PROMPT
 
 
 def test_success_fresh_block_is_immediately_editable(tmp_path):

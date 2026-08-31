@@ -18,19 +18,14 @@ from wizolt.source import (
     SOURCE_PATH_MISMATCH,
     SOURCE_TARGET_CHANGED,
     SourceBlock,
+    SourceSpan,
     SourceView,
     SourceViewDraft,
     ToolOutput,
-    fresh_context_block,
-    insertion_witness,
-    range_lines,
     relocate_target,
     relocate_witness,
-    render_source_block,
-    render_tool_output,
     same_position,
     source_error,
-    spans_from_lines,
 )
 from wizolt.tools.base import Tool
 
@@ -94,8 +89,7 @@ class ReadTool(Tool):
             # One block and one view per file: ranges across separate request items for the same
             # path are unioned, normalized, and merged, matching the model-facing lines label.
             parts.extend(self.read_one(path, per_path[path]).parts)
-        retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
-        return ToolOutput(retained, tuple(parts))
+        return ToolOutput.rendered(parts)
 
     def short_args(self) -> list[str]:
         # This echoes the call back to the model, not just the terminal, so it has to read as a
@@ -141,10 +135,8 @@ class ReadTool(Tool):
             end = max(start, total if requested_end == 0 else min(total, requested_end))
             if end > start:
                 resolved.append((start + 1, end))
-        spans = spans_from_lines(lines, resolved)
-        draft = SourceViewDraft(path, self.session.relpath(path), total, spans, READ)
-        block = SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))
-        return ToolOutput(render_source_block(block), (block,))
+        block = SourceBlock.plain(SourceViewDraft(path, self.session.relpath(path), total, SourceSpan.build(lines, resolved), READ))
+        return ToolOutput(block.render(), (block,))
 
 
 class ViewImageTool(Tool):
@@ -445,8 +437,7 @@ class EditTool(Tool):
             parts.append("\n".join(relocations))
         parts.append(self.fresh_block(path, split_lines(after), changes))
         parts.append("</Edit>")
-        retained = render_tool_output(ToolOutput("", tuple(parts)), [None] * len(parts))
-        return ToolOutput(retained, tuple(parts))
+        return ToolOutput.rendered(parts)
 
     def warnings_block(self, before: str, after: str, edits: list[Edit]) -> str:
         """Render post-edit warnings as a `<warnings>` block, or "" when nothing fired. Warnings
@@ -602,45 +593,62 @@ class EditTool(Tool):
             return False
         raise ToolError("file does not exist; use op=create to create it")
 
-    def apply(self, original: str, edits: list[Edit], view: SourceView | None) -> EditApplyResult:
-        """Resolve one call's edits against a real file's lines and splice them.
+    def apply(
+        self,
+        original: str,
+        edits: list[Edit],
+        view: SourceView | None,
+        locate: Callable[[Edit, int, int], int] | None = None,
+        recover: Callable[[Edit], ToolOutput] | None = None,
+    ) -> EditApplyResult:
+        """Resolve one call's edits against a file's lines and splice them.
 
         Every operation is resolved against `view` (targets and boundary witnesses are extracted
-        from the view) and validated against the current lines at their original coordinates,
-        then relocated exactly within MAX_VIEW_DRIFT when unchanged. All resolutions happen
-        before any splice runs; splices then apply in reverse index order. Failures carry a fresh
-        view of the current file as structured recovery.
+        from the view) and validated against the lines it is being applied to, then relocated
+        exactly within MAX_VIEW_DRIFT when the exact text merely moved. All resolutions happen
+        before any splice runs; splices then apply in reverse index order.
+
+        This is the only edit resolution loop. The batch plan applies the same call to its planned
+        in-memory file rather than to disk, and injects the two things that differ there:
+        `locate`, which maps a range of view lines to the index those lines now sit at after
+        earlier edits in the batch (and refuses a range one of them consumed), and `recover`,
+        which builds the fresh view a failure returns -- the plan owes the model a view of the
+        file on disk, not of a planned state that has not been written.
         """
         if edits[0].op == "create":
             lines = self.content_lines(edits[0].content, False)
             return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [], relocations=[])
         assert view is not None
         lines = split_lines(original)
+        # Without a batch, a view line is claimed at its own coordinates and validated from there.
+        locate = locate or (lambda edit, first, last: first - 1)
         replacements: list[tuple[int, int, list[str]]] = []
         relocations: list[str] = []
         for edit in edits:
             try:
                 if edit.op in {"replace", "delete"}:
-                    target = range_lines(view, edit.start, edit.end)
-                    found, report = self.locate_range(lines, view, edit, edit.start - 1, target)
+                    target = view.range_lines(edit.start, edit.end)
+                    found, report = self.locate_range(lines, view, edit, locate(edit, edit.start, edit.end), target)
                     if report:
                         relocations.append(report)
                     replacement = [] if edit.op == "delete" else self.content_lines(edit.content, found + len(target) < len(lines))
                     replacements.append((found, found + len(target), replacement))
                 else:
                     after = edit.op == "insert_after"
-                    witness, boundary, index = insertion_witness(view, edit.line, after)
+                    witness, boundary, index = view.witness(edit.line, after)
                     if not witness and view.total_lines == 0:
                         if lines:
                             raise source_error(SOURCE_TARGET_CHANGED, "the empty file now has content; Read again for a current view")
                         found = 0
                     else:
-                        found, report = self.locate_boundary(lines, view, edit, index, boundary, witness)
+                        first = index + 1 - boundary  # 1-based first witness line in the view
+                        at = locate(edit, first, first + len(witness) - 1) + boundary
+                        found, report = self.locate_boundary(lines, view, edit, at, boundary, witness)
                         if report:
                             relocations.append(report)
                     replacements.append(self.insertion_splice(lines, found, self.content_lines(edit.content, found < len(lines))))
             except ToolError as error:
-                raise self._with_recovery(error, view, lines, edit) from error
+                raise ToolError(str(error), recovery=recover(edit) if recover else self.fresh_recovery(view, lines, edit)) from error
         return self.splice_lines(lines, replacements, relocations)
 
     @staticmethod
@@ -687,14 +695,11 @@ class EditTool(Tool):
             return (at - 1, at, [lines[-1] + "\n", *content])
         return (at, at, content)
 
-    def _with_recovery(self, error: ToolError, view: SourceView, lines: list[str], edit: Edit) -> ToolError:
-        """Attach a fresh bounded view of the current file around the requested coordinates."""
-        if edit.op in {"replace", "delete"}:
-            center = edit.start - 1
-        else:
-            center = max(0, edit.line - 1)
-        recovery = ToolOutput("", (fresh_context_block(view.path, view.display_path, lines, center),))
-        return ToolError(str(error), recovery=recovery)
+    @staticmethod
+    def fresh_recovery(view: SourceView, lines: list[str], edit: Edit) -> ToolOutput:
+        """A fresh bounded view of `lines` around the coordinates the failed edit requested."""
+        center = (edit.start - 1) if edit.op in {"replace", "delete"} else max(0, edit.line - 1)
+        return ToolOutput("", (SourceBlock.around(view.path, view.display_path, lines, center),))
 
     @classmethod
     def splice_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], relocations: list[str] | None = None) -> EditApplyResult:
@@ -738,11 +743,10 @@ class EditTool(Tool):
         """The no-op failure's fresh view: the current target ranges as a new view."""
         lines = split_lines(original)
         ranges = [(start + 1, end) for start, end, replacement in replacements if lines[start:end] == replacement]
-        spans = spans_from_lines(lines, ranges)
         display = view.display_path if view else self.session.relpath(path)
-        draft = SourceViewDraft(view.path if view else path, display, len(lines), spans, EDIT)
-        block = SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))
-        return ToolOutput(render_source_block(block), (block,))
+        draft = SourceViewDraft(view.path if view else path, display, len(lines), SourceSpan.build(lines, ranges), EDIT)
+        block = SourceBlock.plain(draft)
+        return ToolOutput(block.render(), (block,))
 
     def fresh_block(self, path: str, lines: list[str], changes: list[tuple[int, int, int, int]]) -> SourceBlock:
         """The fresh view after a successful edit: every changed hunk plus up to three unchanged
@@ -753,9 +757,7 @@ class EditTool(Tool):
             # behind: without it the block would be empty and the model would have to Read again
             # just to keep editing the file it only just changed.
             ranges.append((max(1, start - 2), min(len(lines), max(end, start) + 3)))
-        spans = spans_from_lines(lines, ranges)
-        draft = SourceViewDraft(path, self.session.relpath(path), len(lines), spans, EDIT)
-        return SourceBlock(draft, ("",) * sum(len(span.lines) for span in spans))
+        return SourceBlock.plain(SourceViewDraft(path, self.session.relpath(path), len(lines), SourceSpan.build(lines, ranges), EDIT))
 
     def content_lines(self, content: str, followed_by_more: bool) -> list[str]:
         content = self.normalize_text(content)

@@ -6,7 +6,6 @@ from test_edit_tool import session, view
 from wizolt.base import ToolCall, ToolError
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
-from wizolt.source import render_tool_output
 from wizolt.tools import CodeIndex, EditTool
 from wizolt.tools.files import Edit
 
@@ -16,7 +15,7 @@ def runner(s):
 
 
 def rendered(out, s):
-    return render_tool_output(out, s.register_source_drafts(list(out.drafts)))
+    return out.render(s.register_source_drafts(list(out.drafts)))
 
 
 def test_tool_runner_batch_edit_rejects_consumed_target(tmp_path, monkeypatch):

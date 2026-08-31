@@ -27,7 +27,7 @@ from wizolt.base import (
 from wizolt.context import ContextManager
 from wizolt.model import ModelClient
 from wizolt.session import Session, TurnDiff
-from wizolt.source import SourceBlock, ToolOutput, as_tool_output, project_output, render_tool_output
+from wizolt.source import SourceBlock, ToolOutput
 from wizolt.tools import (
     TOOL_REGISTRY,
     AskSpec,
@@ -486,7 +486,7 @@ class ToolRunner:
     ) -> str:
         d = d or ToolDisplay()
         tool_class = TOOL_REGISTRY.get(call.name)
-        tool_output = as_tool_output(output)
+        tool_output = ToolOutput.of(output)
         key = ""
         bound = True
         if tool_output.has_source:
@@ -531,7 +531,7 @@ class ToolRunner:
         retained key and its materialized file, so the model can Read the omitted middle back
         into a fresh view.
         """
-        projected = project_output(tool_output, max_tokens=MAX_TOOL_OUTPUT_TOKENS, estimate=self.context.estimated_text_tokens)
+        projected = tool_output.project(max_tokens=MAX_TOOL_OUTPUT_TOKENS, estimate=self.context.estimated_text_tokens)
         retained = tool_output.retained_text
         key = ""
         if not failed and store and (tool_class is None or tool_class.STORES_RESULT):
@@ -547,14 +547,14 @@ class ToolRunner:
                         parts[index] = replace(part, note_recall=key, note_file=path, note_hint=hint)
                 projected = ToolOutput(projected.retained_text, tuple(parts))
         keys = self.session.register_source_drafts(list(projected.drafts))
-        return render_tool_output(projected, keys), key
+        return projected.render(keys), key
 
     def _render_source_output(self, recovery: object | None) -> str:
         """Register a ToolError's recovery drafts and render them with their fresh view ids."""
         if not isinstance(recovery, ToolOutput) or not recovery.has_source:
             return ""
         keys = self.session.register_source_drafts(list(recovery.drafts))
-        return render_tool_output(recovery, keys)
+        return recovery.render(keys)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None, bound: bool = True) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or tooloutput.short_call(self.session, call))
