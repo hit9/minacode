@@ -542,7 +542,7 @@ class EditTool(Tool):
         ranges = [self.recovery_range(edit, len(lines)) for edit in edits]
         spans = SourceSpan.build(lines, ranges)
         if sum(len(span.lines) for span in spans) > self.RECOVERY_MAX_LINES:
-            spans = SourceViewDraft.around(path, self.session.relpath(path), lines, ranges[0][0] - 1).spans
+            spans = SourceViewDraft.spans_around(lines, ranges[0][0] - 1)
         block = SourceBlock.plain(SourceViewDraft(path, self.session.relpath(path), len(lines), spans, EDIT))
         return ToolOutput(block.render(), (block,))
 

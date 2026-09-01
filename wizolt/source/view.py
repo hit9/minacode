@@ -118,6 +118,19 @@ class SourceViewDraft:
         """The `lines="..."` value naming every visible span."""
         return ranges_label(self.spans)
 
+    @staticmethod
+    def spans_around(lines: Sequence[str], center: int) -> tuple[SourceSpan, ...]:
+        """The spans of at most seven current lines around 0-based `center`, empty for no lines.
+
+        Separate from `around` so a caller that wants only the window does not have to build a
+        draft it discards, naming a path and a display path that would go nowhere.
+        """
+        if not lines:
+            return ()
+        start = max(0, center - 3)
+        end = min(len(lines), center + 4)
+        return (SourceSpan(start + 1, tuple(lines[start:end])),)
+
     @classmethod
     def around(cls, path: str, display_path: str, lines: Sequence[str], center: int, producer: str = EDIT) -> SourceViewDraft:
         """A bounded fresh draft of at most seven current lines around 0-based `center`.
@@ -125,11 +138,7 @@ class SourceViewDraft:
         This is what a failed Edit hands back, so the model can retry against current text without
         spending a whole Read on it.
         """
-        if not lines:
-            return cls(path, display_path, 0, (), producer)
-        start = max(0, center - 3)
-        end = min(len(lines), center + 4)
-        return cls(path, display_path, len(lines), (SourceSpan(start + 1, tuple(lines[start:end])),), producer)
+        return cls(path, display_path, len(lines), cls.spans_around(lines, center), producer)
 
 
 @dataclass(frozen=True)

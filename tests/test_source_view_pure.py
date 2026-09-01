@@ -6,7 +6,7 @@ this file pins the contract -- empty targets, out-of-file originals, the drift e
 view-side context accessor -- that the integration tests cannot reach.
 """
 
-from wizolt.source import EDIT, SourceSpan, SourceView, context_matches, relocate_target
+from wizolt.source import EDIT, SourceSpan, SourceView, SourceViewDraft, context_matches, relocate_target
 
 
 def test_relocate_target_is_unique_exact_and_drift_bounded():
@@ -108,3 +108,21 @@ def test_neighbors_of_a_range_no_span_contains_is_empty_rather_than_an_error():
 
     assert view.neighbors(4, 5) == ((), ())  # inside the gap
     assert view.neighbors(2, 9) == ((), ())  # crosses the gap
+
+
+def test_spans_around_is_the_window_alone_with_no_draft_to_discard():
+    """A caller that narrows an existing draft wants the window, not a second draft carrying a path
+    and a display path that would go nowhere. The window is at most seven lines and is clipped at
+    both ends of the file; no lines yield no spans."""
+    lines = [f"l{index}\n" for index in range(1, 21)]
+
+    assert [(span.start, span.end) for span in SourceViewDraft.spans_around(lines, 9)] == [(7, 13)]
+    assert [(span.start, span.end) for span in SourceViewDraft.spans_around(lines, 0)] == [(1, 4)]  # clipped at the top
+    assert [(span.start, span.end) for span in SourceViewDraft.spans_around(lines, 19)] == [(17, 20)]  # clipped at the end
+    assert SourceViewDraft.spans_around([], 0) == ()
+
+    # `around` is the same window wearing a draft, so the two cannot describe different lines.
+    draft = SourceViewDraft.around("/abs/f.py", "f.py", lines, 9)
+    assert draft.spans == SourceViewDraft.spans_around(lines, 9)
+    assert (draft.display_path, draft.total_lines) == ("f.py", 20)
+    assert SourceViewDraft.around("/abs/f.py", "f.py", [], 0).total_lines == 0  # empty file: no spans, no lines
