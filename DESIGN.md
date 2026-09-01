@@ -512,8 +512,9 @@ threshold; provider integration tests verify reported usage and acceptance witho
   tool resources, let the owning turn settle or retract its records.
 - Tool failures become matched tool results, not broken turns; cancellation settles every
   already-visible call so replay stays valid.
-- Anchor validation is a safety boundary, not friction: stale/invalid anchors stay refused; a
-  successful edit refunds the fresh anchors of the changed region so long same-file runs continue.
+- Source-view validation is a safety boundary, not friction: Edit may target only lines the model
+  was shown; changed or ambiguously moved targets stay refused, while a unique exact relocation is
+  accepted. Success and recoverable failure return a fresh bounded view so same-file runs continue.
 - Lower layers contain recoverable detail: retained output supports recall, snapshots support
   resume, deterministic compaction preserves progress when the summarizer is unavailable.
 
