@@ -38,7 +38,7 @@ def test_tool_runner_batch_edit_rejects_consumed_target(tmp_path, monkeypatch):
     assert s.tool_errors and "source target consumed" in s.tool_errors[0].error
 
 
-def test_tool_runner_planned_edit_keeps_warnings(tmp_path, monkeypatch):
+def test_tool_runner_planned_edit_writes_adjacent_duplicates_without_warning(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
@@ -49,8 +49,7 @@ def test_tool_runner_planned_edit_keeps_warnings(tmp_path, monkeypatch):
     runner(s).run([ToolCall("duplicate", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nx\n"}]])])
 
     record = next(record for record in s.tool_records if record.name == "Edit")
-    assert "<warnings>" in record.output
-    assert "duplicate-lines" in record.output
+    assert "<warnings>" not in record.output
     assert path.read_text(encoding="utf-8") == "a\nx\nx\nc\n"
 
 
@@ -189,7 +188,7 @@ def test_edit_fresh_view_for_immediate_followup(tmp_path):
     first = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]).call()
     fresh_key = s.register_source_drafts(list(first.drafts))[0]
 
-    EditTool(s, ["code.txt", fresh_key, [{"op": "insert_after", "line": 2, "content": "x\n"}]]).call()
+    EditTool(s, ["code.txt", fresh_key, [{"op": "replace", "start": 2, "end": 2, "content": "B\nx\n"}]]).call()
 
     assert path.read_text(encoding="utf-8") == "a\nB\nx\nc\n"
 
@@ -223,9 +222,9 @@ def test_edit_whole_file_ops_do_not_refund_full_view(tmp_path):
     assert path.read_text(encoding="utf-8") == "".join(f"LINE{i}\n" if i == 1 else f"line{i}\n" for i in range(50))
 
 
-def test_batch_insert_outside_witness_keeps_later_edit_alive(tmp_path, monkeypatch):
+def test_batch_insert_far_from_later_target_keeps_edit_alive(tmp_path, monkeypatch):
     """An insertion far from a later edit's target leaves that edit resolvable through the batch's
-    origin mapping: insert_after line 4, then replace original line 2."""
+    origin mapping: insert into line 4, then replace original line 2."""
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
@@ -235,52 +234,13 @@ def test_batch_insert_outside_witness_keeps_later_edit_alive(tmp_path, monkeypat
 
     runner(s).run(
         [
-            ToolCall("ins", "Edit", ["code.txt", key, [{"op": "insert_after", "line": 4, "content": "INS\n"}]]),
+            ToolCall("ins", "Edit", ["code.txt", key, [{"op": "replace", "start": 4, "end": 4, "content": "d\nINS\n"}]]),
             ToolCall("rep", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]),
         ]
     )
 
     assert path.read_text(encoding="utf-8") == "a\nB\nc\nd\nINS\ne\n"
     assert s.tool_errors == []
-
-
-def test_edit_warns_on_adjacent_duplicate_introduced(tmp_path):
-    s = session(tmp_path)
-    path = tmp_path / "dup.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    key = view(s, "dup.txt")
-
-    result = EditTool(s, ["dup.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "c\n"}]]).call()
-
-    assert "<warnings>" in result.retained_text
-    assert "duplicate-lines: adjacent identical lines after this edit; confirm intended" in result.retained_text
-    assert result.retained_text.index("<warnings>") > result.retained_text.index("@@")  # after the diff
-    assert result.retained_text.index("</warnings>") < result.retained_text.index("</Edit>")
-    assert path.read_text(encoding="utf-8") == "a\nc\nc\n"  # the file was still written
-
-
-def test_edit_no_warning_on_blank_line_duplicates(tmp_path):
-    s = session(tmp_path)
-    path = tmp_path / "blank.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    key = view(s, "blank.txt")
-
-    result = EditTool(s, ["blank.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "\n\n"}]]).call()
-
-    assert "<warnings>" not in result.retained_text
-    assert path.read_text(encoding="utf-8") == "a\n\n\nc\n"
-
-
-def test_edit_no_warning_on_pre_existing_duplicates(tmp_path):
-    s = session(tmp_path)
-    path = tmp_path / "existing.txt"
-    path.write_text("a\nb\nb\nc\n", encoding="utf-8")  # (b, b) pair already present
-    key = view(s, "existing.txt")
-
-    result = EditTool(s, ["existing.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "A\n"}]]).call()
-
-    assert "<warnings>" not in result.retained_text
-    assert path.read_text(encoding="utf-8") == "A\nb\nb\nc\n"
 
 
 def test_edit_no_warnings_output_unchanged(tmp_path):
@@ -296,23 +256,18 @@ def test_edit_no_warnings_output_unchanged(tmp_path):
     assert path.read_text(encoding="utf-8") == "A\nb\nc\n"
 
 
-def test_edit_warnings_truncated_at_limit(tmp_path):
+def test_edit_writes_an_intentional_adjacent_duplicate_without_warning(tmp_path):
+    # An intentional adjacent duplicate (#endif closing nested guards) is a legal edit under
+    # range-only editing: nothing inspects the resulting text, so no <warnings> block is emitted.
     s = session(tmp_path)
-    path = tmp_path / "many.txt"
-    path.write_text("\n".join(f"l{i}" for i in range(8)) + "\n", encoding="utf-8")
-    duplicate_block = "".join(f"d{i}\nd{i}\n" for i in range(8))  # 8 adjacent pairs -> 16 lines
-    key = view(s, "many.txt")
+    path = tmp_path / "guards.py"
+    path.write_text("".join(f"line {index}\n" for index in range(1, 567)) + "#endif\n", encoding="utf-8")
+    key = view(s, "guards.py")
 
-    result = EditTool(s, ["many.txt", key, [{"op": "replace", "start": 1, "end": 8, "content": duplicate_block}]]).call()
+    result = EditTool(s, ["guards.py", key, [{"op": "replace", "start": 567, "end": 567, "content": "#endif\n#endif\n"}]]).call()
 
-    assert "<warnings>" in result.retained_text
-    assert result.retained_text.count("duplicate-lines:") == 1  # one rule fired
-    warnings_section = result.retained_text.split("<warnings>")[1].split("</warnings>")[0]
-    numbered = [line for line in warnings_section.splitlines() if " | " in line]
-    assert len(numbered) <= 12
-    assert "..." in result.retained_text
-    assert result.retained_text.rstrip().endswith("</Edit>")
-    assert path.read_text(encoding="utf-8") == duplicate_block
+    assert "<warnings>" not in result.retained_text
+    assert path.read_text(encoding="utf-8") == "".join(f"line {index}\n" for index in range(1, 567)) + "#endif\n#endif\n"
 
 
 def test_edit_warnings_do_not_affect_apply(tmp_path):
@@ -329,10 +284,9 @@ def test_edit_warnings_do_not_affect_apply(tmp_path):
     assert result.content == "a\nc\nc\n"  # apply output is untouched by warnings
     assert len(result.changes) == 1
 
-    # warnings_block is a pure string method: it observes before/after and changes nothing.
-    block = tool.warnings_block(original, result.content, edits)
-    assert "duplicate-lines" in block and block.startswith("<warnings>") and block.endswith("</warnings>")
-    assert tool.warnings_block(original, original, edits) == ""
+    # warnings_block reads only what the call wrote, never the file's before and after: a small
+    # edit carries no warning at all now that the duplicate-lines rule is gone.
+    assert tool.warnings_block(edits) == ""
 
     # Error behavior is unchanged too: overlapping edits still raise.
     with pytest.raises(ToolError, match="overlap"):
@@ -346,27 +300,6 @@ def test_edit_warnings_do_not_affect_apply(tmp_path):
         )
 
 
-def test_duplicate_lines_rule_branches():
-    """_duplicate_lines only fires on pairs that are new in `after` and neither blank nor existing
-    in `before`; it returns the warning object or None, never raising."""
-    from wizolt.tools.files import _duplicate_lines
-
-    # ① an edit introducing adjacent identical non-blank lines reports duplicate-lines.
-    warning = _duplicate_lines("a\nb\n", "a\nb\nb\n")
-    assert warning is not None
-    assert warning.code == "duplicate-lines"
-    assert warning.message == "adjacent identical lines after this edit; confirm intended"
-
-    # ② a pair already adjacent in `before` is not reported.
-    assert _duplicate_lines("a\na\n", "a\na\n") is None
-
-    # ③ blank lines never report, even when the edit piles them up.
-    assert _duplicate_lines("x\n", "x\n\n\n") is None
-
-    # ④ no adjacent duplicates at all: None.
-    assert _duplicate_lines("a\nb\n", "a\nc\n") is None
-
-
 def test_large_edit_warns_on_what_the_call_wrote_not_on_the_file():
     """The subject is the assistant message the call arrived in: one call that writes a lot is one
     message that loses a lot when it times out. So the measure is the payload, and an ordinary edit
@@ -378,8 +311,8 @@ def test_large_edit_warns_on_what_the_call_wrote_not_on_the_file():
 
     big = [Edit(op="create", content="x" * LARGE_EDIT_CHARS)]
     warning = _large_edit(big)
-    assert warning is not None and warning.code == "large-edit"
-    assert str(LARGE_EDIT_CHARS) in warning.message and "several" in warning.message
+    assert warning is not None and "large-edit" in warning
+    assert str(LARGE_EDIT_CHARS) in warning and "several" in warning
 
     # Counted across the whole batch: several edits in one call are still one message, and every
     # operation contributes through the same content field.
@@ -400,10 +333,10 @@ def test_large_edit_warning_rides_the_edit_result(tmp_path):
     assert (tmp_path / "big.py").read_text(encoding="utf-8") == body  # advisory only: the edit stands
 
 
-def test_batch_refuses_a_range_an_earlier_insertion_split(tmp_path, monkeypatch):
-    """The range's lines are all still there, but an earlier edit in this batch pushed something
-    between them. They are no longer one contiguous target, and quietly replacing across the new
-    line would delete it, so the call is refused."""
+def test_batch_refuses_two_insertions_at_one_point(tmp_path, monkeypatch):
+    """Two insertions at one point used to be refused as a shared insertion point; now the same
+    intent is two replace N:N over the same line, which collide as identical overlapping ranges
+    and are refused before anything is written."""
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
@@ -413,13 +346,23 @@ def test_batch_refuses_a_range_an_earlier_insertion_split(tmp_path, monkeypatch)
 
     runner(s).run(
         [
-            ToolCall("split", "Edit", ["code.txt", key, [{"op": "insert_after", "line": 2, "content": "X\n"}]]),
-            ToolCall("across", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 3, "content": "BC\n"}]]),
+            ToolCall(
+                "both",
+                "Edit",
+                [
+                    "code.txt",
+                    key,
+                    [
+                        {"op": "replace", "start": 2, "end": 2, "content": "b\nX\n"},
+                        {"op": "replace", "start": 2, "end": 2, "content": "b\nY\n"},
+                    ],
+                ],
+            )
         ]
     )
 
-    assert path.read_text(encoding="utf-8") == "a\nb\nX\nc\nd\n"  # the insertion stands, X survives
-    assert s.tool_errors and "were split by an earlier edit in this batch" in s.tool_errors[0].error
+    assert path.read_text(encoding="utf-8") == "a\nb\nc\nd\n"  # nothing was written
+    assert s.tool_errors and "edits overlap or are identical ranges" in s.tool_errors[0].error
 
 
 def test_batch_accepts_two_views_of_one_path(tmp_path, monkeypatch):
@@ -437,7 +380,7 @@ def test_batch_accepts_two_views_of_one_path(tmp_path, monkeypatch):
     assert whole != tail
     runner(s).run(
         [
-            ToolCall("first", "Edit", ["code.txt", whole, [{"op": "insert_after", "line": 1, "content": "X\n"}]]),
+            ToolCall("first", "Edit", ["code.txt", whole, [{"op": "replace", "start": 1, "end": 1, "content": "a\nX\n"}]]),
             ToolCall("second", "Edit", ["code.txt", tail, [{"op": "replace", "start": 4, "end": 4, "content": "D\n"}]]),
         ]
     )
@@ -464,3 +407,44 @@ def test_batch_relocates_a_view_line_the_file_no_longer_has_room_for(tmp_path, m
     assert s.tool_errors == []
     record = next(record for record in s.tool_records if record.name == "Edit")
     assert f"relocated {key} lines 5:5 -> current lines 3:3" in record.output
+
+
+def test_batch_trusts_a_tracked_index_when_an_earlier_edit_changed_a_neighbour(tmp_path, monkeypatch):
+    """A tracked index is identity, not a guess. The first call rewrites line 2; the second edits
+    line 3, whose text repeats through the file and whose neighbour the first call just changed.
+    The plan followed line 3 through that edit, so its position is not re-derived from surrounding
+    text and the second call lands -- the neighbour check applies only to an assumed coordinate."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.py"
+    path.write_text("a\npass\npass\npass\nb\npass\n", encoding="utf-8")
+    key = view(s, "code.py")
+
+    runner(s).run(
+        [
+            ToolCall("first", "Edit", ["code.py", key, [{"op": "replace", "start": 2, "end": 2, "content": "TWO\n"}]]),
+            ToolCall("second", "Edit", ["code.py", key, [{"op": "replace", "start": 3, "end": 3, "content": "THREE\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nTWO\nTHREE\npass\nb\npass\n"
+    assert s.tool_errors == []
+
+
+def test_batch_untracked_target_still_needs_its_neighbours(tmp_path, monkeypatch):
+    """The other half of the same rule: when the file drifted before the batch began, the plan
+    tracked nothing, so the view's coordinate is an assumption again. Matching text there is not
+    enough while the target repeats and the neighbours disagree, and the call is refused."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.py"
+    path.write_text("x\npass\npass\npass\npass\npass\n", encoding="utf-8")
+    key = view(s, "code.py")
+    path.write_text("x\ny\npass\npass\npass\npass\npass\npass\n", encoding="utf-8")  # drifted before the batch
+
+    runner(s).run([ToolCall("ins", "Edit", ["code.py", key, [{"op": "replace", "start": 4, "end": 4, "content": "pass\nNEW\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "x\ny\npass\npass\npass\npass\npass\npass\n"
+    assert s.tool_errors and "cannot relocate" in s.tool_errors[0].error

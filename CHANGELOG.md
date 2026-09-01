@@ -16,6 +16,12 @@
   or `InspectCode` before it can be edited.
 - **Breaking.** `Edit` drops the `replace_all` and `replace_unique` operations; a repeated change is
   made with `Search` plus range edits.
+- **Breaking.** `Edit` drops `insert_before` and `insert_after`. An insertion is a `replace` over
+  a single line whose content is that line's final text, so the content of every operation is the
+  complete final text of a stated range and there is no boundary line the call preserves
+  implicitly. This removes the accidental-duplicate class that the previous adjacent-duplicate
+  warning existed to report, and that warning is removed with it. Writing into an existing empty
+  file is now `create`.
 - **Breaking.** The session snapshot format is now version 3. Sessions written by earlier releases
   are refused with the existing unsupported-format error rather than resumed, because their stored
   messages teach the removed anchor syntax.
@@ -26,6 +32,17 @@
   install source because the venv's `bin/python` is a symlink, ran
   `python -m pip install --upgrade wizolt`, and failed with `No module named pip`; the upgrade
   command and the startup update prompt now detect uv tool and pipx installs correctly.
+- A drifted single-line `Edit` target that repeats within the relocation window is now
+  disambiguated by the lines the source view showed around it, instead of being refused as
+  ambiguous. The comparison stays exact, and the surrounding lines only ever narrow a set of
+  candidates that already matched, so a target whose own text changed is still never guessed at.
+- An `Edit` target whose text still matches at the line number its view named is no longer applied
+  there on that basis alone. When the file has drifted and the target's text repeats, the line
+  sitting at that number can be a different occurrence than the one the model was shown, which
+  would edit the wrong place silently. The view's surrounding lines now have to agree as well, and
+  when they do not the position is re-derived by relocation, which resolves it or refuses. A target
+  that is unique nearby is unaffected, as is one whose position a batch is already tracking through
+  its own earlier edits.
 
 ## 0.37.1 - 2026-08-29
 

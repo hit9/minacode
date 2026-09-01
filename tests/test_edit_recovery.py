@@ -25,11 +25,11 @@ def test_stale_target_error_guides_fresh_view(tmp_path):
     EditTool(s, ["note.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "changed\n"}]]).call()
 
     with pytest.raises(ToolError) as error:
-        EditTool(s, ["note.txt", key, [{"op": "insert_before", "line": 1, "content": "x\n"}]]).call()
+        EditTool(s, ["note.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\nchanged\n"}]]).call()
 
     message = str(error.value)
     assert "cannot relocate" in message
-    assert "use the fresh view below or Read again" in message
+    assert "use the fresh view below, or Read again" in message
     assert path.read_text(encoding="utf-8") == "changed\n"
 
 
@@ -43,18 +43,6 @@ def test_out_of_range_line_reports_view_bounds(tmp_path):
         EditTool(s, ["note.txt", key, [{"op": "replace", "start": 10, "end": 10, "content": "x\n"}]]).call()
 
     assert path.read_text(encoding="utf-8") == "a\nb\n"
-
-
-def test_empty_file_insertion_nonzero_rejected(tmp_path):
-    s = session(tmp_path)
-    path = tmp_path / "empty.txt"
-    path.write_text("", encoding="utf-8")
-    key = view(s, "empty.txt")
-
-    with pytest.raises(ToolError, match="only insert_after with line 0 is valid"):
-        EditTool(s, ["empty.txt", key, [{"op": "insert_before", "line": 1, "content": "x\n"}]]).call()
-
-    assert path.read_text(encoding="utf-8") == ""
 
 
 def test_failure_recovery_is_bounded_fresh_view(tmp_path):
@@ -100,7 +88,7 @@ def test_success_fresh_block_is_immediately_editable(tmp_path):
 
     first = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]).call()
     fresh_key = s.register_source_drafts(list(first.drafts))[0]
-    EditTool(s, ["code.txt", fresh_key, [{"op": "insert_after", "line": 2, "content": "x\n"}]]).call()
+    EditTool(s, ["code.txt", fresh_key, [{"op": "replace", "start": 2, "end": 2, "content": "B\nx\n"}]]).call()
 
     assert path.read_text(encoding="utf-8") == "a\nB\nx\nc\n"
 
@@ -154,7 +142,7 @@ def test_batch_stale_range_does_not_guess_after_prior_shift(tmp_path, monkeypatc
                     "code.txt",
                     key,
                     [
-                        {"op": "insert_before", "line": 1, "content": "x\n"},
+                        {"op": "replace", "start": 1, "end": 1, "content": "x\na\n"},
                         {"op": "replace", "start": 2, "end": 2, "content": "B\n"},
                     ],
                 ],
@@ -196,8 +184,7 @@ def test_deletion_fresh_view_shows_the_seam_it_left(tmp_path, monkeypatch):
 
 
 def test_deleting_the_whole_file_leaves_an_empty_file_view(tmp_path, monkeypatch):
-    # The one legal shape for a view with no spans: an empty file, whose view carries its single
-    # legal insertion boundary at line 0.
+    # Deleting every line leaves a view with no spans; the emptied file is then written with create.
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
@@ -209,27 +196,26 @@ def test_deleting_the_whole_file_leaves_an_empty_file_view(tmp_path, monkeypatch
 
     fresh = s.get_source_view("view.2")
     assert (fresh.total_lines, fresh.spans) == (0, ())
-    runner.run([ToolCall("fill", "Edit", ["code.txt", "view.2", [{"op": "insert_after", "line": 0, "content": "new\n"}]])])
+    runner.run([ToolCall("fill", "Edit", ["code.txt", "", [{"op": "create", "content": "new\n"}]])])
     assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "new\n"
     assert s.tool_errors == []
 
 
-def test_empty_file_insertion_rejects_once_another_writer_filled_it(tmp_path, monkeypatch):
-    # An empty-file view carries one legal boundary and no content to validate, so it is the one
-    # target that could be applied blind. It stays valid only while the file is still empty.
+def test_empty_file_create_rejects_once_another_writer_filled_it(tmp_path, monkeypatch):
+    # create on a file that was empty (or absent) when the call was written must not overwrite one
+    # that is no longer empty by the time it runs: the non-empty file is refused, not clobbered.
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
     path = tmp_path / "empty.txt"
     path.write_text("", encoding="utf-8")
-    key = view(s, "empty.txt")
     path.write_text("written elsewhere\n", encoding="utf-8")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("fill", "Edit", ["empty.txt", key, [{"op": "insert_after", "line": 0, "content": "mine\n"}]])])
+    runner.run([ToolCall("fill", "Edit", ["empty.txt", "", [{"op": "create", "content": "mine\n"}]])])
 
     assert path.read_text(encoding="utf-8") == "written elsewhere\n"
-    assert s.tool_errors and "the empty file now has content" in s.tool_errors[0].error
+    assert s.tool_errors and "file already exists" in s.tool_errors[0].error
 
 
 def test_expired_view_is_answered_with_the_current_lines_it_asked_for(tmp_path, monkeypatch):
@@ -271,7 +257,7 @@ def test_expired_view_recovery_covers_every_edit_in_the_call(tmp_path):
     with pytest.raises(ToolError) as error:
         EditTool(
             s,
-            ["app.py", key, [{"op": "replace", "start": 5, "end": 5, "content": "x\n"}, {"op": "insert_after", "line": 30, "content": "y\n"}]],
+            ["app.py", key, [{"op": "replace", "start": 5, "end": 5, "content": "x\n"}, {"op": "replace", "start": 30, "end": 30, "content": "line 30\ny\n"}]],
         ).call()
 
     spans = error.value.recovery.drafts[0].spans

@@ -11,7 +11,7 @@ which take current file lines rather than a view and therefore have no receiver 
 """
 
 from wizolt.source.output import SourceBlock, TextBlock, ToolOutput
-from wizolt.source.relocate import relocate_target, relocate_witness, same_position
+from wizolt.source.relocate import context_matches, relocate_target, same_position
 from wizolt.source.view import (
     EDIT,
     INSPECT,
@@ -50,8 +50,8 @@ __all__ = [
     "SourceViewDraft",
     "TextBlock",
     "ToolOutput",
+    "context_matches",
     "relocate_target",
-    "relocate_witness",
     "same_position",
     "source_error",
 ]

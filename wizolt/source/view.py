@@ -190,26 +190,18 @@ class SourceView:
             SOURCE_RANGE_UNSEEN, f"lines {start}:{end} were not projected in {self.key}; only {self.ranges_label() or '(empty file)'} is visible"
         )
 
-    def witness(self, line: int, after: bool) -> tuple[tuple[str, ...], int, int]:
-        """The exact boundary witness for an insertion, as (lines, boundary_index, view_index).
+    def neighbors(self, start: int, end: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """The up-to-2 shown lines on each side of a 1-based inclusive range, clipped to its span.
 
-        An insertion has no content of its own to validate, so it is proved by the lines around
-        it: the anchor boundary plus up to two visible lines on each side. `boundary_index` counts
-        how many witness lines precede the insertion point, and `view_index` is the 0-based
-        insertion index in the view's own coordinates.
+        The context a relocation can use to disambiguate between exact matches: the exact lines
+        beside the target this view showed, each side empty when the range touches its span edge.
+        A range that no span contains yields two empty tuples rather than raising -- `range_lines`
+        has already refused that range before this is ever called.
         """
-        if self.total_lines == 0:
-            if not after or line != 0:
-                raise source_error(SOURCE_RANGE_UNSEEN, f"{self.key} represents an empty file; only insert_after with line 0 is valid")
-            return (), 0, 0
-        if line < 1 or line > self.total_lines:
-            raise source_error(SOURCE_RANGE_UNSEEN, f"line {line} is outside view {self.key}")
-        span = next((span for span in self.spans if span.start <= line <= span.end), None)
-        if span is None:
-            raise source_error(SOURCE_RANGE_UNSEEN, f"line {line} was not projected in {self.key}; only {self.ranges_label()} is visible")
-        low = max(span.start, line - 2)
-        high = min(span.end, line + 2)
-        lines = span.slice(low, high)
-        if after:
-            return lines, line - low + 1, line  # after the anchor line itself
-        return lines, line - low, line - 1  # before the anchor line itself
+        for span in self.spans:
+            if span.contains(start, end):
+                return (
+                    span.slice(max(span.start, start - 2), start - 1),
+                    span.slice(end + 1, min(span.end, end + 2)),
+                )
+        return (), ()

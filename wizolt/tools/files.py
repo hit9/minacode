@@ -23,8 +23,8 @@ from wizolt.source import (
     SourceViewDraft,
     TextBlock,
     ToolOutput,
+    context_matches,
     relocate_target,
-    relocate_witness,
     same_position,
     source_error,
 )
@@ -243,7 +243,6 @@ class Edit:
     op: str
     start: int = 0  # 1-based inclusive first line of a replace/delete range
     end: int = 0  # 1-based inclusive last line of a replace/delete range
-    line: int = 0  # 1-based anchor line of an insertion; 0 = existing-empty-file insert_after
     content: str = ""
 
 
@@ -255,65 +254,26 @@ class EditApplyResult:
     relocations: list[str] = field(default_factory=list)  # "relocated ... -> ..." reports
 
 
-@dataclass
-class EditWarning:
-    """A post-edit observation rendered inside the Edit result. Never affects control flow:
-    warnings are advisory only, and anchors always name lines of the edited file."""
-
-    code: str  # rule name, e.g. "duplicate-lines"
-    message: str
-    anchors: list[tuple[int, str]] = field(default_factory=list)  # (line_index, line_text) in the edited file
-
-
-def _duplicate_lines(before: str, after: str) -> EditWarning | None:
-    """Warn when the edit introduces adjacent identical non-blank lines that were not adjacent
-    in the original file. Pairs are compared by line content only: a pair that already existed
-    before the edit is not reported, blank lines are never reported."""
-    after_lines = split_lines(after)
-    before_lines = split_lines(before)
-
-    def pairs(lines: list[str]) -> set[tuple[str, str]]:
-        return {(lines[i - 1], lines[i]) for i in range(1, len(lines)) if lines[i] == lines[i - 1] and lines[i].strip() != ""}
-
-    new_pairs = pairs(after_lines) - pairs(before_lines)
-    if not new_pairs:
-        return None
-    anchors: list[tuple[int, str]] = []
-    for i in range(1, len(after_lines)):
-        if (after_lines[i - 1], after_lines[i]) in new_pairs:
-            anchors.extend(((i - 1, after_lines[i - 1]), (i, after_lines[i])))
-    return EditWarning(
-        "duplicate-lines",
-        "adjacent identical lines after this edit; confirm intended",
-        sorted(set(anchors)),
-    )
-
-
-# Rule tuple: pure (before: str, after: str) -> EditWarning | None functions. Adding a rule
-# here is enough — call() only invokes warnings_block() and the envelope does not change.
-EDIT_WARNINGS: tuple[Callable[[str, str], EditWarning | None], ...] = (_duplicate_lines,)
-
 # Characters written in one call past which the call is worth splitting. About 1.5k tokens: large
 # enough that ordinary edits never see it, small enough to stay well inside any output budget.
 LARGE_EDIT_CHARS = 6000
 
 
-def _large_edit(edits: list[Edit]) -> EditWarning | None:
-    """Warn when one call wrote enough text that it should have been several.
+def _large_edit(edits: list[Edit]) -> str | None:
+    """The rendered `<warnings>` line when one call wrote enough text that it should have been several.
 
-    Deliberately measured on what the model typed (`content`), not on the file's before and after,
-    which is why this one is not in EDIT_WARNINGS: the subject is the assistant message the call
-    arrived in, not the change it made. That message is generated in one stretch, and a response
-    timeout or an output cap partway through discards all of it -- this edit, the reasoning that
-    reached it, and every other call batched beside it. Smaller edits land as they go, and cost
-    nothing extra when nothing goes wrong."""
+    Deliberately measured on what the model typed (`content`), not on the file's before and after:
+    the subject is the assistant message the call arrived in, not the change it made. That message
+    is generated in one stretch, and a response timeout or an output cap partway through discards
+    all of it -- this edit, the reasoning that reached it, and every other call batched beside it.
+    Smaller edits land as they go, and cost nothing extra when nothing goes wrong."""
     written = sum(len(edit.content) for edit in edits)
     if written < LARGE_EDIT_CHARS:
         return None
-    return EditWarning(
-        "large-edit",
+    return (
+        "large-edit: "
         f"this call wrote {written} characters in one assistant message; a change this size is safer as several "
-        "Edit calls, since a timeout mid-message loses the whole batch",
+        "Edit calls, since a timeout mid-message loses the whole batch"
     )
 
 
@@ -336,9 +296,11 @@ class EditTool(Tool):
     DESCRIPTION = (
         "Create or patch one UTF-8 file. op=create writes a new file and is the only operation in its call; "
         "replace/delete cover the inclusive 1-based start..end range inside the named source view (source=view.N from "
-        "Read, Search, or InspectCode); insert_before/insert_after keep the named line and only add content beside it "
-        "(insert_after with line 0 targets an existing empty file). Do not copy unchanged surrounding context into "
-        "replacement or insertion content; Edit preserves it automatically. "
+        "Read, Search, or InspectCode). Content is the complete final text of the named range; lines outside the range "
+        "are preserved automatically and must not be copied in as context. An insertion is a replace over a single line: "
+        "to add a line after line N, replace N:N with line N's text followed by the new line; to add one before it, put "
+        "the new line first. To append to the end, replace the last line N:N with its text plus the new lines. To write "
+        "into an existing empty file, use create. "
         "Work in small steps: one call per cohesive change, and split a large rewrite across several "
         "calls, because everything one call writes is generated inside a single assistant message "
         "and a timeout partway through loses all of it. Bash output is not a source: read the file "
@@ -347,7 +309,7 @@ class EditTool(Tool):
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"replace","start":10,"end":12,"content":"new_value = 1\\n"}]}',
-        'insert after a visible line. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"insert_after","line":10,"content":"new_value = 1\\n"}]}',
+        'add a line after line 10. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"replace","start":10,"end":10,"content":"line 10 text\\nnew_value = 1\\n"}]}',
         'delete range. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"delete","start":10,"end":12}]}',
     )
     MUTATES = True
@@ -361,18 +323,17 @@ class EditTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         edit = cls.object_schema({
-            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after"},
+            "op": {"type": "string", "description": "create|replace|delete"},
             "start": {"type": "integer", "minimum": 1, "description": "First line of an inclusive 1-based replace/delete range; must be visible in the named source view"},
             "end": {"type": "integer", "minimum": 1, "description": "Last line of an inclusive 1-based replace/delete range; the line at end is itself replaced or deleted"},
-            "line": {"type": "integer", "minimum": 0, "description": "1-based line to insert beside for insert_before/insert_after; must be visible in the named source view. Line 0 is accepted only for insert_after into an existing empty file whose view explicitly represents it"},
             "content": {
                 "type": "string",
                 "description": (
-                    "New text for create/replace/insert_before/insert_after. For replace: only the final replacement "
-                    "text for the inclusive start..end range; lines before start and after end are preserved automatically "
-                    "and must not be copied into content merely as context. For insert_before/insert_after: only the new "
-                    "text; the line you insert beside is preserved automatically, so do not copy it merely to keep it. An explicit "
-                    "empty string deletes the matched range (replace). For create: the whole file."
+                    "New text for create/replace. For replace: the complete final text of the inclusive start..end range; "
+                    "lines before start and after end are preserved automatically and must not be copied into content merely as context. "
+                    "An insertion is a replace over a single line whose content is that line's final text plus what is added around it; "
+                    "an insertion point has two neighbours and either may serve as the range, so prefer the shorter one. "
+                    "An explicit empty string deletes the matched range (replace). For create: the whole file."
                 ),
             },
         }, ["op"])
@@ -414,7 +375,7 @@ class EditTool(Tool):
             raise ToolError(self.no_changes_error(original, result), recovery=self.no_op_recovery(path, view, original, result.replacements))
         if created:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        return self.write_result(path, original, result.content, result.changes, self.warnings_block(original, result.content, edits), result.relocations)
+        return self.write_result(path, original, result.content, result.changes, self.warnings_block(edits), result.relocations)
 
     def write_result(
         self,
@@ -445,36 +406,16 @@ class EditTool(Tool):
         parts.append("</Edit>")
         return ToolOutput.rendered(parts)
 
-    def warnings_block(self, before: str, after: str, edits: list[Edit]) -> str:
-        """Render post-edit warnings as a `<warnings>` block, or "" when nothing fired. Warnings
-        are advisory only and never change the edit. Output is bounded: at most 3 warnings and 12
-        numbered lines, truncated with "..."."""
-        collected = []
-        for rule in EDIT_WARNINGS:
-            warning = rule(before, after)
-            if warning is not None:
-                collected.append(warning)
-        if (large := _large_edit(edits)) is not None:
-            collected.append(large)
-        if not collected:
+    def warnings_block(self, edits: list[Edit]) -> str:
+        """Render the call's warnings as a `<warnings>` block, or "" when nothing fired.
+
+        The only warning left is the large-edit advisory, which is about the assistant message that
+        carried the call, not about the change it made: with insertions gone there is no content
+        heuristic left to police, so the file's before and after are not inspected at all.
+        """
+        if (large := _large_edit(edits)) is None:
             return ""
-        out = ["<warnings>"]
-        shown = 0
-        truncated = False
-        for warning in collected[:3]:
-            out.append(f"{warning.code}: {warning.message}")
-            for index, line in warning.anchors:
-                if shown >= 12:
-                    truncated = True
-                    break
-                out.append(f"{index + 1} | {line.rstrip(chr(10))}")
-                shown += 1
-            if truncated:
-                break
-        if truncated or len(collected) > 3:
-            out.append("...")
-        out.append("</warnings>")
-        return "\n".join(out)
+        return f"<warnings>\n{large}\n</warnings>"
 
     def turn_diff(self) -> TurnDiff | None:
         path, diff = getattr(self, "last_path", ""), getattr(self, "last_diff", "")
@@ -534,10 +475,10 @@ class EditTool(Tool):
         for item in raw_edits:
             if not isinstance(item, dict):
                 raise ToolError("each edit must be an object")
-            if unexpected := sorted(set(item) - {"op", "start", "end", "line", "content"}):
+            if unexpected := sorted(set(item) - {"op", "start", "end", "content"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             op = str(item.get("op") or "")
-            if op not in {"create", "replace", "delete", "insert_before", "insert_after"}:
+            if op not in {"create", "replace", "delete"}:
                 raise ToolError("unknown edit op")
             if op == "create" and len(raw_edits) != 1:
                 raise ToolError("create cannot be mixed with other edits")
@@ -551,13 +492,6 @@ class EditTool(Tool):
                 if start < 1 or end < start:
                     raise ToolError(f"{op} requires 1 <= start <= end")
                 edits.append(Edit(op=op, start=start, end=end, content=self.normalize_text(str(item.get("content") or ""))))
-            elif op in {"insert_before", "insert_after"}:
-                line = self._int_arg(item, "line", op)
-                if line < 0:
-                    raise ToolError(f"{op} line must be >= 0")
-                if "content" not in item or item["content"] is None:
-                    raise ToolError(f"{op} requires content; use an explicit empty string to insert nothing")
-                edits.append(Edit(op=op, line=line, content=self.normalize_text(str(item.get("content") or ""))))
             else:
                 if "content" not in item or item["content"] is None:
                     raise ToolError("create requires content; use an explicit empty string to create an empty file")
@@ -615,14 +549,17 @@ class EditTool(Tool):
     @classmethod
     def recovery_range(cls, edit: Edit, total: int) -> tuple[int, int]:
         """The 1-based inclusive range a failed edit needs to see, with context on both sides."""
-        start, end = (edit.start, edit.end) if edit.op in {"replace", "delete"} else (edit.line, edit.line)
-        return max(1, start - cls.RECOVERY_CONTEXT_LINES), min(total, end + cls.RECOVERY_CONTEXT_LINES)
+        return max(1, edit.start - cls.RECOVERY_CONTEXT_LINES), min(total, edit.end + cls.RECOVERY_CONTEXT_LINES)
 
     def _validate_target(self, path: str, creating: bool) -> bool:
         """Validate an edit/create target and return whether its current contents should be read."""
 
         if os.path.exists(path):
             if creating:
+                # An existing zero-byte file has nothing to preserve, so create may overwrite it;
+                # anything non-empty still fails, since overwriting would destroy its content.
+                if os.path.isfile(path) and os.path.getsize(path) == 0:
+                    return False
                 raise ToolError("file already exists")
             if os.path.isdir(path):
                 raise ToolError("path is a directory")
@@ -643,108 +580,83 @@ class EditTool(Tool):
         original: str,
         edits: list[Edit],
         view: SourceView | None,
-        locate: Callable[[Edit, int, int], int] | None = None,
+        locate: Callable[[Edit, int, int], int | None] | None = None,
         recover: Callable[[Edit], ToolOutput] | None = None,
     ) -> EditApplyResult:
         """Resolve one call's edits against a file's lines and splice them.
 
-        Every operation is resolved against `view` (targets and boundary witnesses are extracted
-        from the view) and validated against the lines it is being applied to, then relocated
+        Every operation is resolved against `view` (its target is extracted from the view) and
+        validated against the lines it is being applied to, then relocated
         exactly within MAX_VIEW_DRIFT when the exact text merely moved. All resolutions happen
         before any splice runs; splices then apply in reverse index order.
 
         This is the only edit resolution loop. The batch plan applies the same call to its planned
         in-memory file rather than to disk, and injects the two things that differ there:
         `locate`, which maps a range of view lines to the index those lines now sit at after
-        earlier edits in the batch (and refuses a range one of them consumed), and `recover`,
-        which builds the fresh view a failure returns -- the plan owes the model a view of the
-        file on disk, not of a planned state that has not been written.
+        earlier edits in the batch (None when the batch never tracked them, and an error when one
+        of them was consumed), and `recover`, which builds the fresh view a failure returns -- the
+        plan owes the model a view of the file on disk, not of a planned state that has not been
+        written.
         """
         if edits[0].op == "create":
             lines = self.content_lines(edits[0].content, False)
             return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [], relocations=[])
         assert view is not None
         lines = split_lines(original)
-        # Without a batch, a view line is claimed at its own coordinates and validated from there.
-        locate = locate or (lambda edit, first, last: first - 1)
         replacements: list[tuple[int, int, list[str]]] = []
         relocations: list[str] = []
         for edit in edits:
             try:
-                if edit.op in {"replace", "delete"}:
-                    target = view.range_lines(edit.start, edit.end)
-                    found, report = self.locate_range(lines, view, edit, locate(edit, edit.start, edit.end), target)
-                    if report:
-                        relocations.append(report)
-                    replacement = [] if edit.op == "delete" else self.content_lines(edit.content, found + len(target) < len(lines))
-                    replacements.append((found, found + len(target), replacement))
-                else:
-                    after = edit.op == "insert_after"
-                    witness, boundary, index = view.witness(edit.line, after)
-                    if not witness and view.total_lines == 0:
-                        if lines:
-                            raise source_error(SOURCE_TARGET_CHANGED, "the empty file now has content; Read again for a current view")
-                        found = 0
-                    else:
-                        first = index + 1 - boundary  # 1-based first witness line in the view
-                        at = locate(edit, first, first + len(witness) - 1) + boundary
-                        found, report = self.locate_boundary(lines, view, edit, at, boundary, witness)
-                        if report:
-                            relocations.append(report)
-                    replacements.append(self.insertion_splice(lines, found, self.content_lines(edit.content, found < len(lines))))
+                target = view.range_lines(edit.start, edit.end)
+                planned = locate(edit, edit.start, edit.end) if locate else None
+                found, report = self.locate_range(lines, view, edit, planned, target)
+                if report:
+                    relocations.append(report)
+                replacement = [] if edit.op == "delete" else self.content_lines(edit.content, found + len(target) < len(lines))
+                replacements.append((found, found + len(target), replacement))
             except ToolError as error:
                 raise ToolError(str(error), recovery=recover(edit) if recover else self.fresh_recovery(view, lines, edit)) from error
         return self.splice_lines(lines, replacements, relocations)
 
     @staticmethod
-    def locate_range(lines: list[str], view: SourceView, edit: Edit, index: int, target: tuple[str, ...]) -> tuple[int, str]:
-        """Resolve a replace/delete target: exact match at `index`, else exact bounded relocation.
+    def locate_range(lines: list[str], view: SourceView, edit: Edit, planned: int | None, target: tuple[str, ...]) -> tuple[int, str]:
+        """Resolve a replace/delete target: exact match in place, else exact bounded relocation.
 
-        Returns the 0-based start and a relocation report ("" when the target was where it was
-        expected). Both the single-call and the batch path go through here, so a target that
-        merely drifted is relocated under one set of rules and never resolved by position alone.
+        Returns the 0-based start and a relocation report ("" when the target did not move). Both
+        the single-call and the batch path go through here, so a target that merely drifted is
+        relocated under one set of rules and never resolved by position alone.
+
+        `planned` is where a batch moved these lines after editing this file, or None when the
+        view's own coordinate is the only place to start. The difference is what the position is
+        worth as evidence. A planned index describes a state that plan owns and re-verifies against
+        disk before writing, so matching text there settles it -- and the neighbours could not
+        vouch for it anyway, since the batch may have rewritten them itself. A view coordinate is
+        an assumption: among repeated lines, matching text at an assumed index can be a coincidence
+        rather than the occurrence the model saw, so it holds only while the lines the view showed
+        beside it are still there. When they are not, the position is re-derived through relocation,
+        which either finds the one occurrence the neighbours single out or refuses; a target that is
+        unique in the window resolves to that same index anyway, so this costs a scan, never a
+        working edit.
         """
-        if index >= 0 and same_position(lines, index, target):
+        index = edit.start - 1 if planned is None else planned
+        before, after = view.neighbors(edit.start, edit.end)
+        if same_position(lines, index, target) and (planned is not None or context_matches(lines, index, target, before, after)):
             return index, ""
-        relocated = relocate_target(lines, max(index, 0), target)
+        relocated = relocate_target(lines, index, target, before=before, after=after)
         if relocated is None:
+            widen = "widen the range to include its neighbors, " if edit.start == edit.end else ""
             raise source_error(
                 SOURCE_TARGET_CHANGED,
-                f"exact target for {view.key} lines {edit.start}:{edit.end} differs and cannot relocate; use the fresh view below or Read again",
+                f"exact target for {view.key} lines {edit.start}:{edit.end} differs and cannot relocate; {widen}use the fresh view below, or Read again",
             )
+        if relocated == index:
+            return relocated, ""
         return relocated, f"relocated {view.key} lines {edit.start}:{edit.end} -> current lines {relocated + 1}:{relocated + len(target)}"
-
-    @staticmethod
-    def locate_boundary(lines: list[str], view: SourceView, edit: Edit, index: int, boundary: int, witness: tuple[str, ...]) -> tuple[int, str]:
-        """Resolve an insertion boundary: exact witness at `index`, else exact bounded relocation."""
-        if index >= boundary and same_position(lines, index - boundary, witness):
-            return index, ""
-        relocated = relocate_witness(lines, index, witness, boundary)
-        if relocated is None:
-            raise source_error(
-                SOURCE_TARGET_CHANGED,
-                f"boundary at {view.key} line {edit.line} differs and cannot relocate; use the fresh view below or Read again",
-            )
-        if edit.op == "insert_after":
-            return relocated, f"relocated {view.key} line {edit.line} -> current line {relocated}"
-        return relocated, f"relocated {view.key} line {edit.line} -> current line {relocated + 1}"
-
-    @staticmethod
-    def insertion_splice(lines: list[str], at: int, content: list[str]) -> tuple[int, int, list[str]]:
-        """The splice for inserting `content` at 0-based `at`.
-
-        Appending past a final line that has no newline would join the two into one line, so that
-        line is terminated as part of the same splice rather than silently merged with the
-        insertion."""
-        if at == len(lines) and lines and not lines[-1].endswith("\n"):
-            return (at - 1, at, [lines[-1] + "\n", *content])
-        return (at, at, content)
 
     @staticmethod
     def fresh_recovery(view: SourceView, lines: list[str], edit: Edit) -> ToolOutput:
         """A fresh bounded view of `lines` around the coordinates the failed edit requested."""
-        center = (edit.start - 1) if edit.op in {"replace", "delete"} else max(0, edit.line - 1)
-        return ToolOutput("", (SourceBlock.around(view.path, view.display_path, lines, center),))
+        return ToolOutput("", (SourceBlock.around(view.path, view.display_path, lines, edit.start - 1),))
 
     @classmethod
     def splice_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], relocations: list[str] | None = None) -> EditApplyResult:
@@ -756,7 +668,7 @@ class EditTool(Tool):
         previous = None
         for start, end, _ in sorted(replacements):
             if previous and (start < previous[1] or (start == previous[0] and end == previous[1])):
-                raise ToolError(f"edits overlap or share an insertion point: {previous[0]}:{previous[1]} and {start}:{end}")
+                raise ToolError(f"edits overlap or are identical ranges: {previous[0]}:{previous[1]} and {start}:{end}")
             previous = (start, end)
         new_lines = list(lines)
         for start, end, replacement in sorted(replacements, reverse=True):
@@ -789,7 +701,6 @@ class EditTool(Tool):
 
         Every target is shown, not only the ones whose content already matched: the model asked to
         change these lines and nothing happened, so these lines are exactly what it needs to see.
-        An insertion has no range of its own, so its boundary line stands in for it.
         """
         lines = split_lines(original)
         ranges = [(start + 1, end) if end > start else (max(1, start), min(len(lines), start + 1)) for start, end, _ in replacements]

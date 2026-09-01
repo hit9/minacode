@@ -114,11 +114,12 @@ def test_edit_creates_and_patches_file(tmp_path):
     s = session(tmp_path)
     EditTool(s, ["empty/keep.txt", "", [{"op": "create", "content": ""}]]).call()
     assert (tmp_path / "empty" / "keep.txt").read_text(encoding="utf-8") == ""
+    # An existing zero-byte file has nothing to preserve, so create may rewrite it...
+    EditTool(s, ["empty/keep.txt", "", [{"op": "create", "content": "kept\n"}]]).call()
+    assert (tmp_path / "empty" / "keep.txt").read_text(encoding="utf-8") == "kept\n"
+    # ...but a non-empty existing file is still refused.
     with pytest.raises(ToolError, match="file already exists"):
-        EditTool(s, ["empty/keep.txt", "", [{"op": "create", "content": ""}]]).call()
-    # The empty file edits through its fresh empty-file view: insert_after line 0.
-    key = view(s, "empty/keep.txt")
-    EditTool(s, ["empty/keep.txt", key, [{"op": "insert_after", "line": 0, "content": "kept\n"}]]).call()
+        EditTool(s, ["empty/keep.txt", "", [{"op": "create", "content": "again\n"}]]).call()
     assert (tmp_path / "empty" / "keep.txt").read_text(encoding="utf-8") == "kept\n"
 
     EditTool(s, ["nested/note.txt", "", [{"op": "create", "content": "one\ntwo\nthree\n"}]]).call()
@@ -140,7 +141,7 @@ def test_edit_creates_and_patches_file(tmp_path):
             key,
             [
                 {"op": "replace", "start": 1, "end": 1, "content": "ONE\n"},
-                {"op": "insert_after", "line": 2, "content": "TWO-AND-HALF\n"},
+                {"op": "replace", "start": 2, "end": 2, "content": "two\nTWO-AND-HALF\n"},
                 {"op": "delete", "start": 3, "end": 3},
             ],
         ],
@@ -167,7 +168,7 @@ def test_edit_inserts_before_existing_line_with_needed_newline(tmp_path):
     path.write_text("a\nb\n", encoding="utf-8")
     key = view(s, "code.txt")
 
-    EditTool(s, ["code.txt", key, [{"op": "insert_before", "line": 2, "content": "inserted"}]]).call()
+    EditTool(s, ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "inserted\nb\n"}]]).call()
     assert path.read_text(encoding="utf-8") == "a\ninserted\nb\n"
 
 
@@ -184,7 +185,7 @@ def test_edit_allows_repeated_structural_boundary_lines(tmp_path):
     assert path.read_text(encoding="utf-8") == "#if A\nnew\n#endif\n#endif\n"
 
     key = view(s, "code.txt")
-    EditTool(s, ["code.txt", key, [{"op": "insert_after", "line": 4, "content": "#endif\n"}]]).call()
+    EditTool(s, ["code.txt", key, [{"op": "replace", "start": 4, "end": 4, "content": "#endif\n#endif\n"}]]).call()
     assert path.read_text(encoding="utf-8") == "#if A\nnew\n#endif\n#endif\n#endif\n"
 
 
@@ -244,7 +245,7 @@ def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
                 key,
                 [
                     {"op": "create", "content": "x\n"},
-                    {"op": "insert_before", "line": 2, "content": "y\n"},
+                    {"op": "replace", "start": 2, "end": 2, "content": "b\ny\n"},
                 ],
             ],
         ).call()
@@ -263,7 +264,7 @@ def test_edit_stale_target_reports_fresh_view(tmp_path):
 
     message = str(error.value)
     assert "cannot relocate" in message
-    assert "use the fresh view below or Read again" in message
+    assert "use the fresh view below, or Read again" in message
     assert "<source" in rendered(error.value.recovery, s)
 
 
@@ -274,7 +275,7 @@ def test_edit_relocates_unique_nearby_target(tmp_path):
     key = view(s, "note.txt")
 
     # A shift above the target pushes it down one line; the old view still resolves it.
-    EditTool(s, ["note.txt", key, [{"op": "insert_after", "line": 1, "content": "INS\n"}]]).call()
+    EditTool(s, ["note.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\nINS\n"}]]).call()
     result = EditTool(s, ["note.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "updated\n"}]]).call()
 
     assert path.read_text(encoding="utf-8") == "x\nINS\na\nupdated\nc\n"
@@ -287,7 +288,7 @@ def test_edit_relocates_a_multi_line_range(tmp_path):
     path.write_text("x\na\nb\nc\nd\n", encoding="utf-8")
     key = view(s, "note.txt")
 
-    EditTool(s, ["note.txt", key, [{"op": "insert_after", "line": 1, "content": "INS\n"}]]).call()
+    EditTool(s, ["note.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\nINS\n"}]]).call()
     result = EditTool(s, ["note.txt", key, [{"op": "replace", "start": 3, "end": 4, "content": "updated\n"}]]).call()
 
     assert path.read_text(encoding="utf-8") == "x\nINS\na\nupdated\nd\n"
@@ -362,9 +363,9 @@ def test_planned_edit_refuses_to_overwrite_what_changed_after_planning(tmp_path,
         (["code.txt", "$VIEW", [{"op": "delete", "start": 1}]], "delete requires integer end"),
         (["code.txt", "$VIEW", [{"op": "replace", "start": 2, "end": 1, "content": "x\n"}]], "replace requires 1 <= start <= end"),
         (["code.txt", "$VIEW", [{"op": "replace", "start": 0, "end": 1, "content": "x\n"}]], "replace requires 1 <= start <= end"),
-        (["code.txt", "$VIEW", [{"op": "insert_after", "line": -1, "content": "x\n"}]], "insert_after line must be >= 0"),
-        (["code.txt", "$VIEW", [{"op": "insert_after", "line": 1}]], "insert_after requires content"),
-        (["code.txt", "$VIEW", [{"op": "insert_before", "line": 1, "content": None}]], "insert_before requires content"),
+        (["code.txt", "$VIEW", [{"op": "insert_after", "line": -1, "content": "x\n"}]], "Edit unexpected field: line"),
+        (["code.txt", "$VIEW", [{"op": "insert_after", "line": 1}]], "Edit unexpected field: line"),
+        (["code.txt", "$VIEW", [{"op": "insert_before", "content": "x\n"}]], "unknown edit op"),
         (["code.txt", "", [{"op": "create"}]], "create requires content"),
         (["code.txt", "view.99", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "source missing view.99 is unknown or expired"),
         (["other.txt", "$VIEW", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "source path mismatch"),
@@ -402,80 +403,6 @@ def test_edit_path_mismatch_does_not_reveal_the_other_view(tmp_path):
     assert error.value.recovery is None
 
 
-def test_insertion_relocates_by_its_boundary_witness(tmp_path, monkeypatch):
-    """An insertion has no content of its own to validate, so it is proved by the lines around it.
-    When those lines are intact but have moved, the insertion moves with them and says so."""
-    s = session(tmp_path)
-    s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
-    path = tmp_path / "code.txt"
-    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
-    key = view(s, "code.txt")
-    path.write_text("HEAD\na\nb\nc\nd\n", encoding="utf-8")  # every line shifts down by one
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-
-    runner.run([ToolCall("ins", "Edit", ["code.txt", key, [{"op": "insert_after", "line": 2, "content": "NEW\n"}]])])
-
-    assert path.read_text(encoding="utf-8") == "HEAD\na\nb\nNEW\nc\nd\n"
-    assert s.tool_errors == []
-    record = next(record for record in s.tool_records if record.name == "Edit")
-    assert f"relocated {key} line 2 -> current line 3" in record.output
-
-
-def test_insertion_before_relocates_and_reports_the_line_it_lands_on(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
-    path = tmp_path / "code.txt"
-    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
-    key = view(s, "code.txt")
-    path.write_text("HEAD\na\nb\nc\nd\n", encoding="utf-8")
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-
-    runner.run([ToolCall("ins", "Edit", ["code.txt", key, [{"op": "insert_before", "line": 3, "content": "NEW\n"}]])])
-
-    assert path.read_text(encoding="utf-8") == "HEAD\na\nb\nNEW\nc\nd\n"
-    record = next(record for record in s.tool_records if record.name == "Edit")
-    assert f"relocated {key} line 3 -> current line 4" in record.output
-
-
-def test_boundary_witness_disambiguates_an_insertion_among_repeated_lines(tmp_path, monkeypatch):
-    """`pass` appears three times; the anchor line alone could land anywhere. The witness carries
-    the neighbours too, so only the intended boundary matches -- and when the neighbours are
-    themselves repeated, nothing matches uniquely and the call is refused instead of guessed."""
-    s = session(tmp_path)
-    s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
-    path = tmp_path / "code.py"
-    path.write_text("def a():\n    pass\ndef b():\n    pass\ndef c():\n    pass\n", encoding="utf-8")
-    key = view(s, "code.py")
-    path.write_text("import os\ndef a():\n    pass\ndef b():\n    pass\ndef c():\n    pass\n", encoding="utf-8")
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-
-    # view line 4 is b()'s `pass`, one of three identical lines; its neighbours name which one.
-    runner.run([ToolCall("ins", "Edit", ["code.py", key, [{"op": "insert_after", "line": 4, "content": "    # b\n"}]])])
-
-    assert path.read_text(encoding="utf-8") == "import os\ndef a():\n    pass\ndef b():\n    pass\n    # b\ndef c():\n    pass\n"
-    assert s.tool_errors == []
-
-
-def test_ambiguous_insertion_boundary_is_refused(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
-    path = tmp_path / "code.py"
-    path.write_text("x\npass\npass\npass\npass\npass\n", encoding="utf-8")
-    key = view(s, "code.py")
-    # The witness for line 4 is five identical `pass` lines; after the shift it matches twice.
-    path.write_text("x\ny\npass\npass\npass\npass\npass\npass\n", encoding="utf-8")
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-
-    runner.run([ToolCall("ins", "Edit", ["code.py", key, [{"op": "insert_after", "line": 4, "content": "NEW\n"}]])])
-
-    assert path.read_text(encoding="utf-8") == "x\ny\npass\npass\npass\npass\npass\npass\n"
-    assert s.tool_errors and "cannot relocate" in s.tool_errors[0].error
-
-
 @pytest.mark.parametrize(
     ("edits", "message"),
     [
@@ -483,7 +410,7 @@ def test_ambiguous_insertion_boundary_is_refused(tmp_path, monkeypatch):
         (
             # Delete line 2 and put the same text back beside it: each half is a real change, the
             # pair is not, and saying "already matches" would misdescribe what happened.
-            [{"op": "delete", "start": 2, "end": 2}, {"op": "insert_before", "line": 3, "content": "b\n"}],
+            [{"op": "delete", "start": 2, "end": 2}, {"op": "replace", "start": 3, "end": 3, "content": "b\nc\n"}],
             "edits cancel out; check requested content",
         ),
     ],
@@ -519,25 +446,6 @@ def test_preview_reports_a_no_op_without_writing(tmp_path):
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
-@pytest.mark.parametrize(
-    ("line", "message"),
-    [(9, "line 9 is outside view"), (0, "line 0 is outside view"), (2, "line 2 was not projected in")],
-    ids=("past-the-file", "line-zero", "not-projected"),
-)
-def test_insertion_boundary_must_be_a_line_the_view_actually_showed(tmp_path, line, message):
-    """An insertion is anchored to a line the model saw. A line past the file, line zero on a file
-    that is not empty, or a line inside the gap between two visible spans is refused by name."""
-    s = session(tmp_path)
-    path = tmp_path / "code.txt"
-    path.write_text("".join(f"line{index}\n" for index in range(1, 9)), encoding="utf-8")
-    key = view(s, "code.txt", ranges=[[1, 1], [5, 6]])  # line 2 falls in the gap
-
-    with pytest.raises(ToolError, match=message):
-        EditTool(s, ["code.txt", key, [{"op": "insert_after", "line": line, "content": "x\n"}]]).call()
-
-    assert path.read_text(encoding="utf-8") == "".join(f"line{index}\n" for index in range(1, 9))
-
-
 def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, monkeypatch):
     """Regression: the no-op recovery view was built only from targets whose content already
     matched, so a pair of edits that cancelled out produced a view with no spans over a file that
@@ -556,7 +464,7 @@ def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, mon
             ToolCall(
                 "wash",
                 "Edit",
-                ["code.txt", key, [{"op": "delete", "start": 2, "end": 2}, {"op": "insert_before", "line": 3, "content": "b\n"}]],
+                ["code.txt", key, [{"op": "delete", "start": 2, "end": 2}, {"op": "replace", "start": 3, "end": 3, "content": "b\nc\n"}]],
             )
         ]
     )
@@ -570,8 +478,8 @@ def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, mon
 def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
     """A batch of edits after an external shift relocates every operation under the same rules as a
     single edit, and reports each relocation separately in the one result. The batch planner maps
-    each op's view line to where it now sits after earlier ops, so the replace still finds its
-    target and the insertion still lands beside its witness."""
+    each op's view line to where it now sits after earlier ops, so each replace still finds its
+    target by exact text."""
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
@@ -590,8 +498,8 @@ def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
                     "code.txt",
                     key,
                     [
+                        {"op": "replace", "start": 4, "end": 4, "content": "c\nTAIL2\n"},
                         {"op": "replace", "start": 3, "end": 3, "content": "TARGET2\n"},
-                        {"op": "insert_after", "line": 4, "content": "TAIL2\n"},
                     ],
                 ],
             )
@@ -602,5 +510,117 @@ def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
     assert s.tool_errors == []
     record = next(record for record in s.tool_records if record.name == "Edit")
     assert f"relocated {key} lines 3:3 -> current lines 4:4" in record.output
-    assert f"relocated {key} line 4 -> current line 5" in record.output
+    assert f"relocated {key} lines 4:4 -> current lines 5:5" in record.output
     assert record.output.count("relocated ") == 2
+
+
+def test_edit_create_overwrites_zero_byte_file_only(tmp_path):
+    """An existing zero-byte file has nothing to preserve, so create may rewrite it; a non-empty
+    existing file is still refused rather than overwritten."""
+    s = session(tmp_path)
+    path = tmp_path / "empty.txt"
+    path.write_text("", encoding="utf-8")
+
+    EditTool(s, ["empty.txt", "", [{"op": "create", "content": "first\n"}]]).call()
+    assert path.read_text(encoding="utf-8") == "first\n"
+
+    # The file has content now, so another create is refused.
+    with pytest.raises(ToolError, match="file already exists"):
+        EditTool(s, ["empty.txt", "", [{"op": "create", "content": "second\n"}]]).call()
+    assert path.read_text(encoding="utf-8") == "first\n"
+
+
+def test_single_line_replace_resolves_by_view_context_when_target_repeats(tmp_path):
+    """A drifted single-line target that repeats within the window is disambiguated by the lines
+    the view showed around it: the neighbours single out one occurrence, and the edit lands there
+    with a relocation report instead of being refused as ambiguous."""
+    s = session(tmp_path)
+    path = tmp_path / "code.py"
+    path.write_text("x\n#endif\ny\n#endif\nz\n", encoding="utf-8")
+    key = view(s, "code.py")
+    path.write_text("HEAD\nx\n#endif\ny\n#endif\nz\n", encoding="utf-8")
+
+    result = EditTool(s, ["code.py", key, [{"op": "replace", "start": 2, "end": 2, "content": "#else\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "HEAD\nx\n#else\ny\n#endif\nz\n"
+    assert f"relocated {key} lines 2:2 -> current lines 3:3" in result.retained_text
+
+
+def test_repeated_context_still_refuses_ambiguous_relocation(tmp_path):
+    """Context narrows but never fabricates: when the whole three-line neighbourhood repeats,
+    both candidates survive the filter and the edit is still refused as ambiguous, with widening
+    the range named as the retry."""
+    s = session(tmp_path)
+    path = tmp_path / "code.py"
+    path.write_text("p\n#endif\nq\n", encoding="utf-8")
+    key = view(s, "code.py")
+    path.write_text("w\np\n#endif\nq\np\n#endif\nq\n", encoding="utf-8")
+
+    with pytest.raises(ToolError, match="widen the range"):
+        EditTool(s, ["code.py", key, [{"op": "replace", "start": 2, "end": 2, "content": "#else\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "w\np\n#endif\nq\np\n#endif\nq\n"
+
+
+def test_context_is_a_tiebreaker_not_a_requirement(tmp_path):
+    """A unique candidate relocates even though its neighbours have since changed: the surrounding
+    lines only narrow a set of several, so one exact match is never rejected because a neighbour
+    moved. This is the property the batch path depends on."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("w\nx\nz\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    path.write_text("a\nb\nx\nc\n", encoding="utf-8")  # x moved; neither neighbour matches the view's
+
+    result = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "y\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nb\ny\nc\n"
+    assert f"relocated {key} lines 2:2 -> current lines 3:3" in result.retained_text
+
+
+def test_matching_text_in_place_is_not_trusted_when_the_neighbours_moved(tmp_path):
+    """The regression the boundary witness used to catch. `pass` repeats, and after a line is
+    prepended the view's line 4 still finds `pass` at its own index -- but that is the *previous*
+    occurrence, not the one the model saw. Matching text alone is a coincidence here, so the edit
+    is refused rather than written a line off target."""
+    s = session(tmp_path)
+    path = tmp_path / "code.py"
+    path.write_text("x\npass\npass\npass\npass\npass\n", encoding="utf-8")
+    key = view(s, "code.py")
+    path.write_text("x\ny\npass\npass\npass\npass\npass\npass\n", encoding="utf-8")
+
+    with pytest.raises(ToolError, match="cannot relocate"):
+        EditTool(s, ["code.py", key, [{"op": "replace", "start": 4, "end": 4, "content": "pass\nNEW\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "x\ny\npass\npass\npass\npass\npass\npass\n"
+
+
+def test_neighbours_single_out_the_intended_repeat_in_place(tmp_path):
+    """The same shape with distinguishable neighbours: view line 4 is b()'s `pass`, one of three
+    identical lines, and after the shift its own index holds a different `pass`. The lines the
+    view showed beside it name the intended one, and the edit lands there."""
+    s = session(tmp_path)
+    path = tmp_path / "code.py"
+    path.write_text("def a():\n    pass\ndef b():\n    pass\ndef c():\n    pass\n", encoding="utf-8")
+    key = view(s, "code.py")
+    path.write_text("import os\ndef a():\n    pass\ndef b():\n    pass\ndef c():\n    pass\n", encoding="utf-8")
+
+    EditTool(s, ["code.py", key, [{"op": "replace", "start": 4, "end": 4, "content": "    pass\n    # b\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "import os\ndef a():\n    pass\ndef b():\n    pass\n    # b\ndef c():\n    pass\n"
+
+
+def test_a_unique_target_resolves_in_place_though_its_neighbours_changed(tmp_path):
+    """Requiring the neighbours in place must not cost a working edit: when the target is the only
+    match in the window, it resolves at its own index even with both neighbours rewritten, and the
+    result reports no relocation because nothing moved."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nUNIQUE\nc\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    path.write_text("A\nUNIQUE\nC\n", encoding="utf-8")  # both neighbours rewritten, target intact
+
+    result = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "edited\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "A\nedited\nC\n"
+    assert "relocated" not in result.retained_text

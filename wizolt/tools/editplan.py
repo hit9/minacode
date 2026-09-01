@@ -42,6 +42,7 @@ class EditBatchPlan:
         exists: bool
         base_key: str | None = None  # view key whose 1-based lines index the original file
         consumed: set[tuple[str, int]] = field(default_factory=set)  # origins an earlier edit in this batch replaced or deleted
+        edited: bool = False  # an earlier call in this batch already applied an edit to this file
 
         def text(self) -> str:
             return "".join(line.text for line in self.lines)
@@ -120,8 +121,8 @@ class EditBatchPlan:
                 EditTool.no_changes_error_from_lines(before_lines, result.replacements),
                 recovery=tool.no_op_recovery(path, view, before, result.replacements),
             )
-        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes, tool.warnings_block(before, after, edits), result.relocations)
-        state.lines, state.exists = result.lines, True
+        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes, tool.warnings_block(edits), result.relocations)
+        state.lines, state.exists, state.edited = result.lines, True, True
         state.consumed |= result.consumed
 
     def file_state(self, tool: EditTool, path: str, creating: bool, view: SourceView | None) -> FileState:
@@ -129,7 +130,7 @@ class EditBatchPlan:
             state = self.files[path]
             if not state.exists and not creating:
                 raise ToolError("file does not exist; use op=create to create it")
-            if state.exists and creating:
+            if state.exists and creating and state.lines:
                 raise ToolError("file already exists")
             return state
         if tool._validate_target(path, creating):
@@ -173,24 +174,32 @@ class EditBatchPlan:
             lines[start:end] = self.new_lines(replacement)
         return self.ApplyResult(lines, result.changes, result.replacements, relocations=result.relocations, consumed=consumed)
 
-    def planned_start(self, state: FileState, view: SourceView, edit: Edit, start: int, end: int) -> int:
-        """Where the view's lines `start..end` (1-based, inclusive) sit in the planned state.
+    def planned_start(self, state: FileState, view: SourceView, edit: Edit, start: int, end: int) -> int | None:
+        """Where the view's lines `start..end` (1-based, inclusive) sit in the planned state, or
+        None when this plan has no position of its own to offer and the view's coordinate stands.
 
         Lines are found by their (view key, source line) origin; a different view of the same path
         is aligned to the state's base view when its text still matches the original file, so calls
         in one batch may mix views of one path. A line an earlier edit in this batch replaced or
         deleted is refused: its content is gone, and hunting for a copy of it elsewhere is exactly
-        the guess relocation must never make. When the batch has not touched these lines at all,
-        their view coordinates are returned unchanged, and EditTool validates or relocates from
-        there -- a file that drifted before the batch began leaves no trace in these origins.
+        the guess relocation must never make.
+
+        Until this batch has actually edited the file, an origin is only the view's own coordinate
+        wearing a label -- the lines were enumerated from the file as read, so a file that drifted
+        before the batch began leaves no trace in them. None says so, and EditTool validates that
+        coordinate the same way it does outside a batch. Once an edit has been applied, the index
+        reflects where this plan moved the line, over a state the plan owns and re-verifies against
+        disk before writing, so it is a position rather than an assumption.
         """
-        label = f"{view.key} lines {edit.start}:{edit.end}" if edit.op in {"replace", "delete"} else f"{view.key} line {edit.line} boundary"
+        label = f"{view.key} lines {edit.start}:{edit.end}"
         origins = [self.origin_key(state, view, line_no) for line_no in range(start, end + 1)]
         if any(origin in state.consumed for origin in origins):
             raise source_error(SOURCE_TARGET_CONSUMED, f"{label} were replaced or deleted by an earlier edit in this batch; Read again")
+        if not state.edited:
+            return None
         indices = [state.current_index(origin) for origin in origins]
         if any(index is None for index in indices):
-            return start - 1  # not tracked in the planned model: validate or relocate by content
+            return None  # not tracked in the planned model: validate or relocate by content
         resolved = [index for index in indices if index is not None]
         if resolved != list(range(resolved[0], resolved[0] + len(resolved))):
             raise source_error(SOURCE_TARGET_CONSUMED, f"{label} were split by an earlier edit in this batch; Read again")

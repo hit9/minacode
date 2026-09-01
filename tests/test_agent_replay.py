@@ -173,7 +173,7 @@ def test_parallel_safe_classification(tmp_path):
     assert not safe("Bash", ["git status --short"])  # Bash streams live output, so it stays serial
     assert not safe("Bash", ["git commit -m x"])  # mutating command
     assert not safe("Bash", ["echo hi"])  # live-output command
-    assert not safe("Edit", ["f.txt", "view.1", [{"op": "insert_after", "line": 1, "content": "x"}]])
+    assert not safe("Edit", ["f.txt", "view.1", [{"op": "replace", "start": 1, "end": 1, "content": "x"}]])
     assert not safe("Ask", [{"question": "q?"}])  # interactive
     assert not safe("NextHints", [{"inputs": ["x"]}])  # writes session state; serial so model order wins
     assert not safe("Nope", [])  # unknown tool

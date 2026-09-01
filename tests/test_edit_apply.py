@@ -18,11 +18,11 @@ from wizolt.tools.editplan import EditBatchPlan
             "a\nb\nc\n",
             [
                 {"op": "replace", "start": 1, "end": 1, "content": "A\n"},
-                {"op": "insert_after", "line": 2, "content": "x\n"},
+                {"op": "replace", "start": 2, "end": 2, "content": "b\nx\n"},
                 {"op": "delete", "start": 3, "end": 3},
             ],
         ),
-        ("a\nb\n", [{"op": "insert_before", "line": 2, "content": "inserted"}]),
+        ("a\nb\n", [{"op": "replace", "start": 2, "end": 2, "content": "inserted\nb\n"}]),
         ("a\nb", [{"op": "delete", "start": 2, "end": 2}]),
     ],
 )
@@ -97,7 +97,7 @@ def test_tool_runner_batch_edit_accepts_drifted_view(tmp_path, monkeypatch):
 
     runner.run(
         [
-            ToolCall("insert", "Edit", ["code.txt", key, [{"op": "insert_before", "line": 2, "content": "x\n"}]]),
+            ToolCall("insert", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nb\n"}]]),
             ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "C\n"}]]),
         ]
     )
@@ -157,7 +157,7 @@ def test_tool_runner_batch_edit_barrier_rejects_ambiguous_relocation(tmp_path, m
 
     runner.run(
         [
-            ToolCall("insert", "Edit", ["code.txt", key, [{"op": "insert_before", "line": 2, "content": "x\n"}]]),
+            ToolCall("insert", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nb\n"}]]),
             ToolCall("barrier", "Bash", [":"]),
             ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "C\n"}]]),
         ]
@@ -174,10 +174,10 @@ def test_tool_runner_batch_edit_can_create_empty_then_patch_same_file(tmp_path, 
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    # create the empty file, then re-read it so the follow-up edit has a current empty-file view.
+    # create the empty file, then write into it with create: an existing zero-byte file has
+    # nothing to preserve, so create may fill it.
     runner.run([ToolCall("create", "Edit", ["empty.txt", "", [{"op": "create", "content": ""}]])])
-    key = view(s, "empty.txt")
-    runner.run([ToolCall("patch", "Edit", ["empty.txt", key, [{"op": "insert_after", "line": 0, "content": "filled\n"}]])])
+    runner.run([ToolCall("patch", "Edit", ["empty.txt", "", [{"op": "create", "content": "filled\n"}]])])
 
     assert (tmp_path / "empty.txt").read_text(encoding="utf-8") == "filled\n"
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
@@ -196,7 +196,7 @@ def test_tool_runner_batch_edit_rejects_inline_patch_without_read(tmp_path, monk
     runner.run(
         [
             ToolCall("create", "Edit", ["empty.txt", "", [{"op": "create", "content": ""}]]),
-            ToolCall("patch", "Edit", ["empty.txt", "view.1", [{"op": "insert_after", "line": 0, "content": "filled\n"}]]),
+            ToolCall("patch", "Edit", ["empty.txt", "view.1", [{"op": "replace", "start": 1, "end": 1, "content": "filled\n"}]]),
         ]
     )
 
@@ -272,7 +272,7 @@ def test_tool_runner_batch_edit_maps_original_view_after_insert(tmp_path, monkey
 
     runner.run(
         [
-            ToolCall("insert", "Edit", ["code.txt", key, [{"op": "insert_before", "line": 2, "content": "x\n"}]]),
+            ToolCall("insert", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nb\n"}]]),
             ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "C\n"}]]),
         ]
     )
@@ -293,7 +293,7 @@ def test_tool_runner_batch_edit_plans_files_independently(tmp_path, monkeypatch)
 
     runner.run(
         [
-            ToolCall("edit-a", "Edit", ["a.txt", key_a, [{"op": "insert_after", "line": 1, "content": "A\n"}]]),
+            ToolCall("edit-a", "Edit", ["a.txt", key_a, [{"op": "replace", "start": 1, "end": 1, "content": "a\nA\n"}]]),
             ToolCall("edit-b", "Edit", ["b.txt", key_b, [{"op": "replace", "start": 2, "end": 2, "content": "Y\n"}]]),
         ]
     )
@@ -314,7 +314,7 @@ def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_pa
 
     runner.run(
         [
-            ToolCall("insert", "Edit", ["code.txt", key, [{"op": "insert_before", "line": 2, "content": "x\n"}]]),
+            ToolCall("insert", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nb\n"}]]),
             ToolCall("read", "Read", [{"path": "code.txt", "ranges": [[1, 0]]}]),
             ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "C\n"}]]),
         ]
@@ -329,7 +329,8 @@ def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_pa
 
 def test_inserting_past_an_unterminated_last_line_does_not_join_it(tmp_path, monkeypatch):
     # A file whose last line has no newline: appending after it must not fuse the new text onto
-    # that line. The splice terminates the line it appends behind, so the insertion stays a line.
+    # that line. replace N:N states the range's full final text, so the newline between the old
+    # last line and the added line is part of the content, not something a splice has to fix.
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
@@ -338,7 +339,7 @@ def test_inserting_past_an_unterminated_last_line_does_not_join_it(tmp_path, mon
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("append", "Edit", ["code.txt", key, [{"op": "insert_after", "line": 2, "content": "c\n"}]])])
+    runner.run([ToolCall("append", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "b\nc\n"}]])])
 
     assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
     assert s.tool_errors == []

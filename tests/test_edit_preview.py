@@ -38,7 +38,7 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     key = view(s, "a.txt")
     out = []
     runner = ToolRunner(s, ContextManager(s), output_fn=out.append)
-    runner.run([ToolCall("e0", "Edit", ["a.txt", key, [{"op": "insert_after", "line": 1, "content": "NEW\n"}]])])
+    runner.run([ToolCall("e0", "Edit", ["a.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "hello\nNEW\n"}]])])
     assert len(out) == 2
     assert isinstance(out[0], LogBlock)
     root, _ = next(out[0].walk())
