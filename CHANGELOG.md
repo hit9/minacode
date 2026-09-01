@@ -43,6 +43,14 @@
   when they do not the position is re-derived by relocation, which resolves it or refuses. A target
   that is unique nearby is unaffected, as is one whose position a batch is already tracking through
   its own earlier edits.
+- Repeated tmux zoom/unzoom no longer walks the prompt up the pane. prompt-toolkit handled a
+  resize by erasing from the row it remembered and trusting the next cursor position report;
+  after a multiplexer reflow that report carries the drifted row, so every cycle inflated the
+  application's height until the prompt reached the top and stale copies piled into scrollback.
+  A resize now erases from the terminal's actual cursor and re-anchors the prompt at the pane
+  bottom first, so the reported position describes the app: the prompt stays put and only one
+  copy of it is ever visible. Transcript already scrolled off by the reflow itself stays
+  reachable in scrollback.
 
 ## 0.37.1 - 2026-08-29
 

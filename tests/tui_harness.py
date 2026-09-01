@@ -58,14 +58,17 @@ def rendered_screen_text(application, output):
     return "\n".join("".join(screen.data_buffer[row][column].char for column in range(output.size.columns)).rstrip() for row in range(output.size.rows))
 
 
-def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, after_render=None):
+def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, after_render=None, on_application=None):
     real_application = Application
     output = output or DummyOutput()
     driver_errors = []
     with create_pipe_input() as pipe_input:
 
         def application(**kwargs):
-            return real_application(input=pipe_input, after_render=after_render, **(kwargs | {"output": output}))
+            app = real_application(input=pipe_input, after_render=after_render, **(kwargs | {"output": output}))
+            if on_application is not None:
+                on_application(app)
+            return app
 
         monkeypatch.setattr(tui_module, "Application", application)
         if text:

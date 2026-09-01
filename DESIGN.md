@@ -467,6 +467,11 @@ Preserving native scrollback beats making every transient frame durable: resize/
 preview copies in scrollback — visual artifacts, not history. Do not clear scrollback, persist
 preview rows, or switch to the alternate screen to hide that artifact.
 
+On resize the app erases from the terminal's actual cursor and re-anchors at the pane bottom
+before asking for the cursor position report. A multiplexer reflow (tmux zoom/unzoom) moves the
+drawn app before the resize is detected; trusting the drifted report instead makes the prompt
+climb toward the top of the pane and piles stale copies into scrollback.
+
 ## Compaction
 
 Compaction is the deliberate persisted exception to send-time-only projection: it replaces old

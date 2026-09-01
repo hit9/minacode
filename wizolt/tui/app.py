@@ -1358,6 +1358,38 @@ class TuiApp:
             if self.input_mode == "running":
                 self.invalidate()
 
+    def _install_resize_reanchor(self, app: Application) -> None:
+        """Handle terminal resizes by re-anchoring the app at the pane bottom.
+
+        prompt-toolkit's resize path erases from where it last drew and then trusts the cursor
+        position report (CPR). A multiplexer reflow (tmux zoom/unzoom) moves the already drawn app
+        before the resize is even detected, so that erase misses the moved copy and the CPR answer
+        carries the drifted row: the app creeps toward the top of the pane and every cycle leaves
+        a stale copy behind. Erase from the cursor the terminal actually reports, then park the
+        cursor where an app of the last rendered height belongs and run the stock CPR-and-redraw
+        sequence from there, so the reported position describes the app instead of the drift.
+        """
+        vanilla_resize = app._on_resize
+
+        def on_resize() -> None:
+            renderer = app.renderer
+            last_screen = renderer.last_rendered_screen
+            # 0-based row of the app's top when it sits flush with the pane bottom.
+            anchored_row = renderer.output.get_size().rows - last_screen.height if last_screen is not None and not renderer.full_screen else -1
+            if anchored_row < 0:
+                # Nothing rendered yet, or a full-screen app: the stock path is already right.
+                vanilla_resize()
+                return
+            # Erase starting at the terminal's actual cursor — after a reflow only the terminal
+            # knows where the moved app is, and erase_down() from there clears its every row.
+            renderer.erase(leave_alternate_screen=False)
+            renderer.output.cursor_goto(anchored_row + 1, 1)
+            renderer.reset(leave_alternate_screen=False)
+            app._request_absolute_cursor_position()
+            app._redraw()
+
+        app._on_resize = on_resize
+
     def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         app = Application(
             layout=self.build_layout(),
@@ -1372,6 +1404,7 @@ class TuiApp:
         # stale cursor coordinates can leave the transient footer in tmux scrollback. Keep the
         # legacy behavior of silently degrading on terminals that do not answer the probe.
         app.renderer.cpr_not_supported_callback = lambda: None
+        self._install_resize_reanchor(app)
         self.app = app
         self.ready.clear()
 
