@@ -279,6 +279,9 @@ def test_expired_view_recovery_falls_back_to_a_window_for_a_huge_request(tmp_pat
     spans = error.value.recovery.drafts[0].spans
     assert sum(len(span.lines) for span in spans) <= EditTool.RECOVERY_MAX_LINES
     assert [(span.start, span.end) for span in spans] == [(94, 100)]
+    # The bounded window is a view like any other: the model must see the same relative path the
+    # rest of the session uses, not an absolute one, or its next Read/Edit pair names two paths.
+    assert error.value.recovery.drafts[0].display_path == "app.py"
 
 
 @pytest.mark.parametrize("outside", [True, False], ids=("outside-the-workspace", "unreadable"))

@@ -324,6 +324,7 @@ class Session:
     _active_transcript_messages: list[Json] = field(default_factory=list)
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
     _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
+    _gitignore_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
         self.images = ImageInputs(self)

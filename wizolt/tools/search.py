@@ -139,23 +139,25 @@ class SearchTool(Tool):
 
     def gitignore_patterns(self, root: str) -> list[str]:
         patterns = []
-        cache = self.session._gitignore_cache
         paths = [os.path.join(self.session.cwd, ".gitignore")]
         if os.path.isdir(root):
             paths.append(os.path.join(root, ".gitignore"))
         for path in dict.fromkeys(paths):
             try:
                 mtime = os.stat(path).st_mtime_ns
-                cached = cache.get(path)
+                with self.session._gitignore_lock:
+                    cached = self.session._gitignore_cache.get(path)
                 if cached is not None and cached[0] == mtime:
                     patterns.extend(cached[1])
                     continue
                 with open(path, encoding="utf-8") as file:
                     pats = [line.strip() for line in file if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!")]
-                cache[path] = (mtime, pats)
+                with self.session._gitignore_lock:
+                    self.session._gitignore_cache[path] = (mtime, pats)
                 patterns.extend(pats)
             except OSError:
-                cache.pop(path, None)
+                with self.session._gitignore_lock:
+                    self.session._gitignore_cache.pop(path, None)
         return patterns
 
     def ignored(self, path: str, patterns: list[str]) -> bool:
