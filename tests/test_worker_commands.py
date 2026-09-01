@@ -1,4 +1,5 @@
 """worker commands (split from tests/test_worker_handoff.py)."""
+
 import json
 
 import pytest
@@ -29,6 +30,7 @@ def test_worker_config_parses_model_and_reasoning(tmp_path):
     plain = Config.from_dict({"provider": {"default": {"model": "d"}}})
     assert plain.worker_model == "" and plain.worker_reasoning == "" and plain.worker_api == ""
 
+
 def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
     from wizolt.base import ConfigError
     from wizolt.config import (
@@ -38,6 +40,7 @@ def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
     with pytest.raises(ConfigError, match="worker.reasoning"):
         Config.from_dict({"worker": {"reasoning": "turbo"}, "provider": {"default": {}}})
 
+
 def test_worker_config_rejects_invalid_worker_api(tmp_path):
     from wizolt.base import ConfigError
     from wizolt.config import (
@@ -46,6 +49,7 @@ def test_worker_config_rejects_invalid_worker_api(tmp_path):
 
     with pytest.raises(ConfigError, match="worker.api"):
         Config.from_dict({"worker": {"api": "oai"}, "provider": {"default": {}}})
+
 
 def test_worker_provider_config_applies_api_override(tmp_path):
     """worker_provider_config folds an explicit worker.api into the detached entry; an empty
@@ -72,6 +76,7 @@ def test_worker_provider_config_applies_api_override(tmp_path):
 
     entry = worker_provider_config(config, "default")
     assert entry.api == "auto"
+
 
 def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     from wizolt.cli import CommandLoop
@@ -121,6 +126,7 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     assert fresh.config.worker_provider == ""
     assert "Delegate" in names(fresh)
 
+
 def test_worker_provider_off_selects_literal_off_entry(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.config import (
@@ -135,6 +141,7 @@ def test_worker_provider_off_selects_literal_off_entry(tmp_path):
 
     assert worker_command(loop, "provider off") == "Set worker provider = off (delegation is off this session; takes effect after a restart)"
     assert parent.config.worker_provider == "off"
+
 
 def test_worker_model_and_reason_overrides(tmp_path):
     from wizolt.cli import CommandLoop
@@ -163,6 +170,7 @@ def test_worker_model_and_reason_overrides(tmp_path):
     assert worker_command(loop, "provider a b") == "Usage: /worker provider [NAME]"
     assert worker_command(loop, "model a b") == "Usage: /worker model [MODEL]"
     assert worker_command(loop, "reason a b") == "Usage: /worker reason [EFFORT]"
+
 
 def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkeypatch):
     from wizolt.config import (
@@ -204,6 +212,7 @@ def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkey
     _delegate_call(fresh, runner, action="send", order="o")
     assert fresh.worker.config.provider.model == "resumed-model"
 
+
 def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
@@ -228,6 +237,7 @@ def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
     assert worker.config.provider.model == "parent-model"  # restores the entry's model
     assert parent.config.providers["default"].model == "parent-model"
 
+
 def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     from wizolt.cli import CommandLoop
     from wizolt.config import (
@@ -251,6 +261,7 @@ def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     assert worker.config.provider is not parent.config.providers["alt"]
     assert worker.config.provider.model == "m"
     assert parent.config.providers["alt"].model == "m"  # untouched
+
 
 def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, ToolCall
@@ -278,6 +289,7 @@ def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch)
     assert "the worker answer" in rendered
     assert "<Delegate" not in rendered and "<worker>" not in rendered and "</worker>" not in rendered
     assert any(item.label == "stored" for item, _ in finish.walk())
+
 
 def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, ToolCall
@@ -307,6 +319,7 @@ def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatc
     # The done summary lives in the rule label now, not as a child line of the finish block.
     assert not any(item.label == "done" and item.text.startswith("steps ") for item, _ in finish.walk())
 
+
 def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypatch):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
@@ -324,6 +337,7 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     done = [label for label in labels if label.startswith("worker done · ")]
     assert done, "the finish worker_rule callback never fired"
     assert done[0].startswith("worker done · fix /status blank line · steps 1")
+
 
 def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, ToolCall
@@ -353,6 +367,7 @@ def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_
     assert "lines omitted" in rendered
     assert "report line 20" not in rendered  # the folded preview only carries the head and tail
 
+
 def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, ToolCall
     from wizolt.context import ContextManager
@@ -371,6 +386,7 @@ def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, m
     assert answers == ["the report"]  # the report went through the markdown hook, exactly once
     auto = [block for block in outputs if isinstance(block, LogBlock) and any(item.role is LogRole.AUTO for item, _ in block.walk())]
     assert not auto  # nothing on the plain output channel carries the final report
+
 
 def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     from wizolt.base import LogBlock, ToolCall
@@ -393,6 +409,7 @@ def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     # Reset keeps its ordinary tool root (the short_call, not [worker] ◀) and a done child.
     assert finish.items[0].label != "[worker]"
     assert "worker context cleared" in str(finish)
+
 
 def test_delegate_reset_finish_worker_rule_label(tmp_path):
     from wizolt.base import ToolCall
@@ -421,6 +438,7 @@ def test_delegate_reset_finish_worker_rule_label(tmp_path):
     assert done, "reset should keep its ordinary tool root with a done child"
     assert "worker context cleared" in next(item.text for block in outputs if isinstance(block, LogBlock) for item, _ in block.walk() if item.label == "done")
 
+
 def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
     from wizolt.tools.delegate import _worker_stream
 
@@ -439,6 +457,7 @@ def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
 
     assert calls == [("output", "x"), ("", ""), ("", ""), ("tool", "Bash")]
     assert all(kind != "output_done" for kind, _ in calls)
+
 
 def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
     from wizolt.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
@@ -475,6 +494,7 @@ def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
     assert worker.history and worker.history[-1].key == "seg.1"
     # The overdue-by-usage guard resets: compaction clears the last-* usage fields.
     assert worker.usage.last_prompt_budget == 0
+
 
 def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, monkeypatch):
     from wizolt.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
@@ -515,3 +535,44 @@ def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, mon
     assert COMPACTION_SUMMARY_TITLE in second
     assert "order two" in second
     assert "x" * 200 not in second
+
+
+def test_worker_model_discovery_shows_loading_state(tmp_path, monkeypatch):
+    """The /worker model stage shows the same dispatch note as /model while remote discovery
+    runs, and drops it afterwards; without credentials the note never appears."""
+    from wizolt.cli import CommandLoop
+    from wizolt.cli import commands as commands_mod
+    from wizolt.config import ProviderConfig
+    from wizolt.engine import Agent
+    from wizolt.tui.app import TuiApp
+
+    parent = session(tmp_path)
+    parent.config.providers["fast"] = ProviderConfig(model="m", url="https://example.com/v1", key="key")
+    parent.config.worker_provider = "fast"
+    agent = Agent(parent, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.interactive_input = True
+    transitions = []
+    loop.tui = TuiApp()
+    loop.tui.set_dispatching = lambda prompt="": transitions.append(prompt)
+    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _provider: ("remote-model",))
+
+    # Non-interactive select_choice yields nothing, but remote discovery still runs (and
+    # still shows the loading note while it does): the entry has credentials.
+    assert worker_command(loop, "model") == "worker model: (inherit)"
+    assert transitions == ["Loading models...", ""]
+    transitions.clear()
+
+    selected = iter(["remote-model"])
+    monkeypatch.setattr("wizolt.cli.worker.select_choice", lambda *_args, **_kwargs: next(selected))
+    assert "Set worker.model = remote-model" in worker_command(loop, "model")
+    assert transitions == ["Loading models...", ""]
+
+    # No url/key on the entry: no remote call, so no loading note either.
+    parent.config.providers["fast"].url = ""
+    parent.config.providers["fast"].key = ""
+    selected = iter(["default"])
+    monkeypatch.setattr("wizolt.cli.worker.select_choice", lambda *_args, **_kwargs: next(selected))
+    transitions.clear()
+    assert "worker model: (inherit)" in worker_command(loop, "model")
+    assert transitions == []

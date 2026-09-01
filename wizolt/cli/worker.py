@@ -189,7 +189,17 @@ class WorkerFlow:
         /worker provider cascade so the cascade can tell a set from an abort."""
         entry = self.loop.session.config.providers[self.loop.session.config.worker_provider or self.loop.session.config.active_provider]
         configured = tuple(dict.fromkeys(entry.available_models))
-        remote = tuple(model for model in commands.remote_models(self.loop, entry) if model not in configured)
+        tui = self.loop.tui
+        # Remote discovery on a freshly set provider entry is the slow step of the cascade; show
+        # the same dispatch note /model does so the pause does not read as a hang.
+        show_loading = tui is not None and bool(entry.url and entry.key)
+        if show_loading and tui is not None:
+            tui.set_dispatching("Loading models...")
+        try:
+            remote = tuple(model for model in commands.remote_models(self.loop, entry) if model not in configured)
+        finally:
+            if show_loading and tui is not None:
+                tui.set_dispatching()
         override = self.loop.session.config.worker_model
         choices = [*configured, *remote]
         if override and override not in choices:

@@ -51,6 +51,9 @@
   bottom first, so the reported position describes the app: the prompt stays put and only one
   copy of it is ever visible. Transcript already scrolled off by the reflow itself stays
   reachable in scrollback.
+- Picking or setting a worker provider now shows "Loading models..." while remote model
+  discovery runs, like /model does, so the cascade's pause before the model selector does not
+  read as a hang.
 
 ## 0.37.1 - 2026-08-29
 
