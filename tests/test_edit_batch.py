@@ -275,18 +275,20 @@ def test_edit_warnings_do_not_affect_apply(tmp_path):
     path = tmp_path / "x.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "x.txt")
-    tool = EditTool(s, ["x.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "c\n"}]])
+    tool = EditTool(s, ["x.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "z\n"}]])
     original = "a\nb\nc\n"
     view_obj = s.get_source_view(key)
     edits = tool.parse()[2]
 
     result = tool.apply(original, edits, view_obj)
-    assert result.content == "a\nc\nc\n"  # apply output is untouched by warnings
+    assert result.content == "a\nz\nc\n"  # apply output is untouched by warnings
     assert len(result.changes) == 1
 
-    # warnings_block reads only what the call wrote, never the file's before and after: a small
-    # edit carries no warning at all now that the duplicate-lines rule is gone.
-    assert tool.warnings_block(edits) == ""
+    # A small edit that touches neither seam carries no warning: the large-edit advisory reads only
+    # what the call wrote, and nothing here repeats a preserved neighbour. The boundary-duplicate
+    # advisories that do read the file's before and after live in test_edit_apply.py.
+    assert result.seam_duplicates == []
+    assert tool.warnings_block(edits, result.seam_duplicates) == ""
 
     # Error behavior is unchanged too: overlapping edits still raise.
     with pytest.raises(ToolError, match="overlap"):
