@@ -23,6 +23,15 @@ from wizolt.tools.editplan import EditBatchPlan
             ],
         ),
         ("a\nb\n", [{"op": "replace", "start": 2, "end": 2, "content": "inserted\nb\n"}]),
+        # Both ranges copy a preserved outside line into content: each replacement edge duplicates
+        # the neighbour it touches, so both boundary-duplicate advisories must fire.
+        (
+            "p\nq\nr\ns\n",
+            [
+                {"op": "replace", "start": 1, "end": 1, "content": "x\nq\n"},
+                {"op": "replace", "start": 4, "end": 4, "content": "r\ny\n"},
+            ],
+        ),
         ("a\nb", [{"op": "delete", "start": 2, "end": 2}]),
     ],
 )
@@ -51,6 +60,7 @@ def test_single_and_batch_edit_application_are_equivalent(tmp_path, original, ra
     assert "".join(line.text for line in batch.lines) == single.content
     assert batch.changes == single.changes
     assert batch.replacements == single.replacements
+    assert batch.seam_duplicates == single.seam_duplicates
 
 
 def test_single_and_batch_edit_application_raise_the_same_error(tmp_path):
@@ -370,3 +380,79 @@ def test_batch_separates_a_consumed_target_from_a_shifted_one(tmp_path, monkeypa
     assert len(s.tool_errors) == 1
     assert s.tool_errors[0].error.startswith("ToolError: source target consumed view.1 lines 2:2 were replaced or deleted by an earlier edit in this batch")
     assert all("relocated" not in record.output for record in s.tool_records if record.name == "Edit")
+
+
+def test_boundary_duplicate_advisory_names_both_seams(tmp_path):
+    # The corruption this polices: content whose edge line is a verbatim copy of the preserved line
+    # just outside the range -- context copied into content. Both seams of one batch fire, with
+    # line numbers that point at the duplicated pair in the file the call produced.
+    s = session(tmp_path)
+    (tmp_path / "code.txt").write_text("p\nq\nr\ns\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    tool = EditTool(s, ["code.txt", key, [
+        {"op": "replace", "start": 1, "end": 1, "content": "x\nq\n"},
+        {"op": "replace", "start": 4, "end": 4, "content": "r\ny\n"},
+    ]])
+    _, _, edits = tool.parse()
+
+    result = tool.apply("p\nq\nr\ns\n", edits, s.get_source_view(key))
+
+    assert result.content == "x\nq\nq\nr\nr\ny\n"
+    assert result.seam_duplicates == [
+        "boundary-duplicate: new lines 2 and 3 are identical; content repeats the line below the range",
+        "boundary-duplicate: new lines 4 and 5 are identical; content repeats the line above the range",
+    ]
+
+
+def test_boundary_duplicate_advisory_silent_on_legitimate_edits(tmp_path):
+    # Insertion by rewriting the anchor keeps the seam it already had; interior repeats and blank
+    # neighbours are the model's own content, not copied context, and stay unpoliced.
+    s = session(tmp_path)
+    (tmp_path / "code.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    tool = EditTool(s, ["code.txt", key, [
+        {"op": "replace", "start": 2, "end": 2, "content": "b\nnew\n"},
+        {"op": "replace", "start": 3, "end": 3, "content": "d\nd\ne\n"},
+    ]])
+    _, _, edits = tool.parse()
+
+    result = tool.apply("a\nb\nc\n", edits, s.get_source_view(key))
+
+    assert result.seam_duplicates == []
+
+
+def test_boundary_duplicate_advisory_silent_when_the_seam_already_existed(tmp_path):
+    # a,a already adjacent before the edit: repeating the neighbour adds no new seam, so the
+    # pre-existing duplicate run is not re-reported. The blank neighbour is spacing, never a copy.
+    s = session(tmp_path)
+    (tmp_path / "code.txt").write_text("a\na\nb\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    tool = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\na\n"}]])
+    _, _, edits = tool.parse()
+    existed = tool.apply("a\na\nb\n", edits, s.get_source_view(key))
+
+    (tmp_path / "blank.txt").write_text("a\n\nb\n", encoding="utf-8")
+    blank_key = view(s, "blank.txt")
+    blank = EditTool(s, ["blank.txt", blank_key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n\n"}]])
+    _, _, blank_edits = blank.parse()
+
+    assert existed.seam_duplicates == []
+    assert blank.apply("a\n\nb\n", blank_edits, s.get_source_view(blank_key)).seam_duplicates == []
+
+
+def test_boundary_duplicate_advisory_warns_in_rendered_envelope(tmp_path, monkeypatch):
+    # Advisory, not rejection: the file is written, the envelope carries a <warnings> block naming
+    # the duplicated pair, and the fresh view below it already describes the corrupted result.
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    key = view(s, "code.txt")
+
+    out = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nc\n"}]]).call()
+    text = out.render(s.register_source_drafts(list(out.drafts)))
+
+    assert path.read_text(encoding="utf-8") == "a\nx\nc\nc\n"
+    assert "<warnings>" in text
+    assert "boundary-duplicate: new lines 3 and 4 are identical; content repeats the line below the range" in text

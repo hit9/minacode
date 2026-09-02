@@ -25,6 +25,11 @@
 - **Breaking.** The session snapshot format is now version 3. Sessions written by earlier releases
   are refused with the existing unsupported-format error rather than resumed, because their stored
   messages teach the removed anchor syntax.
+- `Edit` warns when a replacement's first or last line is identical to the preserved line just
+  outside the range, and the file had no such adjacent pair before the call: that is what a
+  neighbouring line copied into content as context looks like. The edit still applies; the
+  advisory names the duplicated pair and its new line numbers. Repeats inside a range and pairs
+  that already existed are never reported.
 
 ### Fixed
 

@@ -60,6 +60,7 @@ class EditBatchPlan:
         replacements: list[tuple[int, int, list[str]]]
         relocations: list[str] = field(default_factory=list)
         consumed: set[tuple[str, int]] = field(default_factory=set)
+        seam_duplicates: list[str] = field(default_factory=list)
 
     @dataclass
     class PlannedEdit:
@@ -121,7 +122,9 @@ class EditBatchPlan:
                 EditTool.no_changes_error_from_lines(before_lines, result.replacements),
                 recovery=tool.no_op_recovery(path, view, before, result.replacements),
             )
-        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes, tool.warnings_block(edits), result.relocations)
+        self.planned[call.id] = self.PlannedEdit(
+            path, before, after, created, result.changes, tool.warnings_block(edits, result.seam_duplicates), result.relocations
+        )
         state.lines, state.exists, state.edited = result.lines, True, True
         state.consumed |= result.consumed
 
@@ -172,7 +175,9 @@ class EditBatchPlan:
         for start, end, replacement in sorted(result.replacements, reverse=True):
             consumed.update(line.origin for line in lines[start:end] if line.origin is not None)
             lines[start:end] = self.new_lines(replacement)
-        return self.ApplyResult(lines, result.changes, result.replacements, relocations=result.relocations, consumed=consumed)
+        return self.ApplyResult(
+            lines, result.changes, result.replacements, relocations=result.relocations, consumed=consumed, seam_duplicates=result.seam_duplicates
+        )
 
     def planned_start(self, state: FileState, view: SourceView, edit: Edit, start: int, end: int) -> int | None:
         """Where the view's lines `start..end` (1-based, inclusive) sit in the planned state, or

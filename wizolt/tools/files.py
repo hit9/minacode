@@ -252,6 +252,10 @@ class EditApplyResult:
     changes: list[tuple[int, int, int, int]]
     replacements: list[tuple[int, int, list[str]]]
     relocations: list[str] = field(default_factory=list)  # "relocated ... -> ..." reports
+    # Boundary-duplicate advisories: a replacement edge line equal to the preserved line just
+    # outside the range, a seam the file did not have before the call. That is the shape context
+    # copied into content leaves behind; identical lines inside a range are never inspected.
+    seam_duplicates: list[str] = field(default_factory=list)
 
 
 # Characters written in one call past which the call is worth splitting. About 1.5k tokens: large
@@ -375,7 +379,7 @@ class EditTool(Tool):
             raise ToolError(self.no_changes_error(original, result), recovery=self.no_op_recovery(path, view, original, result.replacements))
         if created:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        return self.write_result(path, original, result.content, result.changes, self.warnings_block(edits), result.relocations)
+        return self.write_result(path, original, result.content, result.changes, self.warnings_block(edits, result.seam_duplicates), result.relocations)
 
     def write_result(
         self,
@@ -406,16 +410,21 @@ class EditTool(Tool):
         parts.append("</Edit>")
         return ToolOutput.rendered(parts)
 
-    def warnings_block(self, edits: list[Edit]) -> str:
+    def warnings_block(self, edits: list[Edit], seam_duplicates: list[str] | None = None) -> str:
         """Render the call's warnings as a `<warnings>` block, or "" when nothing fired.
 
-        The only warning left is the large-edit advisory, which is about the assistant message that
-        carried the call, not about the change it made: with insertions gone there is no content
-        heuristic left to police, so the file's before and after are not inspected at all.
+        The large-edit advisory is about the assistant message that carried the call, not about the
+        change it made. The boundary-duplicate advisories are about the change: a replacement edge
+        line identical to the preserved line just outside the range is the shape context copied
+        into content leaves behind. Identical lines inside a range stay legitimate and unpoliced.
         """
-        if (large := _large_edit(edits)) is None:
+        lines = []
+        if (large := _large_edit(edits)) is not None:
+            lines.append(large)
+        lines.extend(seam_duplicates or [])
+        if not lines:
             return ""
-        return f"<warnings>\n{large}\n</warnings>"
+        return "<warnings>\n" + "\n".join(lines) + "\n</warnings>"
 
     def turn_diff(self) -> TurnDiff | None:
         path, diff = getattr(self, "last_path", ""), getattr(self, "last_diff", "")
@@ -673,6 +682,12 @@ class EditTool(Tool):
         new_lines = list(lines)
         for start, end, replacement in sorted(replacements, reverse=True):
             new_lines[start:end] = replacement
+        # The boundary-duplicate advisories need both files: equality is judged against the
+        # preserved line outside the range, novelty against the seam the original had there.
+        # Neighbour lines that another replacement of this call rewrote are skipped: both sides
+        # were authored in this call, and positions there belong to no stable "before".
+        rewritten = {index for other_start, other_end, _ in replacements for index in range(other_start, other_end)}
+        seam_duplicates: list[str] = []
         changes = []
         delta = 0
         for start, end, replacement in sorted(replacements):
@@ -681,7 +696,17 @@ class EditTool(Tool):
             clear_end = 0 if len(replacement) != end - start else new_start + (end - start)
             changes.append((new_start, clear_end, new_start, new_end))
             delta += len(replacement) - (end - start)
-        return EditApplyResult("".join(new_lines), changes, replacements, relocations=relocations or [])
+            if replacement and replacement[0].strip() and start > 0 and start - 1 not in rewritten:
+                above = lines[start - 1]
+                if above.strip() and replacement[0] == above and lines[start] != above:
+                    seam_duplicates.append(
+                        f"boundary-duplicate: new lines {new_start} and {new_start + 1} are identical; content repeats the line above the range"
+                    )
+            if replacement and replacement[-1].strip() and end < len(lines) and end not in rewritten:
+                below = lines[end]
+                if below.strip() and replacement[-1] == below and lines[end - 1] != below:
+                    seam_duplicates.append(f"boundary-duplicate: new lines {new_end} and {new_end + 1} are identical; content repeats the line below the range")
+        return EditApplyResult("".join(new_lines), changes, replacements, relocations=relocations or [], seam_duplicates=seam_duplicates)
 
     def no_changes_error(self, original: str, result: EditApplyResult) -> str:
         return self.no_changes_error_from_lines(split_lines(original), result.replacements)
