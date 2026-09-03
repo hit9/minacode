@@ -56,15 +56,6 @@
   bottom first, so the reported position describes the app: the prompt stays put and only one
   copy of it is ever visible. Transcript already scrolled off by the reflow itself stays
   reachable in scrollback.
-- Repeated tmux resize during a running turn no longer leaves fragments of the live region on
-  screen nor stacks stale copies of it into scrollback. A reflow that rewraps the running region
-  is erased from the pane bottom before repainting, and the cursor position report the resize
-  asked for first erases whatever the reflow drifted above the app; text written above the app
-  parks the repaint at the content's own height, so the app stops claiming every row below the
-  transcript. The visible pane keeps one clean copy of the live region through narrow/widen
-  cycles. Rows the reflow itself pushed off screen stay reachable in scrollback; a narrow pass
-  can still leave trailing blank rows behind the transcript — a leftover of rewrapping that the
-  primary screen cannot erase — which only accumulate while the pane keeps being resized.
 - Picking or setting a worker provider now shows "Loading models..." while remote model
   discovery runs, like /model does, so the cascade's pause before the model selector does not
   read as a hang.

@@ -398,13 +398,6 @@ class TuiApp:
                 def render() -> None:
                     with create_app_session(output=app.output):
                         callback()
-                    # Park the cursor on the pane's bottom row before the repaint: the cursor
-                    # position report then describes the bottom, and the app is redrawn at its
-                    # content height instead of claiming every row below the transcript — a claim
-                    # a later reflow would push into scrollback as stale app rows.
-                    size = app.output.get_size()
-                    app.output.cursor_goto(size.rows, 1)
-                    app.output.flush()
 
                 await run_in_terminal(render)
             except Exception as error:  # noqa: BLE001 - return terminal failures to the agent thread.
@@ -1365,129 +1358,36 @@ class TuiApp:
             if self.input_mode == "running":
                 self.invalidate()
 
-    REANCHOR_CPR_TIMEOUT: ClassVar[float] = 0.25
-
-    @staticmethod
-    def _reflowed_height(screen, columns: int) -> int:
-        """Rows a rendered screen occupies after a reflow to `columns` columns.
-
-        A multiplexer reflow rewraps every drawn row into ceil(width / columns) terminal rows;
-        a blank row still takes one. Rows measure their printable width — trailing unstyled
-        spaces are not content a reflow preserves.
-        """
-        height = 0
-        for row in range(screen.height):
-            cells = screen.data_buffer[row]
-            width = max((column for column, cell in cells.items() if cell.char != " " or cell.style), default=-1) + 1
-            height += max(1, (width + columns - 1) // columns)
-        return height
-
     def _install_resize_reanchor(self, app: Application) -> None:
         """Handle terminal resizes by re-anchoring the app at the pane bottom.
 
         prompt-toolkit's resize path erases from where it last drew and then trusts the cursor
-        position report (CPR). A multiplexer reflow (tmux zoom/unzoom) rewraps the already drawn
-        app before the resize is even detected: rows wider than the new pane split, the app grows
-        taller, and that erase — which counts rows back from the remembered cursor — stops short
-        of the moved top row, leaving a stale copy behind on every cycle; the reflowed cursor
-        also answers the CPR from wherever it drifted to. Instead, erase by counting the
-        reflowed copy's wrapped rows up from the pane bottom (a reflow pushes whole rows off the
-        top but keeps the cursor, and so the app's last row, on screen) and repaint at the
-        height the layout is about to draw, so the CPR describes the app instead of the drift.
-        A copy the reflow drifted above the pane bottom (unzoom) only shows in a cursor position
-        report taken before anything moves it, so one is requested up front and its answer
-        erases what drifted above the freshly drawn app. A terminal that cannot answer keeps the
-        bottom-anchored erase alone.
+        position report (CPR). A multiplexer reflow (tmux zoom/unzoom) moves the already drawn app
+        before the resize is even detected, so that erase misses the moved copy and the CPR answer
+        carries the drifted row: the app creeps toward the top of the pane and every cycle leaves
+        a stale copy behind. Erase from the cursor the terminal actually reports, then park the
+        cursor where an app of the last rendered height belongs and run the stock CPR-and-redraw
+        sequence from there, so the reported position describes the app instead of the drift.
         """
         vanilla_resize = app._on_resize
-        state: dict[str, Any] = {"pending": False, "timer": None}
-        original_report = app.renderer.report_absolute_cursor_row
-
-        def report(row: int) -> None:
-            original_report(row)
-            if not state["pending"]:
-                return
-            state["pending"] = False
-            if state["timer"] is not None:
-                state["timer"].cancel()
-                state["timer"] = None
-            # The reported row is where the cursor sat when the request reached the terminal,
-            # before the repaint below moved it: a drifted copy's top is that row minus the drawn
-            # rows that were above the cursor — a count a reflow does not change.
-            drifted_top = max(1, row - state["above_cursor"])
-            up_to = min(state["erase_top"], state["anchor_top"])
-            if drifted_top < up_to:
-                output = app.renderer.output
-                output.reset_attributes()
-                for line_row in range(drifted_top, up_to):
-                    output.cursor_goto(line_row, 1)
-                    output.erase_end_of_line()
-                # Put the cursor back on the app's own input row, where the renderer left it.
-                screen = app.renderer.last_rendered_screen
-                if screen is not None:
-                    cursor = screen.get_cursor_position(app.layout.current_window)
-                    output.cursor_goto(state["anchor_top"] + cursor.y, cursor.x + 1)
-                output.flush()
-            # The report described the pre-repaint cursor; the app is already parked at its own
-            # anchored height, so pin that instead of letting the drifted row inflate it.
-            app.renderer._min_available_height = state["anchored_height"]
-
-        def on_timeout() -> None:
-            # The terminal never answered; the bottom-anchored repaint already ran, so there is
-            # nothing left to do but stop waiting.
-            state["pending"] = False
 
         def on_resize() -> None:
             renderer = app.renderer
             last_screen = renderer.last_rendered_screen
-            if last_screen is None or renderer.full_screen:
+            # 0-based row of the app's top when it sits flush with the pane bottom.
+            anchored_row = renderer.output.get_size().rows - last_screen.height if last_screen is not None and not renderer.full_screen else -1
+            if anchored_row < 0:
                 # Nothing rendered yet, or a full-screen app: the stock path is already right.
                 vanilla_resize()
                 return
-            size = renderer.output.get_size()
-            output = renderer.output
-            preferred = app.layout.container.preferred_height(size.columns, size.rows).preferred
-            anchored_height = min(max(preferred, 1), size.rows)
-            if not output.responds_to_cpr:
-                # No cursor position reports (a plain terminal resize, no multiplexer reflow
-                # bookkeeping): erase relative to the physical cursor — which travels with any
-                # reflow, so the erase follows the drifted copy — exactly like the stock path,
-                # then park at the bottom and run the stock request and redraw.
-                renderer.erase(leave_alternate_screen=False)
-                output.cursor_goto(size.rows - anchored_height + 1, 1)
-                renderer.reset(leave_alternate_screen=False)
-                app._request_absolute_cursor_position()
-                app._redraw()
-                return
-            erase_top = max(1, size.rows - self._reflowed_height(last_screen, size.columns) + 1)
-            if state["timer"] is not None:
-                state["timer"].cancel()
-            state.update(
-                pending=False,
-                timer=None,
-                erase_top=erase_top,
-                anchor_top=size.rows - anchored_height + 1,
-                anchored_height=anchored_height,
-                above_cursor=last_screen.get_cursor_position(app.layout.current_window).y,
-            )
-            # Ask where the cursor physically sits before anything moves it; the terminal
-            # answers with the position it saw when the request arrived, ahead of the
-            # repaint this function performs right after.
-            state["pending"] = True
-            state["timer"] = app.loop.call_later(self.REANCHOR_CPR_TIMEOUT, on_timeout)
-            output.ask_for_cpr()
-            # Erase the reflowed copy, then park the cursor where the app the layout is about
-            # to draw belongs — anchoring at the height it will actually render keeps the CPR
-            # from pinning a taller budget the next frame would have to scroll for — and run
-            # the stock sequence from there.
-            output.reset_attributes()
-            output.cursor_goto(erase_top, 1)
-            output.erase_down()
-            output.cursor_goto(size.rows - anchored_height + 1, 1)
+            # Erase starting at the terminal's actual cursor — after a reflow only the terminal
+            # knows where the moved app is, and erase_down() from there clears its every row.
+            renderer.erase(leave_alternate_screen=False)
+            renderer.output.cursor_goto(anchored_row + 1, 1)
             renderer.reset(leave_alternate_screen=False)
+            app._request_absolute_cursor_position()
             app._redraw()
 
-        app.renderer.report_absolute_cursor_row = report
         app._on_resize = on_resize
 
     def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
@@ -1514,7 +1414,6 @@ class TuiApp:
             app.create_background_task(self.animate())
             self.ready.set()
 
-        # Patch stdout only inside this block; the transcript prints above the app through it.
         try:
             with patch_stdout():
                 app.run(pre_run=start)
