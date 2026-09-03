@@ -794,3 +794,136 @@ class TestWhitelistGating:
         assert "Bash: not available in this session" in out
         assert "Read\n" in out
         assert "  args:    path  string" in out
+
+
+# ---------------------------------------------------------------------------
+# call_many: independent calls handed over together
+# ---------------------------------------------------------------------------
+
+
+class TestCallMany:
+    def test_returns_one_value_per_entry_in_the_order_given(self, tmp_path):
+        for index in range(4):
+            (tmp_path / f"f{index}.txt").write_text(f"body {index}\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        code = (
+            'rows = call_many([("Read", {"path": "f%d.txt" % i}) for i in range(4)])\n'
+            'print([r.count("body %d" % i) for i, r in enumerate(rows)])\n'
+        )
+        content = _run_script(s, code)
+        assert "ToolScript ok" in content
+        # One result per entry, each the answer to its own entry: the pool must not reorder them.
+        assert "[1, 1, 1, 1]" in content
+        assert "calls: 4 [tr.1-tr.4]" in content
+
+    def test_read_only_entries_run_concurrently(self, tmp_path, monkeypatch):
+        import threading
+
+        from wizolt.tools.files import ReadTool
+
+        started = threading.Barrier(3, timeout=5)
+        threads: list[str] = []
+        lock = threading.Lock()
+
+        def blocking_read(self):
+            # Only returns once three workers are inside it at the same time; a serial runner would
+            # deadlock here and time out, so passing is itself the proof that they overlapped.
+            started.wait()
+            with lock:
+                threads.append(threading.current_thread().name)
+            return "read ok"
+
+        monkeypatch.setattr(ReadTool, "call", blocking_read)
+        s = _mcp_session(tmp_path)
+        code = 'print(len(call_many([("Read", {"path": "f%d.txt" % i}) for i in range(3)])))\n'
+        content = _run_script(s, code)
+        assert "ToolScript ok" in content
+        assert "3" in content
+        assert len(set(threads)) == 3
+
+    def test_a_failed_entry_comes_back_as_the_error_and_the_rest_survive(self, tmp_path):
+        (tmp_path / "there.txt").write_text("here\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        code = (
+            'rows = call_many([("Read", {"path": "there.txt"}), ("Read", {"path": "missing.txt"}), '
+            '("Read", {"path": "there.txt"})])\n'
+            'print([type(r).__name__ if isinstance(r, Exception) else "ok" for r in rows])\n'
+        )
+        content = _run_script(s, code)
+        # The script runs to the end: a bad entry costs its own result and nothing else.
+        assert "ToolScript ok" in content
+        assert "['ok', 'ToolError', 'ok']" in content
+
+    def test_a_refused_entry_ends_the_script(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        code = 'call_many([("Bash", {"command": "mkdir sub"})])\nprint("after")\n'
+        answers = iter(["y", "n"])
+        runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
+        (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        content = str(message["content"])
+        assert "ToolScript failed" in content
+        assert "nested call refused by user" in content
+        assert "after" not in content
+        assert not (tmp_path / "sub").exists()
+
+    def test_a_call_needing_confirmation_still_asks_and_runs_in_place(self, tmp_path):
+        (tmp_path / "a.txt").write_text("hi\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        code = (
+            'rows = call_many([("Read", {"path": "a.txt"}), ("Bash", {"command": "mkdir sub"}), '
+            '("Read", {"path": "a.txt"})])\n'
+            "print(len(rows), all(not isinstance(r, Exception) for r in rows))\n"
+        )
+        prompts: list[str] = []
+
+        def input_fn(prompt):
+            prompts.append(str(prompt))
+            return "y"
+
+        content = _run_script(s, code, input_fn=input_fn)
+        assert "ToolScript ok" in content
+        assert "3 True" in content
+        # The write ran serially between the two reads, and it still stopped to ask.
+        assert (tmp_path / "sub").exists()
+        assert prompts
+
+    def test_a_malformed_entry_is_refused_before_anything_runs(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        code = 'call_many([("Bash", {"command": "mkdir sub"}), "Read"])\n'
+        content = _run_script(s, code)
+        assert "ToolScript failed" in content
+        assert "call_many(...) entry 1 is not a (name, args) pair" in content
+        # Validation happens up front, so the well-formed first entry never ran.
+        assert not (tmp_path / "sub").exists()
+
+    def test_a_non_list_argument_is_a_script_error(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        content = _run_script(s, 'call_many("Read")\n')
+        assert "ToolScript failed" in content
+        assert "call_many(...) requires a list of (name, args) pairs" in content
+
+    def test_an_empty_batch_returns_nothing_and_runs_nothing(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        content = _run_script(s, "print(call_many([]))\n")
+        assert "ToolScript ok" in content
+        assert "[]" in content
+        assert "calls: 0" in content
+
+    def test_json_format_applies_to_every_entry(self, tmp_path, monkeypatch):
+        s = _mcp_session(tmp_path)
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={"readOnlyHint": True})]
+
+        async def fake_call(config, headers, name, arguments):
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text='{"a": %d}' % arguments["n"])])
+
+        monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
+        code = 'rows = call_many([("test.echo", {"n": i}) for i in range(3)], format="json")\nprint([r["a"] for r in rows])\n'
+        content = _run_script(s, code)
+        assert "ToolScript ok" in content
+        assert "[0, 1, 2]" in content
+
+    def test_forbidden_names_are_refused_in_a_batch_too(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        content = _run_script(s, 'call_many([("Delegate", {})])\n')
+        assert "ToolScript failed" in content
+        assert "Delegate is not scriptable" in content

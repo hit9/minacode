@@ -11,6 +11,7 @@ import re
 import sys
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from wizolt.base import ApprovalView, Json, ToolCall, ToolError
@@ -116,12 +117,16 @@ class ToolScript(Tool):
         'the end on its own. Name an MCP tool the way the tool list spells it: call("server.tool", '
         '{...}). call() returns the result as text, or parsed JSON with format="json" (MCP only). A '
         "failed call raises, ending the script -- catch it per item so one bad item does not lose the "
-        'batch. Describe one tool with MCP(action="describe"). Built-in tools are scriptable with '
+        "batch. Hand independent calls over together with call_many([(name, args), ...]) rather than "
+        "looping call(): it returns one value per entry in the order given, runs read-only ones "
+        "concurrently, and gives back a failed entry as the error object instead of ending the script. "
+        "Never start threads of your own -- call_many is how a script runs calls at once. "
+        'Describe one tool with MCP(action="describe"). Built-in tools are scriptable with '
         'format="text"; Delegate/Job/ToolScript are not.'
     )
     EXAMPLE = (
         'Aggregate many same-shape calls into one line. Example: {"action":"call","code":"hits = 0\\nfor path in (\\"a.py\\", \\"b.py\\", \\"c.py\\", \\"d.py\\"):\\n    hits += call(\\"Search\\", {\\"pattern\\": \\"TODO\\", \\"path\\": path}).count(\\"TODO\\")\\nprint(hits)"}',
-        'Fan out over an MCP tool, keeping going past a failure. Example: {"action":"call","code":"for key in (\\"A\\", \\"B\\", \\"C\\", \\"D\\"):\\n    try:\\n        r = call(\\"server.tool\\", {\\"key\\": key}, format=\\"json\\")\\n        print(\\"ok\\", key, r[\\"id\\"])\\n    except Exception as error:\\n        print(\\"FAIL\\", key, error)"}',
+        'Fan out over an MCP tool at once, keeping going past a failure. Example: {"action":"call","code":"keys = (\\"A\\", \\"B\\", \\"C\\", \\"D\\")\\nfor key, r in zip(keys, call_many([(\\"server.tool\\", {\\"key\\": key}) for key in keys], format=\\"json\\")):\\n    if isinstance(r, Exception):\\n        print(\\"FAIL\\", key, r)\\n    else:\\n        print(\\"ok\\", key, r[\\"id\\"])"}',
         'Learn call shapes before scripting them. Example: {"action":"describe","tools":["Read","server.tool"]}',
     )
     MUTATES = True
@@ -138,7 +143,7 @@ class ToolScript(Tool):
                 "minItems": 1,
                 "description": 'Tools to describe, e.g. ["Read", "server.tool", ...]',
             },
-            "code": {"type": "string", "description": 'Python source for action="call"; nested tool invocations go through call(name, {...}, format="text"|"json"), where name is a built-in tool or an MCP "server.tool"'},
+            "code": {"type": "string", "description": 'Python source for action="call"; nested tool invocations go through call(name, {...}, format="text"|"json") or call_many([(name, {...}), ...], format=...) for independent calls at once, where name is a built-in tool or an MCP "server.tool"'},
         }, ["action"])
         # fmt: on
 
@@ -266,6 +271,9 @@ class ToolScript(Tool):
         def call_fn(name, args=None, format="text"):
             return self._nested_call(runner, budget, keys, name, args, format, capture)
 
+        def call_many_fn(calls, format="text"):
+            return self._nested_call_many(runner, budget, keys, calls, format, capture)
+
         compiled = compile(code, SCRIPT_FILENAME, "exec")
         linecache.cache[SCRIPT_FILENAME] = (len(code), None, code.splitlines(True), SCRIPT_FILENAME)
 
@@ -287,7 +295,7 @@ class ToolScript(Tool):
                 with runner.nested(), capture.active():
                     exec(  # noqa: S102 - ToolScript is the sanctioned script executor; not a sandbox, the outer confirmation is the boundary
                         compiled,
-                        {"__name__": "__toolscript__", "__builtins__": builtins, "call": call_fn},
+                        {"__name__": "__toolscript__", "__builtins__": builtins, "call": call_fn, "call_many": call_many_fn},
                     )
             except KeyboardInterrupt:
                 # Ctrl-C is the user cancelling the turn, not the script failing. It has to keep
@@ -328,6 +336,30 @@ class ToolScript(Tool):
         return (server, tool) if tool and mcp.find_config(server) is not None else None
 
     def _nested_call(self, runner: ToolRunner, budget: _ScriptTimeBudget, keys: list[str], name, args, format, capture: _StdoutCapture) -> Json | str:
+        call, tool = self._build_call(len(keys) + 1, name, args, format)
+        # The capture steps aside for the same reason the clock pauses: what the nested call logs
+        # belongs on the terminal, not in the script's stdout. Left in place, every nested call
+        # line was swallowed into the buffer and handed back to the model as the script's own
+        # output, and a headless confirmation prompt -- input() writes to sys.stdout -- went with
+        # it, stopping the run at a prompt nobody could see.
+        budget.pause()
+        try:
+            with capture.paused():
+                status, message, _ = self._run_nested(runner, call)
+        finally:
+            budget.resume()
+        if status == "refused":
+            raise ToolError("nested call refused by user")
+        if status == "failed":
+            raise ToolError(message)
+        return self._nested_result(keys, message, format, tool)
+
+    def _build_call(self, index: int, name, args, format) -> tuple[ToolCall, str]:
+        """Validate one scripted invocation and turn it into a ToolCall.
+
+        Returns the call and, for MCP, the tool's own name — the only thing the caller still needs
+        it for is naming the tool when its reply does not parse as JSON.
+        """
         if name == "ToolScript":
             raise ToolError('call("ToolScript", ...) is not allowed')
         if name in ("Delegate", "Job"):
@@ -350,7 +382,7 @@ class ToolScript(Tool):
             payload: Json = {"action": "call", "server": server, "tool": tool, "arguments": arguments}
             if format == "json":
                 payload["format"] = "json"
-            call = ToolCall(f"toolscript.{len(keys) + 1}", "MCP", [payload])
+            return ToolCall(f"toolscript.{index}", "MCP", [payload]), tool
         else:
             from wizolt.tools import TOOL_REGISTRY  # local import: the registry is built on top of every tool
 
@@ -368,24 +400,12 @@ class ToolScript(Tool):
             from wizolt.tools import tool_payload  # local import: the registry is built on top of every tool
 
             try:
-                call = ToolCall(f"toolscript.{len(keys) + 1}", name, tool_payload(name, args))
+                return ToolCall(f"toolscript.{index}", name, tool_payload(name, args)), ""
             except ToolError as error:
                 raise ToolError(f"{name}: {error}") from error
-        # The capture steps aside for the same reason the clock pauses: what the nested call logs
-        # belongs on the terminal, not in the script's stdout. Left in place, every nested call
-        # line was swallowed into the buffer and handed back to the model as the script's own
-        # output, and a headless confirmation prompt -- input() writes to sys.stdout -- went with
-        # it, stopping the run at a prompt nobody could see.
-        budget.pause()
-        try:
-            with capture.paused():
-                status, message, _ = self._run_nested(runner, call)
-        finally:
-            budget.resume()
-        if status == "refused":
-            raise ToolError("nested call refused by user")
-        if status == "failed":
-            raise ToolError(message)
+
+    def _nested_result(self, keys: list[str], message: str, format, tool: str) -> Json | str:
+        """The value a completed nested call hands back to the script."""
         key = self._result_key(message)
         if key:
             keys.append(key)
@@ -401,6 +421,76 @@ class ToolScript(Tool):
             except (json.JSONDecodeError, ValueError):
                 raise ToolError(f'MCP returned text that is not JSON for tool "{tool}"')
         return full
+
+    def _nested_call_many(
+        self, runner: ToolRunner, budget: _ScriptTimeBudget, keys: list[str], entries, format, capture: _StdoutCapture
+    ) -> list[Json | str | ToolError]:
+        """Run a list of (name, args) invocations, returning one value per entry in the order given.
+
+        Every entry is validated before any of them runs, so a malformed list is a script error
+        rather than a half-executed batch. A call that fails comes back as the ToolError it raised
+        instead of ending the script: handing over a batch is only worth doing if one bad item does
+        not cost the others, which a loop of `call()` buys only with a try/except per item. A
+        refusal still raises — a user declining a call is a decision about the run, not a datum.
+        """
+        if isinstance(entries, (str, bytes)) or not isinstance(entries, (list, tuple)):
+            raise ToolError("call_many(...) requires a list of (name, args) pairs")
+        prepared: list[tuple[ToolCall, str]] = []
+        for position, entry in enumerate(entries):
+            if isinstance(entry, (str, bytes)) or not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                raise ToolError(f"call_many(...) entry {position} is not a (name, args) pair")
+            prepared.append(self._build_call(len(keys) + 1 + position, entry[0], entry[1], format))
+        if not prepared:
+            return []
+        budget.pause()
+        try:
+            with capture.paused():
+                outcomes = self._run_nested_many(runner, [call for call, _ in prepared])
+        finally:
+            budget.resume()
+        results: list[Json | str | ToolError] = []
+        for (status, message), (_, tool) in zip(outcomes, prepared):
+            if status == "refused":
+                raise ToolError("nested call refused by user")
+            if status == "failed":
+                results.append(ToolError(message))
+                continue
+            try:
+                results.append(self._nested_result(keys, message, format, tool))
+            except ToolError as error:
+                results.append(error)
+        return results
+
+    def _run_nested_many(self, runner: ToolRunner, calls: list[ToolCall]) -> list[tuple[str, str]]:
+        """Run prepared calls in order, concurrently across each run of parallel-safe ones.
+
+        The segmentation is the runner's own rule and it is here for the runner's own reason: only
+        calls that neither mutate state nor stop for the user may overlap, so a write or a
+        confirmation never runs beside a concurrent read. Each result and its display land back on
+        this thread in the order the script listed them, so the log reads as the script was written
+        rather than as the pool happened to finish.
+        """
+        cap = max(1, self.session.settings.max_parallel_tools)
+        outcomes: list[tuple[str, str]] = []
+        index = 0
+        while index < len(calls):
+            end = index
+            while end < len(calls) and runner.parallel_safe(calls[end]):
+                end += 1
+            segment = calls[index:end]
+            if len(segment) > 1:
+                with ThreadPoolExecutor(max_workers=min(len(segment), cap), thread_name_prefix="toolscript") as executor:
+                    raw = list(executor.map(runner.execute_readonly, segment))
+                for call, outcome in zip(segment, raw):
+                    outcomes.append(("ok" if outcome[0] == "ok" else "failed", runner.finalize_outcome(call, outcome)))
+                index = end
+                continue
+            # A lone parallel-safe call has nothing to overlap with, and anything else must run on
+            # its own anyway: both take the ordinary single-call path, confirmation included.
+            status, message, _ = self._run_nested(runner, calls[index])
+            outcomes.append((status, message))
+            index += 1
+        return outcomes
 
     def _run_nested(self, runner: ToolRunner, call: ToolCall) -> tuple[str, str, object | None]:
         """Run one nested call through the runner. Edits go through a single-element plan so a nested

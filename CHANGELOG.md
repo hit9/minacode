@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- `ToolScript` scripts can hand a batch of independent calls over at once with
+  `call_many([(name, args), ...])`, which returns one value per entry in the order given and runs
+  read-only, auto-approved entries concurrently (up to `max_parallel_tools`). It follows the same
+  rule the tool runner uses for a batch from the model: only consecutive parallel-safe calls
+  overlap, so a write or a confirmation never runs beside a concurrent read, and every result and
+  its log line lands in the order the script listed them. A failed entry comes back as the error
+  object instead of ending the script — a loop of `call()` needs a try/except per item for that —
+  while a refusal still ends it. Scripts should not start threads of their own: the execution time
+  budget is measured on the script's own thread and the runner's bookkeeping is not thread-safe.
+
 ### Changed
 
 - **Breaking.** `Read`, `Search`, and `InspectCode` now return numbered source views (`view.N`)
