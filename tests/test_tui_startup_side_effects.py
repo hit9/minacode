@@ -143,7 +143,7 @@ async def test_expired_session_cleanup_reports_what_it_removed(monkeypatch, tmp_
     """The traversal runs off the loop; the notice is emitted here, once the count comes back."""
     command_loop = loop(tmp_path)
     command_loop.session.settings.session_retention_days = 7
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 3)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _data_dir, _uid, _days: 3)
     lines = []
     monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
 
@@ -158,7 +158,7 @@ async def test_expired_session_cleanup_reports_what_it_removed(monkeypatch, tmp_
 
 async def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _data_dir, _uid, _days: 0)
     lines = []
     monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
 
@@ -171,7 +171,7 @@ async def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path)
     """A failing sweep must not escape the task; retention is not worth a broken session."""
     command_loop = loop(tmp_path)
 
-    def boom(_session):
+    def boom(_data_dir, _uid, _days):
         raise OSError("data dir unreadable")
 
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", boom)
@@ -184,7 +184,7 @@ async def test_cancelling_the_retention_sweep_finishes_the_deletion_pass(monkeyp
     command_loop = loop(tmp_path)
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
-    def slow_sweep(_session):
+    def slow_sweep(_data_dir, _uid, _days):
         entered.set()
         release.wait(5)
         finished.set()
@@ -201,6 +201,27 @@ async def test_cancelling_the_retention_sweep_finishes_the_deletion_pass(monkeyp
     with pytest.raises(asyncio.CancelledError):
         await sweep
     assert finished.is_set()
+
+
+async def test_retention_sweep_uses_values_captured_before_worker_admission(monkeypatch, tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.settings.session_retention_days = 7
+    captured = []
+
+    async def mutate_before_invoke(invoke, **_kwargs):
+        command_loop.session.settings.session_retention_days = 0
+        return invoke()
+
+    def sweep(data_dir, uid, days):
+        captured.append((data_dir, uid, days))
+        return 0
+
+    monkeypatch.setattr("wizolt.cli.loop.run_blocking", mutate_before_invoke)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", sweep)
+
+    await command_loop.clean_expired_sessions()
+
+    assert captured == [(command_loop.session.config.data_dir, command_loop.session.uid, 7)]
 
 
 def test_expired_session_notice_reads_correctly_when_singular(tmp_path):

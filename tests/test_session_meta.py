@@ -136,7 +136,7 @@ async def test_expired_sessions_take_their_sidecar_with_them(tmp_path):
     os.utime(SessionSnapshotStore.session_path(config.data_dir, stale.cwd, stale.uid), (old, old))
     s.settings.session_retention_days = 30
 
-    assert SessionSnapshotStore.clean_expired(s) == 1
+    assert SessionSnapshotStore.clean_expired(s.config.data_dir, s.uid, s.settings.session_retention_days) == 1
     assert not os.path.exists(meta)
 
 async def test_resume_accepts_a_name_or_uid_prefix(tmp_path):

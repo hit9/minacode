@@ -679,8 +679,11 @@ Full documentation: https://wizolt.readthedocs.io
         so the one thing it may not do is stop in the middle. The notice is emitted here, on the
         loop, once the pass has returned its count."""
 
+        data_dir = self.session.config.data_dir
+        current_uid = self.session.uid
+        days = self.session.settings.session_retention_days
         with contextlib.suppress(Exception):
-            removed = await run_blocking(lambda: SessionSnapshotStore.clean_expired(self.session))
+            removed = await run_blocking(lambda: SessionSnapshotStore.clean_expired(data_dir, current_uid, days))
             if removed:
                 self.emit_background(self.expired_sessions_notice(removed))
 

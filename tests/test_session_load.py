@@ -546,7 +546,7 @@ async def test_clean_expired_sessions_removes_old_files_and_latest(tmp_path):
     stale_time = time.time() - 8 * 86400
     os.utime(old_path, (stale_time, stale_time))
 
-    assert SessionSnapshotStore.clean_expired(s) == 1
+    assert SessionSnapshotStore.clean_expired(s.config.data_dir, s.uid, s.settings.session_retention_days) == 1
 
     assert not os.path.exists(old_path)
     # The pointer named the expired session, and the emptied shard is pruned with it.
@@ -560,6 +560,6 @@ async def test_clean_expired_sessions_skips_current_session(tmp_path):
     stale_time = time.time() - 8 * 86400
     os.utime(path, (stale_time, stale_time))
 
-    assert SessionSnapshotStore.clean_expired(s) == 0
+    assert SessionSnapshotStore.clean_expired(s.config.data_dir, s.uid, s.settings.session_retention_days) == 0
 
     assert os.path.exists(path)

@@ -368,13 +368,12 @@ class SessionSnapshotStore:
         return ""
 
     @classmethod
-    def clean_expired(cls, session: Session) -> int:
-        days = session.settings.session_retention_days
+    def clean_expired(cls, data_dir: str, current_uid: str, days: int) -> int:
         if days <= 0:
             return 0
         cutoff = time.time() - days * 86400
         removed = 0
-        for directory in cls.project_dirs(session.config.data_dir):
+        for directory in cls.project_dirs(data_dir):
             try:
                 entries = list(os.scandir(directory))
             except OSError:
@@ -384,7 +383,7 @@ class SessionSnapshotStore:
                 if not entry.name.endswith(".jsonl") or not entry.is_file():
                     continue
                 uid = entry.name[:-6]
-                if uid == session.uid or uid.endswith(".w"):
+                if uid == current_uid or uid.endswith(".w"):
                     continue
                 with contextlib.suppress(OSError):
                     if entry.stat().st_mtime < cutoff:
@@ -394,7 +393,7 @@ class SessionSnapshotStore:
                 if not entry.name.endswith(".jsonl") or not entry.is_file():
                     continue
                 uid = entry.name[:-6]
-                if uid == session.uid:
+                if uid == current_uid:
                     continue
                 try:
                     # A worker outlives its parent only by accident: once the parent log is gone the

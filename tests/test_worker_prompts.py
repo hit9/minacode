@@ -82,7 +82,7 @@ async def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tm
     cleaner = session(tmp_path)
     cleaner.settings.session_retention_days = 1
 
-    assert SessionSnapshotStore.clean_expired(cleaner) >= 2
+    assert SessionSnapshotStore.clean_expired(cleaner.config.data_dir, cleaner.uid, cleaner.settings.session_retention_days) >= 2
     assert not os.path.isfile(parent_path)
     assert not os.path.isfile(worker_path)
 

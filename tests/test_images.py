@@ -281,7 +281,7 @@ async def test_expired_session_removes_its_image_assets(tmp_path):
     current = session(tmp_path)
     current.settings.session_retention_days = 1
 
-    assert SessionSnapshotStore.clean_expired(current) == 1
+    assert SessionSnapshotStore.clean_expired(current.config.data_dir, current.uid, current.settings.session_retention_days) == 1
     assert not os.path.exists(log)
     assert not os.path.exists(assets)
 
