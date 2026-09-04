@@ -17,8 +17,8 @@ import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+import httpx2
 
 from wizolt.base import HTTP_USER_AGENT, Text, run_blocking
 from wizolt.providers.catalog import CatalogCodec, decode_bundled
@@ -35,6 +35,42 @@ CATALOG_LOCK_FILE = "catalog.lock"
 SYNC_INTERVAL_SECONDS = 72 * 3600
 REMOTE_TIMEOUT = 5
 MAX_REMOTE_BYTES = 2 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _CatalogProbe:
+    """The on-disk cache identity one conditional request is made against.
+
+    Immutable and captured under the cross-process lock, so the response can be validated against
+    the exact cache it was asked about rather than against whatever is on disk when it arrives."""
+
+    version: int | None = None  # None when there is no valid cache to be conditional about
+    content_hash: str = ""
+    etag: str = ""  # only ever set when it belongs to the valid cache above
+
+
+@dataclass(frozen=True)
+class _NotModified:
+    """HTTP 304: the remote says the cache this probe described is still current."""
+
+    probe: _CatalogProbe
+
+
+@dataclass(frozen=True)
+class _Downloaded:
+    """HTTP 200: bounded body plus the ETag to store beside it if it wins."""
+
+    payload: bytes
+    etag: str
+
+
+@dataclass(frozen=True)
+class _Reprobe:
+    """A 304 whose cache identity is gone -- another process rewrote it mid-request.
+
+    Carries the current winner so a bounded retry can stop without a third disk read."""
+
+    current: CatalogSnapshot
 
 
 @dataclass
@@ -104,50 +140,55 @@ class CatalogRepository:
             return bundled, "bundled", ""
         return bundled, "bundled", ""
 
-    def fetch(self) -> CatalogSnapshot:
-        """Download the remote catalog, validate it, and atomically cache it on success.
+    def probe(self) -> _CatalogProbe:
+        """Capture the cache identity a conditional request should be made against.
 
-        Sends the cached ETag only when the current cache is still valid, so an unchanged remote
-        answers 304 and the local copy stays. The fetch, re-read of the current cache, version
-        comparison and write happen inside one cross-process lock, and the cache is never
-        downgraded to an older version. The download is bounded and the write is atomic, so a
-        failure never leaves a half file.
-        """
+        Disk only: the lock is held for the read and released before anything reaches the network,
+        so a slow or hanging remote can no longer keep every other process out of the catalog
+        directory for the length of its timeout."""
+
+        with self._locked():
+            cached = self.cached()
+            if cached is None:
+                return _CatalogProbe()
+            etag = ""
+            with contextlib.suppress(OSError), open(self.etag_path, encoding="utf-8") as file:
+                etag = file.read().strip()
+            return _CatalogProbe(cached.version, cached.content_hash, etag)
+
+    def commit(self, response: _NotModified | _Downloaded) -> CatalogSnapshot | _Reprobe:
+        """Validate one response against the cache as it is now, and cache it if it wins.
+
+        The lock covers re-read, comparison, and the atomic write -- everything whose correctness
+        depends on no other process moving underneath it -- and nothing else. The cache is never
+        downgraded, a same-version-different-content remote is a conflict, and a failed write
+        leaves the previous cache intact because the replace is atomic."""
 
         try:
             with self._locked():
-                request = Request(CATALOG_URL, headers={"User-Agent": HTTP_USER_AGENT, "Accept": "application/json"})
-                if self.cached() is not None:
-                    with contextlib.suppress(OSError):
-                        with open(self.etag_path, encoding="utf-8") as file:
-                            etag = file.read().strip()
-                        if etag:
-                            request.add_header("If-None-Match", etag)
-                try:
-                    response_context = urlopen(request, timeout=REMOTE_TIMEOUT)
-                except HTTPError as error:
-                    if error.code == 304:
-                        return self.select()[0]
-                    raise
-                with response_context as response:
-                    if getattr(response, "status", 200) == 304:
-                        return self.select()[0]
-                    payload = response.read(MAX_REMOTE_BYTES + 1)
-                    if len(payload) > MAX_REMOTE_BYTES:
-                        raise CatalogSyncError(f"remote catalog exceeds {MAX_REMOTE_BYTES} bytes")
-                    snapshot = self._codec.decode(payload, "cached")
-                    current = self.select()[0]
-                    if snapshot.version < current.version:
+                current = self.select()[0]
+                if isinstance(response, _NotModified):
+                    cached = self.cached()
+                    if cached is not None and (cached.version, cached.content_hash) == (response.probe.version, response.probe.content_hash):
                         return current
-                    if snapshot.version == current.version:
-                        if snapshot.content_hash != current.content_hash:
-                            raise CatalogVersionConflict(f"remote catalog has the same version {snapshot.version} but different content")
+                    # Someone rewrote or removed the cache between the probe and the answer, so this
+                    # 304 is about a document that is no longer here. A newer valid cache is a fine
+                    # answer on its own; anything else has to ask again.
+                    if cached is not None and response.probe.version is not None and cached.version > response.probe.version:
                         return current
-                    self._write_cache(payload, response.headers.get("ETag", ""))
-                    return snapshot
+                    return _Reprobe(current)
+                snapshot = self._codec.decode(response.payload, "cached")
+                if snapshot.version < current.version:
+                    return current
+                if snapshot.version == current.version:
+                    if snapshot.content_hash != current.content_hash:
+                        raise CatalogVersionConflict(f"remote catalog has the same version {snapshot.version} but different content")
+                    return current
+                self._write_cache(response.payload, response.etag)
+                return snapshot
         except CatalogSyncError:
             raise
-        except (OSError, URLError, HTTPError, ValueError, CatalogError) as error:
+        except (OSError, ValueError, CatalogError) as error:
             raise CatalogSyncError(str(error)) from error
 
     @contextlib.contextmanager
@@ -237,17 +278,58 @@ class CatalogRuntime:
         cached = self.repository.cached()
         return bundled, cached.version if cached is not None else None
 
+    async def fetch(self) -> CatalogSnapshot:
+        """Probe the cache, ask the remote about it, and commit the answer.
+
+        Three steps rather than one lock around all of them: the disk reads and the atomic write
+        run through the blocking boundary while holding the cross-process lock, and the request in
+        between holds nothing. A 304 about a cache another process replaced meanwhile is answered
+        by probing and asking once more -- once, never in a loop."""
+
+        current: CatalogSnapshot | None = None
+        for _attempt in range(2):
+            probe = await run_blocking(self.repository.probe)
+            response = await self._request(probe)
+            outcome = await run_blocking(lambda response=response: self.repository.commit(response))
+            if not isinstance(outcome, _Reprobe):
+                return outcome
+            current = outcome.current
+        assert current is not None
+        return current
+
+    async def _request(self, probe: _CatalogProbe) -> _NotModified | _Downloaded:
+        """The conditional GET. Holds no lock, and closes its client on every ending.
+
+        The body is bounded while it streams: a remote that answers with a gigabyte must not first
+        become a gigabyte in memory to be rejected for being one."""
+
+        headers = {"User-Agent": HTTP_USER_AGENT, "Accept": "application/json"}
+        if probe.etag:
+            headers["If-None-Match"] = probe.etag
+        try:
+            async with httpx2.AsyncClient(timeout=REMOTE_TIMEOUT, headers=headers) as client, client.stream("GET", CATALOG_URL) as response:
+                if response.status_code == 304:
+                    return _NotModified(probe)
+                response.raise_for_status()
+                payload = bytearray()
+                async for chunk in response.aiter_bytes():
+                    payload += chunk
+                    if len(payload) > MAX_REMOTE_BYTES:
+                        raise CatalogSyncError(f"remote catalog exceeds {MAX_REMOTE_BYTES} bytes")
+                return _Downloaded(bytes(payload), response.headers.get("ETag", ""))
+        except CatalogSyncError:
+            raise
+        except httpx2.HTTPError as error:
+            raise CatalogSyncError(str(error)) from error
+
     async def sync(self) -> CatalogSnapshot:
         """Fetch the remote catalog and, if newer, activate it at the command boundary.
 
         This is the manual-sync path (``/catalog sync``): the active snapshot and policy swap only
-        here, never in the background refresh. The fetch is one cross-process critical section --
-        ETag read, request, version comparison, atomic cache write, all under one lock -- so it
-        goes to a worker whole rather than being split around an async request. Everything after
-        it, the swap and the state, happens on the caller's loop.
+        here, never in the background refresh.
         """
 
-        remote = await run_blocking(self.repository.fetch)
+        remote = await self.fetch()
         if remote.version > self.snapshot.version:
             self.snapshot = remote
             self.source = "cached"
@@ -273,16 +355,16 @@ class CatalogRuntime:
     async def refresh(self) -> None:
         """Refresh the cached catalog from the remote, as the caller's own task.
 
-        Cancellation waits for the repository's critical section to finish -- it holds a
-        cross-process lock around an atomic cache write, and abandoning it mid-write is how a
-        catalog cache becomes a half-written file every later process has to reject."""
+        Cancellation closes the response and the client, and waits for an already-admitted commit
+        to finish its atomic write -- abandoning that mid-write is how a catalog cache becomes a
+        half file every later process has to reject."""
 
         state = self.sync_state
         try:
             # The automatic refresh only updates the cache; the active policy is never
             # hot-swapped, so a long turn's requests keep one catalog version. A newer cache
             # is picked up on the next startup (see CatalogRepository.select).
-            snapshot = await run_blocking(self.repository.fetch)
+            snapshot = await self.fetch()
             state.error = ""
             state.last_synced_at = time.time()
             state.last_source = "cached" if snapshot.version > self.repository.bundled().version else "bundled"

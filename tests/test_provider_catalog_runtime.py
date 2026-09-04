@@ -3,9 +3,8 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import ClassVar
-from urllib.error import HTTPError, URLError
 
+import httpx2
 import pytest
 
 from wizolt.base import ConfigError
@@ -13,7 +12,8 @@ from wizolt.config import Config, ConfigFile, ProviderConfig
 from wizolt.providers.catalog import CatalogCodec, decode_bundled
 from wizolt.providers.compat import ProviderPolicy
 from wizolt.providers.schema import CatalogFormatError, CatalogSyncError, CatalogVersionConflict
-from wizolt.providers.sync import CATALOG_URL, CatalogRepository, CatalogRuntime
+import wizolt.providers.sync as sync_module
+from wizolt.providers.sync import CATALOG_URL, MAX_REMOTE_BYTES, CatalogRepository, CatalogRuntime
 from wizolt.session import Session
 
 CATALOG_PATH = Path(__file__).parents[1] / "wizolt" / "providers" / "catalog.json"
@@ -27,21 +27,29 @@ def catalog_payload(data: dict) -> bytes:
     return json.dumps(data, ensure_ascii=False).encode()
 
 
-class Response:
-    status = 200
-    headers: ClassVar[dict[str, str]] = {"ETag": '"catalog-test"'}
+# `sync.py` looks `AsyncClient` up on the shared httpx2 module, so patching it patches that module
+# for everyone. Hold the real class from before any patch, or a second patch wraps the first.
+REAL_ASYNC_CLIENT = httpx2.AsyncClient
 
-    def __init__(self, payload: bytes):
-        self.payload = payload
 
-    def __enter__(self):
-        return self
+def mock_catalog_http(monkeypatch, handler, requests: list | None = None):
+    """Route the catalog runtime's async client at `handler`, recording the requests it made."""
+    real = REAL_ASYNC_CLIENT
 
-    def __exit__(self, *_args):
-        return False
+    def client(**kwargs):
+        def record(request):
+            if requests is not None:
+                requests.append(request)
+            return handler(request)
 
-    def read(self, _limit: int) -> bytes:
-        return self.payload
+        return real(**kwargs, transport=httpx2.MockTransport(record))
+
+    monkeypatch.setattr(sync_module.httpx2, "AsyncClient", client)
+
+
+def serving(payload: bytes, etag: str = '"catalog-test"'):
+    """A handler that answers every request with `payload` and a 200."""
+    return lambda _request: httpx2.Response(200, content=payload, headers={"ETag": etag})
 
 
 def test_compiled_catalog_snapshot_is_deeply_immutable():
@@ -238,51 +246,269 @@ def test_selected_catalog_defines_config_vocabulary(tmp_path):
     assert config.provider.chat_reasoning == "custom"
 
 
-def test_fetch_rejects_same_version_with_different_content(tmp_path, monkeypatch):
+async def test_fetch_rejects_same_version_with_different_content(tmp_path, monkeypatch):
     data = catalog_data()
     data["defaults"]["provider_policy"]["cache.prompt_key"] = False
-    repository = CatalogRepository(str(tmp_path))
-    monkeypatch.setattr("wizolt.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
+    runtime = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(data)))
 
     with pytest.raises(CatalogVersionConflict, match="same version"):
-        repository.fetch()
+        await runtime.fetch()
 
-    assert not os.path.exists(repository.cache_path)
+    assert not os.path.exists(runtime.repository.cache_path)
 
 
-def test_fetch_wraps_transport_failures_without_a_ui_prefix(tmp_path, monkeypatch):
-    repository = CatalogRepository(str(tmp_path))
+async def test_fetch_wraps_transport_failures_without_a_ui_prefix(tmp_path, monkeypatch):
+    runtime = CatalogRuntime(str(tmp_path))
 
-    def unavailable(*_args, **_kwargs):
-        raise URLError("offline")
+    def unavailable(request):
+        raise httpx2.ConnectError("offline", request=request)
 
-    monkeypatch.setattr("wizolt.providers.sync.urlopen", unavailable)
+    mock_catalog_http(monkeypatch, unavailable)
 
     with pytest.raises(CatalogSyncError) as raised:
-        repository.fetch()
+        await runtime.fetch()
 
-    assert str(raised.value) == "<urlopen error offline>"
-
-
-def test_fetch_treats_http_304_as_current(tmp_path, monkeypatch):
-    repository = CatalogRepository(str(tmp_path))
-
-    def not_modified(*_args, **_kwargs):
-        raise HTTPError(CATALOG_URL, 304, "Not Modified", {}, None)
-
-    monkeypatch.setattr("wizolt.providers.sync.urlopen", not_modified)
-
-    assert repository.fetch().version == decode_bundled().version
+    assert str(raised.value) == "offline"
 
 
-def test_fetch_does_not_cache_a_remote_older_than_bundled(tmp_path, monkeypatch):
+async def test_fetch_wraps_a_timeout_as_a_sync_error(tmp_path, monkeypatch):
+    runtime = CatalogRuntime(str(tmp_path))
+
+    def times_out(request):
+        raise httpx2.ReadTimeout("timed out", request=request)
+
+    mock_catalog_http(monkeypatch, times_out)
+
+    with pytest.raises(CatalogSyncError, match="timed out"):
+        await runtime.fetch()
+
+
+async def test_fetch_rejects_a_malformed_remote_document(tmp_path, monkeypatch):
+    runtime = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(b"<html>not a catalog</html>"))
+
+    with pytest.raises(CatalogSyncError):
+        await runtime.fetch()
+
+    assert not os.path.exists(runtime.repository.cache_path)
+
+
+async def test_fetch_rejects_a_body_over_the_limit_while_it_streams(tmp_path, monkeypatch):
+    """The bound is enforced against the stream, so an oversize remote never becomes an oversize
+    object in memory first."""
+    runtime = CatalogRuntime(str(tmp_path))
+    chunks = 0
+
+    def flooding(_request):
+        async def stream():
+            nonlocal chunks
+            while True:
+                chunks += 1
+                yield b"x" * (256 * 1024)
+
+        return httpx2.Response(200, content=stream())
+
+    mock_catalog_http(monkeypatch, flooding)
+
+    with pytest.raises(CatalogSyncError, match="exceeds"):
+        await runtime.fetch()
+
+    assert chunks <= MAX_REMOTE_BYTES // (256 * 1024) + 2  # stopped at the bound, not after the body
+    assert not os.path.exists(runtime.repository.cache_path)
+
+
+async def test_fetch_sends_the_cached_etag_and_treats_304_as_current(tmp_path, monkeypatch):
+    data = catalog_data()
+    data["version"] += 1
+    runtime = CatalogRuntime(str(tmp_path))
+    requests: list = []
+    mock_catalog_http(monkeypatch, serving(catalog_payload(data), etag='"v2"'), requests)
+
+    assert (await runtime.fetch()).version == data["version"]
+    assert requests[0].headers.get("if-none-match") is None  # no cache yet, so no condition
+
+    mock_catalog_http(monkeypatch, lambda _request: httpx2.Response(304), requests)
+
+    assert (await runtime.fetch()).version == data["version"]
+    assert requests[-1].headers["if-none-match"] == '"v2"'
+
+
+async def test_a_304_about_a_removed_cache_reprobes_exactly_once(tmp_path, monkeypatch):
+    """Another process removed the cache between the probe and the answer, so this 304 is about a
+    document that is no longer here. Ask again -- once, never in a loop."""
+    data = catalog_data()
+    data["version"] += 1
+    runtime = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(data), etag='"v2"'))
+    await runtime.fetch()
+
+    answers = []
+
+    def answer(_request):
+        answers.append(True)
+        if len(answers) == 1:
+            # Simulate a concurrent removal landing while this request was in flight.
+            os.unlink(runtime.repository.cache_path)
+        return httpx2.Response(304)
+
+    mock_catalog_http(monkeypatch, answer)
+
+    assert (await runtime.fetch()).version == decode_bundled().version
+    assert len(answers) == 2
+
+
+async def test_a_304_beside_a_newer_concurrent_cache_is_accepted_directly(tmp_path, monkeypatch):
+    """The answer is stale but the cache that replaced it is newer and valid, so it is the answer:
+    nothing is gained by asking again about a document already superseded on disk."""
+    data = catalog_data()
+    data["version"] += 1
+    runtime = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(data), etag='"v2"'))
+    await runtime.fetch()
+
+    replacement = catalog_data()
+    replacement["version"] += 5
+    answers = []
+
+    def answer(_request):
+        answers.append(True)
+        Path(runtime.repository.cache_path).write_bytes(catalog_payload(replacement))
+        return httpx2.Response(304)
+
+    mock_catalog_http(monkeypatch, answer)
+
+    assert (await runtime.fetch()).version == replacement["version"]
+    assert len(answers) == 1
+
+
+async def test_fetch_does_not_cache_a_remote_older_than_bundled(tmp_path, monkeypatch):
     data = catalog_data()
     data["version"] -= 1
-    repository = CatalogRepository(str(tmp_path))
-    monkeypatch.setattr("wizolt.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
+    runtime = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(data)))
 
-    assert repository.fetch().version == decode_bundled().version
-    assert not os.path.exists(repository.cache_path)
+    assert (await runtime.fetch()).version == decode_bundled().version
+    assert not os.path.exists(runtime.repository.cache_path)
+
+
+async def test_a_second_runtime_cannot_downgrade_a_newer_cache(tmp_path, monkeypatch):
+    """Two runtimes over one data dir: the one holding the older document loses at commit."""
+    newer = catalog_data()
+    newer["version"] += 5
+    older = catalog_data()
+    older["version"] += 1
+
+    first = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(newer), etag='"newer"'))
+    assert (await first.fetch()).version == newer["version"]
+
+    second = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(older), etag='"older"'))
+
+    assert (await second.fetch()).version == newer["version"]
+    assert CatalogRepository(str(tmp_path)).cached().version == newer["version"]
+
+
+async def test_cancelling_a_blocked_request_writes_no_cache_and_closes_the_client(tmp_path, monkeypatch):
+    runtime = CatalogRuntime(str(tmp_path))
+    entered = asyncio.Event()
+    closed = []
+    class TrackedClient(REAL_ASYNC_CLIENT):
+        def stream(self, *args, **kwargs):
+            outer = self
+
+            class Blocked:
+                async def __aenter__(self):
+                    entered.set()
+                    await asyncio.Event().wait()
+
+                async def __aexit__(self, *_args):
+                    return False
+
+            del outer
+            return Blocked()
+
+        async def __aexit__(self, *args):
+            closed.append(True)
+            return await super().__aexit__(*args)
+
+    monkeypatch.setattr(sync_module.httpx2, "AsyncClient", TrackedClient)
+
+    fetch = asyncio.ensure_future(runtime.fetch())
+    await entered.wait()
+    fetch.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await fetch
+
+    assert closed == [True]
+    assert not os.path.exists(runtime.repository.cache_path)
+
+
+async def test_cancelling_during_the_commit_waits_for_the_atomic_write(tmp_path, monkeypatch):
+    """The commit holds a cross-process lock around an atomic replace; abandoning it mid-write is
+    how a cache becomes a half file every later process has to reject."""
+    data = catalog_data()
+    data["version"] += 1
+    runtime = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(data)))
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_commit = runtime.repository.commit
+
+    def slow_commit(response):
+        entered.set()
+        release.wait(5)
+        try:
+            return real_commit(response)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(runtime.repository, "commit", slow_commit)
+
+    fetch = asyncio.ensure_future(runtime.fetch())
+    await asyncio.to_thread(entered.wait, 5)
+    fetch.cancel()
+    await asyncio.sleep(0.05)
+    assert not finished.is_set()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await fetch
+
+    assert finished.is_set()
+    assert CatalogRepository(str(tmp_path)).cached().version == data["version"]
+
+
+async def test_the_loop_advances_while_the_catalog_response_is_blocked(tmp_path, monkeypatch):
+    runtime = CatalogRuntime(str(tmp_path))
+    data = catalog_data()
+    data["version"] += 1
+    release = asyncio.Event()
+
+    def slow(_request):
+        return httpx2.Response(200, content=catalog_payload(data))
+
+    async def gated(request):
+        await release.wait()
+        return slow(request)
+
+    monkeypatch.setattr(sync_module.httpx2, "AsyncClient", lambda **kwargs: REAL_ASYNC_CLIENT(**kwargs, transport=httpx2.MockTransport(gated)))
+    beats = 0
+
+    async def heartbeat():
+        nonlocal beats
+        while True:
+            beats += 1
+            await asyncio.sleep(0.001)
+
+    pulse = asyncio.ensure_future(heartbeat())
+    fetch = asyncio.ensure_future(runtime.fetch())
+    await asyncio.sleep(0.05)
+    assert beats > 5
+    release.set()
+    assert (await fetch).version == data["version"]
+    pulse.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pulse
 
 
 def test_catalog_lock_keeps_one_inode_across_users(tmp_path):
@@ -304,7 +530,7 @@ async def test_refresh_updates_the_cache_without_activating_it(tmp_path, monkeyp
     data["version"] += 1
     runtime = CatalogRuntime(str(tmp_path))
     active = runtime.snapshot.version
-    monkeypatch.setattr("wizolt.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(data)))
 
     assert runtime.refresh_due() is True
     await runtime.refresh()
@@ -320,10 +546,10 @@ async def test_refresh_records_a_failure_as_status_and_leaves_the_policy_alone(t
     runtime = CatalogRuntime(str(tmp_path))
     policy = runtime.policy
 
-    def unavailable(*_args, **_kwargs):
-        raise URLError("offline")
+    def unavailable(request):
+        raise httpx2.ConnectError("offline", request=request)
 
-    monkeypatch.setattr("wizolt.providers.sync.urlopen", unavailable)
+    mock_catalog_http(monkeypatch, unavailable)
 
     assert runtime.refresh_due() is True
     await runtime.refresh()
@@ -334,19 +560,20 @@ async def test_refresh_records_a_failure_as_status_and_leaves_the_policy_alone(t
 
 
 async def test_cancelling_a_refresh_waits_for_the_critical_section(tmp_path, monkeypatch):
-    """`fetch` holds a cross-process lock across the request and an atomic cache write. Cancelling
-    the awaiter may not return while that section is mid-write, and the 72h gate stays where it
-    was: nothing was checked."""
+    """The commit holds a cross-process lock around an atomic cache write. Cancelling the awaiter
+    may not return while that section is mid-write, and the 72h gate stays where it was: nothing
+    was checked."""
     runtime = CatalogRuntime(str(tmp_path))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(catalog_data())))
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
-    def slow_fetch():
+    def slow_commit(_response):
         entered.set()
         release.wait(5)
         finished.set()
         return runtime.snapshot
 
-    monkeypatch.setattr(runtime.repository, "fetch", slow_fetch)
+    monkeypatch.setattr(runtime.repository, "commit", slow_commit)
     assert runtime.refresh_due() is True
 
     task = asyncio.ensure_future(runtime.refresh())
@@ -367,7 +594,7 @@ async def test_manual_sync_activates_a_newer_catalog_at_the_command_boundary(tmp
     data = catalog_data()
     data["version"] += 1
     runtime = CatalogRuntime(str(tmp_path))
-    monkeypatch.setattr("wizolt.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
+    mock_catalog_http(monkeypatch, serving(catalog_payload(data)))
 
     snapshot = await runtime.sync()
 
@@ -382,7 +609,7 @@ async def test_manual_sync_persists_state_off_the_event_loop(tmp_path, monkeypat
     save_threads = []
     real_save = runtime._save_state
 
-    monkeypatch.setattr(runtime.repository, "fetch", lambda: runtime.snapshot)
+    mock_catalog_http(monkeypatch, serving(catalog_payload(catalog_data())))
     monkeypatch.setattr(runtime, "_save_state", lambda: save_threads.append(threading.get_ident()) or real_save())
 
     await runtime.sync()
