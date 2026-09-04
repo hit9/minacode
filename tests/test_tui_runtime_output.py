@@ -362,8 +362,7 @@ async def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback
     monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
 
     async def answer(_user_input):
-        with command_loop.model_stream_lock:
-            command_loop.model_stream_promoted_text = "Let me look that up."
+        command_loop.model_stream_promoted_text = "Let me look that up."
         command_loop.agent_output("Let me look that up.\n\nThe searched answer.")
         return "Let me look that up.\n\nThe searched answer."
 

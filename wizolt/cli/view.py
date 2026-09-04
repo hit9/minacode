@@ -358,8 +358,7 @@ class View:
         if status in {"working", "retrying", "compacting context"}:
             retry_status = self.loop.status_bar.retry_status()
             attempt_status = self.loop.status_bar.model_attempt_status()
-            with self.loop.model_stream_lock:
-                phase = self.loop.model_stream_kind
+            phase = self.loop.model_stream_kind
             activity = retry_status or (
                 ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or status) + (" · " + attempt_status if attempt_status else "")
             )
@@ -429,9 +428,8 @@ class View:
         return fragments
 
     def model_stream_fragments(self) -> StyleAndTextTuples:
-        with self.loop.model_stream_lock:
-            text = self.loop.model_stream_text
-            kind = self.loop.model_stream_kind
+        text = self.loop.model_stream_text
+        kind = self.loop.model_stream_kind
         if not text:
             return []
         width = max(20, shutil.get_terminal_size((120, 20)).columns)

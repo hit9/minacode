@@ -111,7 +111,6 @@ class _RequestLease:
     flag that a later request would have to clear."""
 
     def __init__(self) -> None:
-        self.lock = threading.Lock()
         self.active = True
 
 
@@ -313,8 +312,7 @@ class ModelClient:
                 raise ModelError(str(error)) from error
         finally:
             _active_lease.reset(token)
-            with lease.lock:
-                lease.active = False
+            lease.active = False
             with contextlib.suppress(Exception):
                 await client.close()
 
@@ -322,8 +320,7 @@ class ModelClient:
         lease = _active_lease.get()
         if lease is None:
             return True
-        with lease.lock:
-            return lease.active
+        return lease.active
 
     def _raise_if_request_inactive(self) -> None:
         if not self._request_active():
@@ -334,9 +331,8 @@ class ModelClient:
         if lease is None:
             callback()
             return
-        with lease.lock:
-            if lease.active:
-                callback()
+        if lease.active:
+            callback()
 
     async def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         if missing := self.session.missing_config():

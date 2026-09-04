@@ -196,7 +196,6 @@ Full documentation: https://wizolt.readthedocs.io
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
-        self.model_stream_lock = threading.Lock()
         self.model_stream_kind = ""
         self.model_stream_text = ""
         self.model_stream_promoted_text = ""
@@ -1057,9 +1056,8 @@ Full documentation: https://wizolt.readthedocs.io
         row would read as a box."""
         # An early promotion is presentation-only: Agent still publishes the same semantic text
         # after ModelClient returns. Consume the one-shot marker instead of printing it twice.
-        with self.model_stream_lock:
-            promoted = self.model_stream_promoted_text
-            self.model_stream_promoted_text = ""
+        promoted = self.model_stream_promoted_text
+        self.model_stream_promoted_text = ""
         if promoted:
             remaining = self.unpromoted_text(text, promoted)
             if not remaining:
@@ -1087,20 +1085,19 @@ Full documentation: https://wizolt.readthedocs.io
             # so promoting here would place the response above the message it answers. Leave the
             # preview standing and let the ordinary post-request output keep the transcript ordered.
             return
-        with self.model_stream_lock:
-            if kind == "output_done":
-                promote = text.strip()
-                self.model_stream_kind = self.model_stream_text = ""
-                if promote and tui is not None:
-                    self.model_stream_promoted_text = promote
-            elif not kind:
-                self.model_stream_kind = self.model_stream_text = ""
-            elif not text:
+        if kind == "output_done":
+            promote = text.strip()
+            self.model_stream_kind = self.model_stream_text = ""
+            if promote and tui is not None:
+                self.model_stream_promoted_text = promote
+        elif not kind:
+            self.model_stream_kind = self.model_stream_text = ""
+        elif not text:
+            self.model_stream_kind, self.model_stream_text = kind, ""
+        elif text:
+            if kind != self.model_stream_kind:
                 self.model_stream_kind, self.model_stream_text = kind, ""
-            elif text:
-                if kind != self.model_stream_kind:
-                    self.model_stream_kind, self.model_stream_text = kind, ""
-                self.model_stream_text = (self.model_stream_text + text)[-8000:]
+            self.model_stream_text = (self.model_stream_text + text)[-8000:]
         if tui is not None:
             tui.invalidate_frame()
             if promote:

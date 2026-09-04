@@ -409,8 +409,7 @@ class TuiRuntime:
         self.loop.model_stream_output("", "")
         # A request can fail after permanent promotion but before Agent re-publishes the text and
         # consumes its marker. Never let that stale marker suppress an identical later response.
-        with self.loop.model_stream_lock:
-            self.loop.model_stream_promoted_text = ""
+        self.loop.model_stream_promoted_text = ""
         self.tui.set_idle()
         self.cancel_pending = False
 
