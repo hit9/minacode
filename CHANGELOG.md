@@ -16,8 +16,8 @@
 
 ### Changed
 
-- Entering wizolt feels immediate instead of blank: while the interpreter loads, the `wizolt`
-  banner is swept in with a small light animation, and the finished line is the banner itself.
+- Entering wizolt feels immediate instead of blank: while the interpreter loads, `wizolt` appears
+  at once with a small one-cell spinner, and the finished line is the banner itself.
   Maintenance exits (`wizolt --version`, `--help`, `--init-config`, `update`) answer before the
   interactive CLI is loaded, and piped or scripted runs skip the animation and print the banner
   as before.

@@ -4,8 +4,8 @@ Invoked through the ``wizolt`` console script or ``python -m wizolt``.
 
 Deliberately imports nothing from the wizolt package at module level: argparse and the early
 maintenance exits (`--version`, `update`) should answer before the interactive CLI — prompt_toolkit,
-the tools, the TUI, the session machinery — is imported, and the startup sweep covers that import
-with an animation instead of a blank terminal. The interactive-CLI names `main` needs are reached
+the tools, the TUI, the session machinery — is imported, and a small startup spinner covers that
+import instead of a blank terminal. The interactive-CLI names `main` needs are reached
 through the lazy `_cli` namespace below: reading `_cli.Session` imports it on first use and caches
 it on this module, so tests can keep substituting fakes here without importing wizolt at module
 load time.
@@ -170,9 +170,8 @@ def main(argv: list[str] | None = None) -> int:
         print(("Created" if created else "Exists") + " config: " + path)
         return 0
 
-    # A session run is certain now: start the sweep so the imports below happen under the
-    # animation. Resolving the lazy names also imports their modules; a failure must take the
-    # swept line back instead of leaving it animating over a traceback.
+    # A session run is certain now: start the spinner while the imports below run. Resolving the
+    # lazy names imports their modules; a failure must erase the unfinished line before a traceback.
     from wizolt import startup
 
     startup.start()
@@ -236,6 +235,9 @@ def main(argv: list[str] | None = None) -> int:
         startup.abort()
         print("Error: " + str(error), file=sys.stderr)
         return 1
+    except BaseException:
+        startup.abort()
+        raise
 
 
 if __name__ == "__main__":

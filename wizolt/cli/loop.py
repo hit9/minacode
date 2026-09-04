@@ -227,7 +227,7 @@ Full documentation: https://wizolt.readthedocs.io
         # scheduling a write are the same race, so one lock decides both.
         self.scrollback: ScrollbackWriter | None = None
         self.interactive_input = input_fn is input and sys.stdin.isatty()
-        # True while the startup sweep has already written the banner line straight to the
+        # True while the startup spinner has already written the banner line straight to the
         # terminal, so `start_session` must not emit a second one above it. Reset when the run ends
         # (a later session handoff in the same process prints its banner through `emit` again).
         self._banner_preprinted = False
@@ -456,10 +456,10 @@ Full documentation: https://wizolt.readthedocs.io
             pass
         else:
             raise RuntimeError("CommandLoop.run() cannot be called from a running event loop; await the frontend coroutine")
-        # `main` started the startup sweep before the heavy imports it is covering. Now that they
-        # are done, fast-forward it to the finished banner -- written straight to the terminal
+        # `main` started the startup spinner before the heavy imports it is covering. Now that they
+        # are done, replace it with the finished banner -- written straight to the terminal
         # before either frontend paints -- and let `start_session` know not to print another. When
-        # no sweep is running (a pipe, an embedding, tests) this is a no-op and start_session
+        # no spinner is running (a pipe, an embedding, tests) this is a no-op and start_session
         # prints the banner as it always has.
         from wizolt import startup
 
@@ -663,7 +663,7 @@ Full documentation: https://wizolt.readthedocs.io
 
     def start_session(self) -> None:
         """Initialize output and background services shared by both command-loop frontends."""
-        # The sweep run may already have written the banner line; a second emit would leave the
+        # The spinner run may already have written the banner line; a second emit would leave the
         # terminal with two. Skip only when it did.
         if not self._banner_preprinted:
             self.emit(f"wizolt {__version__}. /help for commands.")

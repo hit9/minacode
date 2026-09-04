@@ -245,14 +245,15 @@ rejects work once closed and closes the refused coroutine, so nothing can call b
 that is gone. Coalescing state for shared work — the single mention scan — lives here rather than
 on `Session`, because a task is loop-bound and the session outlives loops.
 
-Six explicit thread construction sites remain, each for a reason the loop cannot serve:
+Seven explicit thread construction sites remain, each for a reason the loop cannot serve:
 
-1. `warm_provider_sdks` — pre-runtime import latency, started before any loop exists.
-2. ToolScript's single-worker executor — arbitrary synchronous Python, kept off the loop.
-3. the promoted-Bash drainer — its process and pipes may outlive the launching loop.
-4. the force-exit timer — it has to fire when the loop is the thing that is wedged.
-5. `StatusBar` — the simple colored CLI's status ticker.
-6. `BashLivePreview` — the simple colored CLI's live-output ticker. Their `start`/`stop`
+1. the startup spinner — synchronous imports run before an event loop exists.
+2. `warm_provider_sdks` — pre-runtime import latency, started before any loop exists.
+3. ToolScript's single-worker executor — arbitrary synchronous Python, kept off the loop.
+4. the promoted-Bash drainer — its process and pipes may outlive the launching loop.
+5. the force-exit timer — it has to fire when the loop is the thing that is wedged.
+6. `StatusBar` — the simple colored CLI's status ticker.
+7. `BashLivePreview` — the simple colored CLI's live-output ticker. Their `start`/`stop`
    are called from worker threads (`with_status_paused` inside `to_thread`, tool output callbacks),
    so an asyncio ticker would need a cross-thread blocking bridge on every one of those call sites
    to keep `stop` erasing the region only after the ticker has settled. They own no session state

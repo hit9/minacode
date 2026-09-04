@@ -17,6 +17,7 @@ __version__ = "0.37.1"
 
 _ResourceT = TypeVar("_ResourceT")
 _BlockingT = TypeVar("_BlockingT")
+_get_cwidth: Callable[[str], int] | None = None
 
 
 def _cwidth(text: str) -> int:
@@ -26,9 +27,12 @@ def _cwidth(text: str) -> int:
     and base is imported by every module — including the early-startup splash, whose point is to
     appear before anything heavy loads. The first render that actually measures text pays the
     import once."""
-    from prompt_toolkit.utils import get_cwidth
+    global _get_cwidth
+    if _get_cwidth is None:
+        from prompt_toolkit.utils import get_cwidth
 
-    return get_cwidth(text)
+        _get_cwidth = get_cwidth
+    return _get_cwidth(text)
 
 
 Json = dict[str, Any]

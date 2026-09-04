@@ -1,10 +1,10 @@
-"""The startup sweep and the import chain that guard the blank wait before the first prompt.
+"""The startup spinner and the import chain that guard the blank wait before the first prompt.
 
 The perceived startup cost is imports running on the main thread before any loop exists. Two
 regression guards keep it bounded:
 
-- on a terminal the `wizolt` banner is swept in while those imports run, and the finished line
-  *is* the banner — these tests pin the sweep (tty only, one clean finished line, no stray frames
+- on a terminal `wizolt` and a one-cell spinner appear while those imports run, and the finished
+  line *is* the banner — these tests pin the spinner (tty only, one clean finished line, no frames
   after it) and the `start_session` seam that must not print a second banner;
 - a fresh interpreter reaching the entry point must not pull in the heavy modules
   (prompt_toolkit, the provider SDKs, the code-symbol index), or the wait silently creeps back.
@@ -18,12 +18,10 @@ from wizolt import startup
 
 
 def _sweep(monkeypatch) -> tuple[object, object]:
-    """A freshly reloaded startup module writing to a fake terminal, with a tick short enough that
-    finishing immediately after starting cannot stall on the sweep thread."""
-    startup.abort()  # a sweep left running by a failed earlier test must not outlive the reload
+    """A freshly reloaded startup module writing to a fake terminal with a short tick."""
+    startup.abort()  # a spinner left running by a failed earlier test must not outlive the reload
     module = importlib.reload(startup)
     monkeypatch.setattr(module, "TICK", 0.001)
-    monkeypatch.setattr(module, "HOLD_FRAMES", 0)
     fake = _FakeTty()
     monkeypatch.setattr(module.sys, "stdout", fake)
     return module, fake
@@ -76,10 +74,11 @@ def test_sweep_finishes_as_one_clean_banner_line(monkeypatch):
     module, fake = _sweep(monkeypatch)
     try:
         assert module.start() is True
+        assert "\x1b[1mwizolt\x1b[0m |" in fake.written
         assert module.finish_banner(" 0.37.1. /help for commands.") is True
         # The finished line is the banner, written once, with nothing (no further sweep frame, no
         # second banner) after it: only the finish write ends in a newline.
-        assert fake.written.endswith("\x1b[1mwizolt\x1b[0m 0.37.1. /help for commands.\n")
+        assert fake.written.endswith("\r\x1b[2K\x1b[1mwizolt\x1b[0m 0.37.1. /help for commands.\n")
         assert fake.written.count("\n") == 1
         assert module.preprinted() is True
     finally:
@@ -87,13 +86,12 @@ def test_sweep_finishes_as_one_clean_banner_line(monkeypatch):
 
 
 def test_sweep_fast_forwards_no_matter_how_few_frames_ran(monkeypatch):
-    """finish is called as soon as the imports are done; the line must be clean even when the
-    animation had not shown the whole word yet."""
+    """Finishing immediately still replaces the spinner with one clean banner."""
     module, fake = _sweep(monkeypatch)
     try:
         module.start()
         module.finish_banner(" tail")
-        assert fake.written.endswith("\x1b[1mwizolt\x1b[0m tail\n")
+        assert fake.written.endswith("\r\x1b[2K\x1b[1mwizolt\x1b[0m tail\n")
     finally:
         _settle(module)
 
@@ -105,10 +103,22 @@ def test_abort_takes_the_line_back_without_a_banner(monkeypatch):
         module.abort()
         assert module.preprinted() is False
         assert module.finish_banner("tail") is False
-        assert fake.written.endswith("\r")  # the erase; no banner line was completed
+        assert fake.written.endswith("\r\x1b[2K")  # the erase; no banner line was completed
         assert "\n" not in fake.written
     finally:
         _settle(module)
+
+
+def test_abort_does_not_erase_a_completed_banner(monkeypatch):
+    module, fake = _sweep(monkeypatch)
+    module.start()
+    module.finish_banner(" tail")
+    written = fake.written
+
+    module.abort()
+
+    assert fake.written == written
+    assert module.preprinted() is True
 
 
 def test_fresh_interpreter_import_chain_stays_light():
