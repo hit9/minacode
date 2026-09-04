@@ -34,6 +34,8 @@
   queue, so a promoted response can no longer land under the batch it introduced.
 - `/model` and `/worker model` now discover remote models through the async provider client, so a
   slow model-list endpoint no longer freezes input or redraws.
+- `Search` now runs ripgrep as an asyncio subprocess and kills and reaps it directly on
+  cancellation. Its Python filesystem fallback remains off-loop and is awaited to quiescence.
 - Exiting closes what the session opened, in order, before the process ends: the active turn is
   cancelled and awaited, background work is drained, and the model client and MCP are closed. A
   Ctrl-D during a model request or during MCP discovery now exits cleanly instead of leaving

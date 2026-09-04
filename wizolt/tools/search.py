@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import fnmatch
 import json
 import os
 import re
 import shutil
-import subprocess
 import threading
 from typing import ClassVar
 
@@ -42,7 +42,7 @@ class SearchTool(Tool):
         # A batched search over a large tree spends its time inside ripgrep, so the turn's
         # cancellation has to reach that process rather than wait out shell_timeout.
         self._process_lock = threading.Lock()
-        self._process: subprocess.Popen[str] | None = None
+        self._process: asyncio.subprocess.Process | None = None
         self._stopped = False
 
     def request_stop(self) -> None:
@@ -50,11 +50,11 @@ class SearchTool(Tool):
         with self._process_lock:
             self._stopped = True
             proc = self._process
-        if proc is not None and proc.poll() is None:
+        if proc is not None and proc.returncode is None:
             with contextlib.suppress(OSError):
                 proc.kill()
 
-    def _run_rg(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
+    async def _run_rg(self, cmd: list[str]) -> tuple[int, str, str] | None:
         """Run one ripgrep invocation, tracked so request_stop can kill it. None once stopped.
 
         `subprocess.run` would give the same output but no handle to kill, so the process is owned
@@ -63,21 +63,34 @@ class SearchTool(Tool):
         with self._process_lock:
             if self._stopped:
                 return None
-            proc = subprocess.Popen(
-                cmd, cwd=self.session.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )  # argv built here, never a shell string
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=self.session.cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        with self._process_lock:
+            if self._stopped:
+                proc.kill()
             self._process = proc
         try:
-            stdout, stderr = proc.communicate(timeout=self.session.settings.shell_timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), self.session.settings.shell_timeout)
+            except TimeoutError:
+                proc.kill()
+                stdout, stderr = await proc.communicate()
+                raise
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.communicate()
             raise
         finally:
             with self._process_lock:
                 if self._process is proc:
                     self._process = None
-        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        assert proc.returncode is not None
+        return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -103,7 +116,7 @@ class SearchTool(Tool):
     def needs_confirmation(self) -> bool:
         return any(not (self.session.in_cwd(request["path"]) or self.session.owns_asset(request["path"])) for request in self.requests())
 
-    def call(self) -> ToolOutput:
+    async def call(self) -> ToolOutput:
         """Run every query, then hydrate each candidate file once and render source views.
 
         Ripgrep (or the Python fallback) only discovers candidate paths and lines; the visible
@@ -115,7 +128,7 @@ class SearchTool(Tool):
         requests = self.requests()
         candidates: dict[str, set[int]] = {}  # path -> query indices that matched it
         for index, request in enumerate(requests):
-            for path, _ in self.find_candidates(request):
+            for path, _ in await self.find_candidates(request):
                 candidates.setdefault(path, set()).add(index)
         counts = [0] * len(requests)
         blocks: dict[str, SourceBlock] = {}
@@ -225,7 +238,7 @@ class SearchTool(Tool):
         hidden = rel not in {"", "."} and any(part.startswith(".") for part in rel.split("/") if part and part != ".")
         return hidden or self.ignored(path, patterns)
 
-    def find_candidates(self, request: Json) -> list[tuple[str, int]]:
+    async def find_candidates(self, request: Json) -> list[tuple[str, int]]:
         """Discover (path, 0-based match line) pairs for one request.
 
         Prefers ripgrep; falls back to a Python scan. Both backends are candidate finders only:
@@ -235,12 +248,33 @@ class SearchTool(Tool):
         if self.default_ignored(str(request["path"]), patterns):
             return []
         if "\n" not in str(request["pattern"]):
-            rows = self.rg_candidates(request)
+            rows = await self.rg_candidates(request)
             if rows is not None:
                 return rows
-        return self.python_candidates(request)
+        return await self._python_candidates(request)
 
-    def rg_candidates(self, request: Json) -> list[tuple[str, int]] | None:
+    async def _python_candidates(self, request: Json) -> list[tuple[str, int]]:
+        """Run the filesystem fallback off-loop and do not abandon it on cancellation."""
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, self.python_candidates, request)
+        cancelled: asyncio.CancelledError | None = None
+        while not future.done():
+            try:
+                await asyncio.wait({future})
+            except asyncio.CancelledError as error:
+                cancelled = cancelled or error
+                self.request_stop()
+        try:
+            result = future.result()
+        except BaseException:
+            if cancelled is None:
+                raise
+            raise cancelled from None
+        if cancelled is not None:
+            raise cancelled
+        return result
+
+    async def rg_candidates(self, request: Json) -> list[tuple[str, int]] | None:
         rg = shutil.which("rg")
         if not rg:
             return None
@@ -248,13 +282,13 @@ class SearchTool(Tool):
         if request["glob"]:
             cmd.extend(["--glob", str(request["glob"])])
         cmd.extend([str(request["pattern"]), str(request["path"])])
-        proc = self._run_rg(cmd)
-        if proc is not None and proc.returncode == 2:
-            proc = self._run_rg([*cmd[:1], "--pcre2", *cmd[1:]])
-        if proc is None or proc.returncode not in (0, 1):
+        proc = await self._run_rg(cmd)
+        if proc is not None and proc[0] == 2:
+            proc = await self._run_rg([*cmd[:1], "--pcre2", *cmd[1:]])
+        if proc is None or proc[0] not in (0, 1):
             return None
         rows: list[tuple[str, int]] = []
-        for line in proc.stdout.splitlines():
+        for line in proc[1].splitlines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
@@ -278,12 +312,16 @@ class SearchTool(Tool):
             return [root]
         found = []
         for dirpath, dirnames, filenames in os.walk(root):
+            if self._stopped:
+                break
             dirnames[:] = [
                 name
                 for name in dirnames
                 if name not in self.SKIP_DIRS and not name.startswith(".") and not self.ignored(os.path.join(dirpath, name), gitignore)
             ]
             for filename in filenames:
+                if self._stopped:
+                    break
                 if filename.startswith("."):
                     continue
                 path = os.path.join(dirpath, filename)
@@ -299,6 +337,8 @@ class SearchTool(Tool):
         regex = self.compile_regex(str(request["pattern"]), multiline=True)
         rows: list[tuple[str, int]] = []
         for path in self.files(str(request["path"]), str(request["glob"])):
+            if self._stopped:
+                break
             lines = self.read_current(path)
             if lines is None:
                 continue

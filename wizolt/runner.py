@@ -43,6 +43,7 @@ from wizolt.tools import (
     JobTool,
     MCPTool,
     NextHintsTool,
+    SearchTool,
     Tool,
     ToolScript,
     ViewImageTool,
@@ -396,6 +397,9 @@ class ToolRunner:
             # Native: the manager's operations are coroutines on this loop, so a cancelled turn
             # reaches the FastMCP client itself and its teardown is awaited before this returns.
             return await tool.call()
+        if isinstance(tool, SearchTool):
+            # ripgrep is an asyncio subprocess, so cancellation kills and reaps it directly.
+            return await tool.call()
         if tool.MUTATES or tool.PRODUCES_MODEL_OBSERVATION or isinstance(tool, NextHintsTool):
             # Short local mutation stays on the loop: single-writer, and an Edit or a Note can
             # never outlive the turn that ordered it. Cancellation is observed on both sides.
@@ -661,9 +665,9 @@ class ToolRunner:
             display = tooloutput.short_call(self.session, call, tool.short_args())
             if call.error:
                 raise ToolError(call.error)
-            # MCP's work is a coroutine on this loop, so a read-only MCP call in a parallel batch is
-            # cancelled at the client itself; every other read-only tool is bounded blocking work.
-            output = await (tool.call() if isinstance(tool, MCPTool) else self._run_in_executor(tool.call))
+            # Native async calls are cancelled at their resource; other read-only tools remain
+            # bounded blocking work whose executor future is awaited through cancellation.
+            output = await (tool.call() if isinstance(tool, (MCPTool, SearchTool)) else self._run_in_executor(tool.call))
         except ToolError as error:
             return "reject", f"ToolError: {error}", display, time.monotonic() - started, error.recovery
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.

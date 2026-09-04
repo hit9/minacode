@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import shutil
@@ -230,7 +231,7 @@ def test_code_index_failure_helpers_keep_session_state_consistent(tmp_path, monk
     assert s.state.code_index_status == "synced"
 
 
-def test_read_and_search_success_paths(tmp_path):
+async def test_read_and_search_success_paths(tmp_path):
     (tmp_path / "sample.py").write_text("alpha\nNeedle\nomega\n", encoding="utf-8")
     (tmp_path / "blob.bin").write_bytes(b"a\0b")
     s = session(tmp_path)
@@ -247,17 +248,17 @@ def test_read_and_search_success_paths(tmp_path):
     assert "3 | omega" in full_default.retained_text
     assert "total_lines=3" in full_default.retained_text  # Read reports the line count
 
-    found = SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
+    found = await SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
     assert '<Search pattern="needle" matches=1>' in found.retained_text
     assert '<file path="sample.py"' in found.retained_text
     assert "2 | Needle" in found.retained_text
 
-    multiline = SearchTool(s, [{"pattern": "alpha\\nNeedle", "path": "sample.py"}]).call()
+    multiline = await SearchTool(s, [{"pattern": "alpha\\nNeedle", "path": "sample.py"}]).call()
     assert '<file path="sample.py"' in multiline.retained_text
     assert "1 | alpha" in multiline.retained_text
 
 
-def test_read_search_and_edit_report_one_based_line_numbers(tmp_path):
+async def test_read_search_and_edit_report_one_based_line_numbers(tmp_path):
     """Read, Search, and Edit must number lines the way `grep -n`, tracebacks, and diffs do, so
     a line number seen in one place can be used in another without adjustment."""
     s = session(tmp_path)
@@ -272,9 +273,9 @@ def test_read_search_and_edit_report_one_based_line_numbers(tmp_path):
     assert "alpha" not in read.retained_text and "omega" not in read.retained_text
 
     # Search agrees with Read on the same line, through both the ripgrep and the Python backend.
-    found = SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
+    found = await SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
     assert "3 | Needle" in found.retained_text
-    multiline = SearchTool(s, [{"pattern": "beta\\nNeedle", "path": "sample.py"}]).call()
+    multiline = await SearchTool(s, [{"pattern": "beta\\nNeedle", "path": "sample.py"}]).call()
     assert "2 | beta" in multiline.retained_text
 
     # A view taken from that output edits the line it names, and nothing shifts by one.
@@ -461,7 +462,7 @@ def test_reject_collapses_display(tmp_path):
     assert "Read requires non-empty ranges" in msg
 
 
-def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
+async def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     (tmp_path / ".gitignore").write_text("ignored.txt\nignored_dir/\n", encoding="utf-8")
     (tmp_path / "visible.txt").write_text("needle\n", encoding="utf-8")
@@ -473,9 +474,9 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     (tmp_path / "ignored_dir" / "inside.txt").write_text("needle\n", encoding="utf-8")
     s = session(tmp_path)
 
-    found = SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
-    direct_hidden = SearchTool(s, [{"pattern": "needle", "path": ".hidden.txt"}]).call()
-    direct_ignored = SearchTool(s, [{"pattern": "needle", "path": "ignored_dir/inside.txt"}]).call()
+    found = await SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
+    direct_hidden = await SearchTool(s, [{"pattern": "needle", "path": ".hidden.txt"}]).call()
+    direct_ignored = await SearchTool(s, [{"pattern": "needle", "path": "ignored_dir/inside.txt"}]).call()
 
     assert "visible.txt" in found.retained_text
     assert ".hidden" not in found.retained_text
@@ -636,7 +637,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
         walk(tool.schema())
 
 
-def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
+async def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     s = session(tmp_path)
     (tmp_path / "sample.py").write_text("alpha\n", encoding="utf-8")
 
@@ -647,7 +648,7 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     with pytest.raises(ToolError):
         BashTool(s, []).call()
     with pytest.raises(ToolError):
-        SearchTool(s, [{"pattern": "["}]).call()
+        await SearchTool(s, [{"pattern": "["}]).call()
     with pytest.raises(ToolError):
         InspectCodeTool(s, ["inspect", "two words"]).call()
 
@@ -728,7 +729,7 @@ def test_mixed_batch_whitelisted_tool_runs_and_excluded_rejected(tmp_path):
     assert "Search is not available in this session" in contents["s2"]
 
 
-def test_search_shares_one_view_per_file_across_queries(tmp_path, monkeypatch):
+async def test_search_shares_one_view_per_file_across_queries(tmp_path, monkeypatch):
     """A batched Search unions every query's visible rows for one path into one view, so two
     queries hitting the same file cannot hand the model two ids for the same snapshot -- or two
     renderings of it that disagree. The Python backend and ripgrep must agree on that shape."""
@@ -739,7 +740,7 @@ def test_search_shares_one_view_per_file_across_queries(tmp_path, monkeypatch):
         s = session(tmp_path)
         if not rg_available:
             monkeypatch.setattr(shutil, "which", lambda name: None)
-        out = SearchTool(s, [{"pattern": "alpha", "path": "."}, {"pattern": "gamma", "path": "."}]).call()
+        out = await SearchTool(s, [{"pattern": "alpha", "path": "."}, {"pattern": "gamma", "path": "."}]).call()
         keys = s.register_source_drafts(list(out.drafts))
         text = out.render(keys)
 
@@ -753,7 +754,7 @@ def test_search_shares_one_view_per_file_across_queries(tmp_path, monkeypatch):
         monkeypatch.undo()
 
 
-def test_search_rows_come_from_the_file_not_the_candidate_finder(tmp_path, monkeypatch):
+async def test_search_rows_come_from_the_file_not_the_candidate_finder(tmp_path, monkeypatch):
     """ripgrep only nominates (path, line) candidates. If the file changes before the rows are
     captured, the view must show the file as it is now -- pairing a view id with the text rg
     printed earlier would let an Edit validate against content that no longer exists."""
@@ -763,13 +764,13 @@ def test_search_rows_come_from_the_file_not_the_candidate_finder(tmp_path, monke
     tool = SearchTool(s, [{"pattern": "needle", "path": "."}])
     original = SearchTool.find_candidates
 
-    def stale(self, request):
-        rows = original(self, request)
+    async def stale(self, request):
+        rows = await original(self, request)
         path.write_text("header\nneedle\nsecond\n", encoding="utf-8")  # shifts every candidate line
         return rows
 
     monkeypatch.setattr(SearchTool, "find_candidates", stale)
-    out = tool.call()
+    out = await tool.call()
     key = s.register_source_drafts(list(out.drafts))[0]
     view_obj = s.get_source_view(key)
 
@@ -808,7 +809,7 @@ def test_read_merges_one_view_per_path_across_request_items(tmp_path):
         a_view.range_lines(6, 9)
 
 
-def test_search_skips_a_candidate_it_cannot_hydrate(tmp_path):
+async def test_search_skips_a_candidate_it_cannot_hydrate(tmp_path):
     """ripgrep nominates a path; the view has to come from reading that path now. When the read
     fails -- the file was removed, or grew past the size limit, between discovery and capture --
     the path is dropped from the result rather than reported with text nothing can vouch for."""
@@ -818,14 +819,14 @@ def test_search_skips_a_candidate_it_cannot_hydrate(tmp_path):
     tool = SearchTool(s, [{"pattern": "needle", "path": "."}])
     original = SearchTool.find_candidates
 
-    def then_remove(self, request):
-        rows = original(self, request)
+    async def then_remove(self, request):
+        rows = await original(self, request)
         os.unlink(tmp_path / "vanishes.py")
         return rows
 
     SearchTool.find_candidates = then_remove
     try:
-        out = tool.call()
+        out = await tool.call()
     finally:
         SearchTool.find_candidates = original
 
@@ -835,32 +836,52 @@ def test_search_skips_a_candidate_it_cannot_hydrate(tmp_path):
     assert '<Search pattern="needle" matches=1>' in out.retained_text
 
 
-def test_search_stop_hook_kills_and_reaps_its_child(tmp_path):
+async def test_search_stop_hook_kills_and_reaps_its_child(tmp_path):
     """Search spends its time inside ripgrep, so cancelling the turn has to reach that process.
 
     The child is owned rather than run through `subprocess.run`, which gives no handle to kill:
     a stop kills it, `_run_rg` still reaps it before returning, and no further child is started."""
-    import threading
-    import time
-
     from wizolt.tools import SearchTool
 
     s = session(tmp_path)
     tool = SearchTool(s, [{"pattern": "x"}])
-    result: list[object] = []
-    thread = threading.Thread(target=lambda: result.append(tool._run_rg(["sleep", "30"])))
-    thread.start()
-    deadline = time.monotonic() + 2
-    while tool._process is None and time.monotonic() < deadline:
-        time.sleep(0.01)
+    task = asyncio.create_task(tool._run_rg(["sleep", "30"]))
+    async with asyncio.timeout(2):
+        while tool._process is None:
+            await asyncio.sleep(0.01)
     assert tool._process is not None, "the child never started"
     child = tool._process
 
     tool.request_stop()
-    thread.join(timeout=5)
+    result = await asyncio.wait_for(task, 5)
 
-    assert not thread.is_alive(), "the killed child was never reaped"
-    assert child.poll() is not None  # reaped, not left as a zombie
-    assert result and result[0].returncode != 0
+    assert child.returncode is not None  # reaped, not left as a zombie
+    assert result is not None and result[0] != 0
     # Once stopped, no further ripgrep invocation is started at all.
-    assert tool._run_rg(["sleep", "30"]) is None
+    assert await tool._run_rg(["sleep", "30"]) is None
+
+
+async def test_search_python_fallback_quiesces_before_cancellation_returns(tmp_path, monkeypatch):
+    import threading
+
+    tool = SearchTool(session(tmp_path), [{"pattern": "x"}])
+    started = threading.Event()
+    ended = threading.Event()
+
+    def scan(_request):
+        started.set()
+        while not tool._stopped:
+            ended.wait(0.01)
+        ended.set()
+        return []
+
+    monkeypatch.setattr(tool, "python_candidates", scan)
+    task = asyncio.create_task(tool._python_candidates({}))
+    async with asyncio.timeout(2):
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ended.is_set()
