@@ -205,12 +205,12 @@ class MCPManager:
         with self._discovery((name,)):
             await self._discover_one(config)
 
-    def disconnect_server(self, name: str) -> str:
+    async def disconnect_server(self, name: str) -> str:
         config = self.find_config(name)
         if config is None:
             return "MCP server not found: " + name
         if config.auth == "oauth" and config.url:
-            self._oauth_token_store.clear_server(config.url)
+            await self._oauth_token_store.clear_server(config.url)
         self._forget(name)
         return "MCP server disconnected: " + name
 
@@ -229,7 +229,7 @@ class MCPManager:
         if config is None:
             return self._compact_line("error", name, "server not found") if _compact else "MCP server not found: " + name
         if not config.error and config.auth == "oauth":
-            has_tokens = self._oauth_token_store.has_server_tokens(config.url)
+            has_tokens = await self._oauth_token_store.has_server_tokens(config.url)
             if not interactive and not has_tokens:
                 message = f"authentication required; run `/mcp connect {name}` interactively"
                 if _compact:
@@ -244,7 +244,7 @@ class MCPManager:
                     # The token and registered OAuth client form one credential set. If
                     # either is rejected, discard both so the new random callback port is
                     # registered together with the replacement token.
-                    self._oauth_token_store.clear_server(config.url)
+                    await self._oauth_token_store.clear_server(config.url)
                     if error := await self._authenticate_oauth(config, notify=notify):
                         if _compact:
                             prefix = f"MCP OAuth authentication failed for {name}: "
@@ -309,7 +309,7 @@ class MCPManager:
                 self.set_server_error(config.name, headers)
             return
 
-        if config.auth == "oauth" and not self._oauth_token_store.has_server_tokens(config.url):
+        if config.auth == "oauth" and not await self._oauth_token_store.has_server_tokens(config.url):
             self.set_server_error(config.name, "authentication required; run /mcp connect " + config.name)
             return
         try:
@@ -589,7 +589,7 @@ class MCPManager:
                 headers[header_name] = value
         return headers
 
-    def _resolve_server(self, server: str) -> tuple[MCPServerConfig, dict[str, str]]:
+    async def _resolve_server(self, server: str) -> tuple[MCPServerConfig, dict[str, str]]:
         """Look up a configured server and build its request headers, raising ToolError with a
         user-facing message on a missing, errored, or unauthenticated server. Shared by tool and
         resource calls."""
@@ -601,7 +601,7 @@ class MCPManager:
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
             raise ToolError(headers)
-        if config.auth == "oauth" and not self._oauth_token_store.has_server_tokens(config.url):
+        if config.auth == "oauth" and not await self._oauth_token_store.has_server_tokens(config.url):
             raise ToolError(f"MCP server '{server}' requires authentication; run /mcp connect {server}")
         self._require_available(server)
         return config, headers
@@ -621,7 +621,7 @@ class MCPManager:
 
     async def _call_result(self, server: str, tool_name: str, arguments: Json) -> Any:
         """Shared transport path for call_tool and call_tool_structured: resolve, run, normalize errors."""
-        config, headers = self._resolve_server(server)
+        config, headers = await self._resolve_server(server)
         try:
             return await self._bounded(self._call_tool(config, headers, tool_name, arguments))
         except Exception as e:
@@ -665,8 +665,8 @@ class MCPManager:
         except (json.JSONDecodeError, ValueError):
             raise ToolError(f'MCP returned text that is not JSON for tool "{tool_name}"')
 
-    def list_resources(self, server: str) -> str:
-        self._resolve_server(server)
+    async def list_resources(self, server: str) -> str:
+        await self._resolve_server(server)
         resources = self.resources.get(server, [])
         lines = [f"<MCPResources server={json.dumps(server)}>"]
         if resources:
@@ -679,7 +679,7 @@ class MCPManager:
     async def read_resource(self, server: str, uri: str) -> str:
         if not uri:
             raise ToolError("MCP read_resource requires a uri")
-        config, headers = self._resolve_server(server)
+        config, headers = await self._resolve_server(server)
         try:
             result = await self._bounded(self._read_resource(config, headers, uri))
         except Exception as e:  # noqa: BLE001 - normalize arbitrary MCP transport errors as ToolError.

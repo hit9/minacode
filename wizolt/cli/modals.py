@@ -169,7 +169,7 @@ async def mcp_manager(loop: CommandLoop) -> None:
             if connect:
                 result = await mcp.connect_server(name, interactive=True, notify=loop.emit)
             else:
-                result = mcp.disconnect_server(name)
+                result = await mcp.disconnect_server(name)
         except Exception as error:  # noqa: BLE001 - keep background MCP failures visible in the selector.
             result = f"MCP server error: {name}: {error}"
 

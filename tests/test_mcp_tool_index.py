@@ -220,13 +220,13 @@ class TestToolIndexBudget:
         assert "[test]" in s.mcp.render_tools_index()
         assert "MCP" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
 
-    def test_disconnect_removes_server_from_model_context(self):
+    async def test_disconnect_removes_server_from_model_context(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         s.mcp.resources["test"] = []
 
-        result = s.mcp.disconnect_server("test")
+        result = await s.mcp.disconnect_server("test")
 
         assert result == "MCP server disconnected: test"
         assert s.mcp.render_tools_index() == ""

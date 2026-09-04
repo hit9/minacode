@@ -94,7 +94,7 @@ class MCPTool(Tool):
                 raise ToolError(f"{error}\n\n{prefix}" if prefix else str(error)) from error
             return prefix + output if prefix else output
         if action == "list_resources":
-            return mcp.list_resources(server)
+            return await mcp.list_resources(server)
         if action == "read_resource":
             return await mcp.read_resource(server, str(payload.get("uri") or ""))
         raise ToolError(

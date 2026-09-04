@@ -9,7 +9,7 @@ import threading
 import time
 from typing import ClassVar
 
-from wizolt.base import Json
+from wizolt.base import Json, run_blocking
 
 
 class MCPFileTokenStore:
@@ -25,14 +25,20 @@ class MCPFileTokenStore:
     def token_key(self, server_url: str, suffix: str) -> str:
         return server_url.rstrip("/") + suffix
 
-    def has_server_tokens(self, server_url: str) -> bool:
+    async def has_server_tokens(self, server_url: str) -> bool:
+        return await run_blocking(lambda: self._has_server_tokens_sync(server_url))
+
+    async def clear_server(self, server_url: str) -> None:
+        await run_blocking(lambda: self._clear_server_sync(server_url))
+
+    def _has_server_tokens_sync(self, server_url: str) -> bool:
         key = self.token_key(server_url, "/tokens")
         collection = "mcp-oauth-token"
         with self.lock:
             entry = self.load().get(collection, {}).get(key)
             return bool(entry and not self.expired(entry))
 
-    def clear_server(self, server_url: str) -> None:
+    def _clear_server_sync(self, server_url: str) -> None:
         with self.lock:
             data = self.load()
             for collection, key in (
@@ -44,7 +50,9 @@ class MCPFileTokenStore:
             self.save(data)
 
     async def get(self, key: str, *, collection: str | None = None) -> Json | None:
-        collection = collection or self.DEFAULT_COLLECTION
+        return await run_blocking(lambda: self._get_sync(key, collection=collection or self.DEFAULT_COLLECTION))
+
+    def _get_sync(self, key: str, *, collection: str) -> Json | None:
         with self.lock:
             data = self.load()
             entry = data.get(collection, {}).get(key)
@@ -59,7 +67,9 @@ class MCPFileTokenStore:
 
     # Called dynamically through the MCP OAuth token-storage protocol; static call graphs will not see it.
     async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | None = None) -> None:
-        collection = collection or self.DEFAULT_COLLECTION
+        await run_blocking(lambda: self._put_sync(key, value, collection=collection or self.DEFAULT_COLLECTION, ttl=ttl))
+
+    def _put_sync(self, key: str, value: Json, *, collection: str, ttl: float | None) -> None:
         expires_at = time.time() + float(ttl) if ttl is not None else None
         with self.lock:
             data = self.load()
@@ -67,7 +77,9 @@ class MCPFileTokenStore:
             self.save(data)
 
     async def delete(self, key: str, *, collection: str | None = None) -> bool:
-        collection = collection or self.DEFAULT_COLLECTION
+        return await run_blocking(lambda: self._delete_sync(key, collection=collection or self.DEFAULT_COLLECTION))
+
+    def _delete_sync(self, key: str, *, collection: str) -> bool:
         with self.lock:
             data = self.load()
             removed = data.get(collection, {}).pop(key, None) is not None

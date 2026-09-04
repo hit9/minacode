@@ -119,8 +119,8 @@ class TestMCPCommands:
         calls = []
         cleared = []
 
-        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: authenticated)
-        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", cleared.append)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", as_async(lambda _url: authenticated))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", as_async(cleared.append))
 
         async def fake_auth(config, notify=None):
             nonlocal authenticated
@@ -149,8 +149,8 @@ class TestMCPCommands:
         authorized = False
         attempts = []
         cleared = []
-        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
-        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", cleared.append)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", as_async(lambda _url: True))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", as_async(cleared.append))
 
         async def request(_config, _headers, _operation, *, long_timeout=False, interactive=False, notify=None):
             nonlocal authorized
@@ -177,8 +177,8 @@ class TestMCPCommands:
     async def test_mcp_connect_keeps_valid_cached_oauth_session(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
-        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
-        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: pytest.fail("valid credentials were cleared"))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", as_async(lambda _url: True))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", as_async(lambda _url: pytest.fail("valid credentials were cleared")))
         monkeypatch.setattr(s.mcp, "_authenticate_oauth", as_async(lambda *_args, **_kwargs: pytest.fail("valid credentials triggered login")))
 
         async def tools(_config, _headers):
@@ -197,8 +197,8 @@ class TestMCPCommands:
     async def test_mcp_connect_does_not_reauthorize_on_non_auth_failure(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
-        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
-        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: pytest.fail("credentials were cleared"))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", as_async(lambda _url: True))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", as_async(lambda _url: pytest.fail("credentials were cleared")))
         monkeypatch.setattr(s.mcp, "_authenticate_oauth", as_async(lambda *_args, **_kwargs: pytest.fail("connection error triggered login")))
 
         async def offline(_config, _headers):
@@ -217,8 +217,8 @@ class TestMCPCommands:
         bootstrap_features(s)
         authorized = False
         logins = []
-        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
-        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: None)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", as_async(lambda _url: True))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", as_async(lambda _url: None))
 
         async def tools(_config, _headers):
             if not authorized:
@@ -306,7 +306,7 @@ class TestMCPCommands:
         authenticated: set[str] = set()
         active = 0
         maximum = 0
-        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda url: url in authenticated)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", as_async(lambda url: url in authenticated))
 
         async def authenticate(config, notify=None):
             nonlocal active, maximum
@@ -336,7 +336,7 @@ class TestMCPCommands:
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
-        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: None)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", as_async(lambda _url: None))
         monkeypatch.setattr(
             s.mcp,
             "_authenticate_oauth",
@@ -441,15 +441,15 @@ class TestMCPCommands:
         assert await mcp_command(loop, "disconnect test") == "MCP server disconnected: test"
         assert not s.mcp.connected("test")
 
-    def test_mcp_disconnect_oauth_also_clears_authentication(self, monkeypatch):
+    async def test_mcp_disconnect_oauth_also_clears_authentication(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         s.mcp.resources["test"] = []
         cleared = []
-        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", cleared.append)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", as_async(cleared.append))
 
-        result = s.mcp.disconnect_server("test")
+        result = await s.mcp.disconnect_server("test")
 
         assert result == "MCP server disconnected: test"
         assert cleared == ["http://localhost:9999/mcp"]

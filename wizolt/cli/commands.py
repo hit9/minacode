@@ -157,7 +157,7 @@ async def mcp_command(loop: CommandLoop, args: str) -> str | None:
     if sub == "connect":
         return await mcp.connect_servers(rest, interactive=loop.interactive_input, notify=loop.emit)
     if sub == "disconnect":
-        return mcp.disconnect_server(rest[0])
+        return await mcp.disconnect_server(rest[0])
     if sub == "tools":
         return mcp.render_tool_listing(rest[0] if rest else None)
     raise AssertionError("unreachable MCP subcommand")

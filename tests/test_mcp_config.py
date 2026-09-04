@@ -311,7 +311,7 @@ class TestMCPManagerDiscovery:
             await adapter.set_client_info(OAuthClientInformationFull(client_id="old-client", redirect_uris=["http://localhost:12345/callback"]))
             assert await adapter.get_tokens() is not None
             assert await adapter.get_client_info() is not None
-            s.mcp._oauth_token_store.clear_server(url)
+            await s.mcp._oauth_token_store.clear_server(url)
             return await adapter.get_tokens(), await adapter.get_client_info(), await adapter.get_token_expiry()
 
         assert await roundtrip() == (None, None, None)

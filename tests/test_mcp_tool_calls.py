@@ -351,4 +351,4 @@ class TestCallTool:
         with pytest.raises(ToolError, match="requires authentication"):
             await s.mcp.call_tool("test", "echo", {})
         with pytest.raises(ToolError, match="requires authentication"):
-            s.mcp.list_resources("test")
+            await s.mcp.list_resources("test")
