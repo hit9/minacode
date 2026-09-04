@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import contextlib
 import os
@@ -469,20 +470,24 @@ class JobTool(Tool):
         payload = args[0] if len(args) == 1 and isinstance(args[0], dict) else {}
         return "bash" if payload.get("action") == "start" else cls.LOG_LEXER
 
-    def call(self) -> str:
+    async def call(self) -> str:
         payload = self.payload()
         action = self.resolved_action(payload)
         if action == "start":
             return self._start(payload)
         if action == "status":
-            return self._status(payload)
+            return await self._status(payload)
         if action == "wait":
-            return self._wait(payload)
+            return await self._wait(payload)
         if action == "list":
             return self._list()
         if action == "kill":
-            return self._kill(payload)
+            return await self._kill(payload)
         raise ToolError(f"unhandled action: {action!r}")
+
+    def call_sync(self) -> str:
+        """Synchronous facade for callers that do not already own an event loop."""
+        return asyncio.run(self.call())
 
     def _start(self, payload: Json) -> str:
         command = str(payload.get("command") or "").strip()
@@ -528,7 +533,7 @@ class JobTool(Tool):
         timeout = self.requested_timeout(payload)
         return self.DEFAULT_WAIT if timeout <= 0 else min(timeout, self.MAX_WAIT)
 
-    def _await_process(self, job: BackgroundJob, payload: Json) -> bool:
+    async def _await_process(self, job: BackgroundJob, payload: Json) -> bool:
         """Wait for the job, in slices, so Ctrl-C lands within POLL_INTERVAL instead of after the
         whole budget. Returns whether the wait was interrupted. A single blocking process.wait()
         would be simpler but unreachable from the cancelling thread. While polling, the job's log
@@ -538,8 +543,9 @@ class JobTool(Tool):
         baseline = ""
         last_stream = 0.0
         while job.process.poll() is None and time.monotonic() < deadline:
-            if self._interrupted.wait(self.POLL_INTERVAL):
+            if self._interrupted.is_set():
                 break
+            await asyncio.sleep(self.POLL_INTERVAL)
             if self.live_output is None or time.monotonic() - last_stream < self.LIVE_INTERVAL:
                 continue
             last_stream = time.monotonic()
@@ -559,10 +565,10 @@ class JobTool(Tool):
         job.update_status()
         return self._interrupted.is_set()
 
-    def _status(self, payload: Json) -> str:
+    async def _status(self, payload: Json) -> str:
         try:
             job = self._resolve_job(payload)
-            interrupted = self._await_process(job, payload) if self.requested_timeout(payload) else False
+            interrupted = await self._await_process(job, payload) if self.requested_timeout(payload) else False
             return self._format(job, payload, interrupted=interrupted)
         finally:
             # Close the live region on every exit path (done, budget exhausted, Ctrl-C, a ToolError
@@ -571,10 +577,10 @@ class JobTool(Tool):
             if self.live_output is not None:
                 self.live_output("", "")
 
-    def _wait(self, payload: Json) -> str:
+    async def _wait(self, payload: Json) -> str:
         try:
             job = self._resolve_job(payload)
-            interrupted = self._await_process(job, payload)
+            interrupted = await self._await_process(job, payload)
             return self._format(job, payload, interrupted=interrupted)
         finally:
             if self.live_output is not None:
@@ -590,9 +596,12 @@ class JobTool(Tool):
             rows.append(f"| {job.id} | {job.status} | {exit_code} | {job.command[:60]} |")
         return "Jobs:\n| id | status | exit | command |\n|---|---|---|---|\n" + "\n".join(rows)
 
-    def _kill(self, payload: Json) -> str:
+    async def _kill(self, payload: Json) -> str:
         job = self._resolve_job(payload)
-        job.kill()
+        # BackgroundJob intentionally owns a Popen handle that can outlive this event loop. Its
+        # bounded TERM/wait/KILL sequence therefore uses the process API's synchronous wait on a
+        # worker, while ordinary status/wait operations remain native coroutines.
+        await asyncio.to_thread(job.kill)
         return f"Killed {job.id} (status={job.status}, exit_code={job.exit_code})"
 
     def _resolve_job(self, payload: Json) -> BackgroundJob:

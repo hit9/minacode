@@ -388,7 +388,9 @@ class ToolRunner:
                 return await self._run_in_executor(tool.call, tool)
         if isinstance(tool, JobTool):
             with self._active_job.track(tool):
-                return await self._run_in_executor(tool.call, tool)
+                # Waiting is native asyncio. The process handle itself remains Popen-backed so a
+                # background job can outlive the turn and the loop that started it.
+                return await tool.call()
         if isinstance(tool, AskTool):
             # The user is asked on the loop and may take as long as they like; the prompt stays
             # live and cancellable rather than parking a worker on them.

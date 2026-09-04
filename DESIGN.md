@@ -219,9 +219,10 @@ while a request is in flight and lets one cancellation reach all of it.
 - Loop-bound primitives (queues, locks, events, futures) belong to one invocation or to the runtime.
   A long-lived object must not hold one across separate synchronous entry points: the lock created
   on a loop that has closed is not a lock.
-- Threads remain for genuinely blocking work — a `Bash` process, a file read, ripgrep, a ToolScript
-  body — reached through the managed executor. A thread never gets an exception injected into it and
-  never owns an async client.
+- Threads remain only at genuinely synchronous boundaries — local file reads, a ToolScript body,
+  and the bounded termination of a persistent background `Popen` handle — reached through the
+  managed executor or `asyncio.to_thread`. Search subprocesses and `Job` waits are native async
+  operations. A thread never gets an exception injected into it and never owns an async client.
 
 **Cancellation is a request, and quiescence is the answer.** The turn is one task; `Agent.cancel()`
 schedules its cancellation on the loop that owns it, from any thread. Cancelling the task that

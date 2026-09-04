@@ -36,16 +36,16 @@ def session(tmp_path):
 )
 def test_job_validation_errors_are_actionable(tmp_path, payload, message):
     with pytest.raises(ToolError, match=message):
-        JobTool(session(tmp_path), [payload]).call()
+        JobTool(session(tmp_path), [payload]).call_sync()
 
 
 def test_job_wait_and_list_report_completed_output(tmp_path):
     s = session(tmp_path)
-    assert JobTool(s, [{"action": "list"}]).call() == "No jobs."
-    JobTool(s, [{"action": "start", "command": "printf completed"}]).call()
+    assert JobTool(s, [{"action": "list"}]).call_sync() == "No jobs."
+    JobTool(s, [{"action": "start", "command": "printf completed"}]).call_sync()
 
-    waited = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}]).call()
-    listed = JobTool(s, [{"action": "list"}]).call()
+    waited = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}]).call_sync()
+    listed = JobTool(s, [{"action": "list"}]).call_sync()
 
     assert "Status: done" in waited
     assert "Exit code: 0" in waited
@@ -62,11 +62,11 @@ def test_job_wait_is_bounded_and_says_the_job_is_still_running(tmp_path, monkeyp
     # interval is 0.1s), and the ceiling clamps even an absurd requested timeout.
     monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 0.2)
     monkeypatch.setattr(JobTool, "MAX_WAIT", 0.2)
-    JobTool(s, [{"action": "start", "command": "sleep 30"}]).call()
+    JobTool(s, [{"action": "start", "command": "sleep 30"}]).call_sync()
 
     for payload in ({}, {"timeout": 0}, {"timeout": 3600}):
         started = time.monotonic()
-        waited = JobTool(s, [{"action": "wait", "job": "job.1", **payload}]).call()
+        waited = JobTool(s, [{"action": "wait", "job": "job.1", **payload}]).call_sync()
         elapsed = time.monotonic() - started
 
         assert elapsed < 2, f"wait with {payload} blocked for {elapsed:.1f}s"
@@ -77,10 +77,10 @@ def test_job_wait_is_bounded_and_says_the_job_is_still_running(tmp_path, monkeyp
 
     # status with a timeout goes through the same budget.
     started = time.monotonic()
-    assert "Still running" in JobTool(s, [{"action": "status", "job": "job.1", "timeout": 3600}]).call()
+    assert "Still running" in JobTool(s, [{"action": "status", "job": "job.1", "timeout": 3600}]).call_sync()
     assert time.monotonic() - started < 2
 
-    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call_sync()
 
 
 def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, monkeypatch):
@@ -89,11 +89,11 @@ def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, mon
     # through; the elapsed-time range pins that the wait really parked.
     monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 0.1)
     monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
-    JobTool(s, [{"action": "start", "command": "sleep 0.5; printf slow-done"}]).call()
+    JobTool(s, [{"action": "start", "command": "sleep 0.5; printf slow-done"}]).call_sync()
 
     # The default would have given up at 0.1s; asking for 30 sees the job through to the end.
     started = time.monotonic()
-    waited = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 30}]).call()
+    waited = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 30}]).call_sync()
 
     assert 0.3 < time.monotonic() - started < 5
     assert "Status: done" in waited
@@ -102,7 +102,7 @@ def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, mon
     assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget({"timeout": 3600}) == 900  # MAX_WAIT
     # A non-numeric timeout is named in the error rather than surfacing as a bare int() ValueError.
     with pytest.raises(ToolError, match="whole number of seconds"):
-        JobTool(s, [{"action": "wait", "job": "job.1", "timeout": "1m"}]).call()
+        JobTool(s, [{"action": "wait", "job": "job.1", "timeout": "1m"}]).call_sync()
     # The same call reports itself as non-blocking, so the runner's pre-block never raises on it.
     assert JobTool(s, [{"action": "wait", "job": "job.1", "timeout": "1m"}]).blocks_agent() is False
 
@@ -128,7 +128,7 @@ async def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, mo
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-    JobTool(s, [{"action": "start", "command": "sleep 60"}]).call()
+    await JobTool(s, [{"action": "start", "command": "sleep 60"}]).call()
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 900}])
 
     call = asyncio.ensure_future(runner.call_tool(tool))
@@ -142,7 +142,7 @@ async def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, mo
 
     assert time.monotonic() - started < 3
     assert s.jobs["job.1"].process.poll() is None  # the job itself survives the interrupt
-    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    await JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
 
 
 def test_job_wait_streams_log_tail_to_live_output(tmp_path, monkeypatch):
@@ -150,18 +150,18 @@ def test_job_wait_streams_log_tail_to_live_output(tmp_path, monkeypatch):
     region when the wait ends."""
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
-    JobTool(s, [{"action": "start", "command": "printf 'line one\\nline two\\n'; sleep 0.1"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf 'line one\\nline two\\n'; sleep 0.1"}]).call_sync()
     events = []
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 1}])
     tool.live_output = lambda stream, text: events.append((stream, text))
 
-    tool.call()
+    tool.call_sync()
 
     assert events[-1] == ("", "")
     deltas = [text for stream, text in events if stream == "output"]
     assert deltas, "no output was streamed into the live preview"
     assert "".join(deltas) == "line one\nline two\n"  # 增量拼接后恰好是全部输出
-    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call_sync()
 
 
 def test_job_wait_streams_short_log_incrementally_without_duplicates(tmp_path, monkeypatch):
@@ -171,16 +171,16 @@ def test_job_wait_streams_short_log_incrementally_without_duplicates(tmp_path, m
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
     monkeypatch.setattr(JobTool, "LIVE_INTERVAL", 0.01)
-    JobTool(s, [{"action": "start", "command": "printf 'one\\n'; sleep 0.1; printf 'two\\n'; sleep 0.1"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf 'one\\n'; sleep 0.1; printf 'two\\n'; sleep 0.1"}]).call_sync()
     events = []
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 1}])
     tool.live_output = lambda stream, text: events.append((stream, text))
 
-    tool.call()
+    tool.call_sync()
 
     deltas = [text for stream, text in events if stream == "output"]
     assert "".join(deltas) == "one\ntwo\n"
-    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call_sync()
 
 
 def test_job_wait_keeps_streaming_after_log_outgrows_tail_window(tmp_path, monkeypatch):
@@ -190,12 +190,12 @@ def test_job_wait_keeps_streaming_after_log_outgrows_tail_window(tmp_path, monke
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
     monkeypatch.setattr(JobTool, "LIVE_INTERVAL", 0.01)
     command = "printf 'a%.0s' {1..6000}; sleep 0.2; printf 'b%.0s' {1..4000}; sleep 0.1"
-    JobTool(s, [{"action": "start", "command": command}]).call()
+    JobTool(s, [{"action": "start", "command": command}]).call_sync()
     events = []
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 1}])
     tool.live_output = lambda stream, text: events.append((stream, text))
 
-    tool.call()
+    tool.call_sync()
 
     deltas = [text for stream, text in events if stream == "output"]
     assert events[-1] == ("", "")
@@ -203,7 +203,7 @@ def test_job_wait_keeps_streaming_after_log_outgrows_tail_window(tmp_path, monke
     # 日志超过窗口后，推送的是完整的可见尾部：带 `...` 前缀且以最新输出结尾
     assert deltas[-1].startswith("...") and deltas[-1].endswith("b" * 100)
     assert len(deltas[-1]) == 8000
-    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call_sync()
 
 
 def test_job_wait_stream_clears_when_budget_is_exhausted(tmp_path, monkeypatch):
@@ -212,16 +212,16 @@ def test_job_wait_stream_clears_when_budget_is_exhausted(tmp_path, monkeypatch):
     monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 0.2)
     monkeypatch.setattr(JobTool, "MAX_WAIT", 0.2)
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
-    JobTool(s, [{"action": "start", "command": "sleep 30"}]).call()
+    JobTool(s, [{"action": "start", "command": "sleep 30"}]).call_sync()
     events = []
     tool = JobTool(s, [{"action": "wait", "job": "job.1"}])
     tool.live_output = lambda stream, text: events.append((stream, text))
 
-    tool.call()
+    tool.call_sync()
 
     assert "Still running" in tool._format(s.jobs["job.1"], {"action": "wait", "job": "job.1"})
     assert events[-1] == ("", "")
-    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call_sync()
 
 
 def test_job_wait_stream_clears_on_cancel(tmp_path, monkeypatch):
@@ -231,12 +231,12 @@ def test_job_wait_stream_clears_on_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
     # One line of output so the first poll pushes an event and the cancel fires right away,
     # instead of the loop below waiting out its whole deadline on a silent job.
-    JobTool(s, [{"action": "start", "command": "printf 'x\\n'; sleep 30"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf 'x\\n'; sleep 30"}]).call_sync()
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 900}])
     events = []
     tool.live_output = lambda stream, text: events.append((stream, text))
     result = []
-    thread = threading.Thread(target=lambda: result.append(tool.call()))
+    thread = threading.Thread(target=lambda: result.append(tool.call_sync()))
     thread.start()
     deadline = time.monotonic() + 2
     while not events and time.monotonic() < deadline:
@@ -248,7 +248,7 @@ def test_job_wait_stream_clears_on_cancel(tmp_path, monkeypatch):
     assert ("output", "x\n") in events  # 流式输出在 cancel 前已到达
     assert s.jobs["job.1"].process.poll() is None  # 中断只放弃 wait,不杀 job
     assert events[-1] == ("", "")
-    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call_sync()
 
 
 def test_job_wait_stream_clears_when_job_resolution_fails(tmp_path):
@@ -260,7 +260,7 @@ def test_job_wait_stream_clears_when_job_resolution_fails(tmp_path):
     tool.live_output = lambda stream, text: events.append((stream, text))
 
     with pytest.raises(ToolError, match="unknown job"):
-        tool.call()
+        tool.call_sync()
 
     assert events == [("", "")]
 
@@ -280,7 +280,7 @@ def test_job_wait_prints_call_line_before_blocking(tmp_path, monkeypatch):
     s.settings.yolo = True  # no approval block, so the pre-block is the only thing drawing the root
     blocks: list[LogBlock | str] = []
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "y", output_fn=blocks.append)
-    JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call()
+    JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call_sync()
 
     runner.run_sync([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 30}])])
 
@@ -313,7 +313,7 @@ def test_job_wait_call_line_is_not_repeated_after_an_approval(tmp_path, monkeypa
     assert s.settings.yolo is False  # the approval path is the default one
     blocks: list[LogBlock | str] = []
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "y", output_fn=blocks.append)
-    JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call()
+    JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call_sync()
 
     runner.run_sync([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 30}])])
 
@@ -558,7 +558,7 @@ def test_job_captures_large_output_via_log_file(tmp_path):
     s = session(tmp_path)
     code = 'import sys; sys.stdout.write("x" * 1000000)'
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
-    JobTool(s, [{"action": "start", "command": command}]).call()
+    JobTool(s, [{"action": "start", "command": command}]).call_sync()
     job = s.jobs["job.1"]
 
     try:
@@ -577,7 +577,7 @@ def test_job_start_captures_every_stage_of_a_compound_command(tmp_path):
     """The whole command is grouped before redirection, so output from early stages (not just the
     last) lands in the job log instead of leaking to the inherited stdout."""
     s = session(tmp_path)
-    JobTool(s, [{"action": "start", "command": "printf first; printf second && printf third"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf first; printf second && printf third"}]).call_sync()
     job = s.jobs["job.1"]
 
     try:
@@ -595,10 +595,10 @@ def test_job_start_captures_every_stage_of_a_compound_command(tmp_path):
 def test_job_start_reclaims_finished_capacity(tmp_path, monkeypatch):
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "MAX_JOBS", 1)
-    JobTool(s, [{"action": "start", "command": "true"}]).call()
+    JobTool(s, [{"action": "start", "command": "true"}]).call_sync()
     s.jobs["job.1"].process.wait(timeout=2)
 
-    result = JobTool(s, [{"action": "start", "command": "true"}]).call()
+    result = JobTool(s, [{"action": "start", "command": "true"}]).call_sync()
 
     assert result.startswith("Started job.2")
     s.jobs["job.2"].process.wait(timeout=2)
@@ -610,7 +610,7 @@ def test_job_start_runs_shell_builtins_and_compound_commands(tmp_path):
     s = session(tmp_path)
     sub = tmp_path / "sub"
     sub.mkdir()
-    JobTool(s, [{"action": "start", "command": f"cd {shlex.quote(str(sub))} && printf marker"}]).call()
+    JobTool(s, [{"action": "start", "command": f"cd {shlex.quote(str(sub))} && printf marker"}]).call_sync()
     job = s.jobs["job.1"]
 
     try:
@@ -641,10 +641,10 @@ def test_job_start_uses_bash_highlighting(tmp_path):
 
 def test_job_status_accepts_bare_numeric_id(tmp_path):
     s = session(tmp_path)
-    JobTool(s, [{"action": "start", "command": "true"}]).call()
+    JobTool(s, [{"action": "start", "command": "true"}]).call_sync()
     s.jobs["job.1"].process.wait(timeout=2)
 
-    result = JobTool(s, [{"action": "status", "job": "1"}]).call()
+    result = JobTool(s, [{"action": "status", "job": "1"}]).call_sync()
 
     assert "Status: done" in result
     assert "Exit code: 0" in result
@@ -652,7 +652,7 @@ def test_job_status_accepts_bare_numeric_id(tmp_path):
 
 def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
     s = session(tmp_path)
-    JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call_sync()
     job = s.jobs["job.1"]
     job.process.wait(timeout=2)
 
@@ -663,10 +663,10 @@ def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
 
 def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
     s = session(tmp_path)
-    JobTool(s, [{"action": "start", "command": "true"}]).call()
+    JobTool(s, [{"action": "start", "command": "true"}]).call_sync()
     s.jobs["job.1"].process.wait(timeout=2)
 
-    result = JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    result = JobTool(s, [{"action": "kill", "job": "job.1"}]).call_sync()
 
     assert "status=done" in result
     assert "exit_code=0" in result
@@ -674,7 +674,7 @@ def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
 
 def test_ps_hides_jobs_that_finished_without_polling(tmp_path):
     s = session(tmp_path)
-    JobTool(s, [{"action": "start", "command": "true"}]).call()
+    JobTool(s, [{"action": "start", "command": "true"}]).call_sync()
     s.jobs["job.1"].process.wait(timeout=2)
     command_loop = CommandLoop(Agent(s), input_fn=lambda prompt="": "", output_fn=lambda text: None)
 
@@ -841,7 +841,7 @@ def test_tool_runner_job_wait_starts_live_preview_with_budget(tmp_path, monkeypa
     )
     runner.live_start = lambda budget=None: events.append(("start", budget))
     runner.live_output = lambda stream, text: events.append((stream, text))
-    JobTool(s, [{"action": "start", "command": "sleep 0.2; printf done"}]).call()
+    JobTool(s, [{"action": "start", "command": "sleep 0.2; printf done"}]).call_sync()
 
     runner.run_sync([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 5}])])
 
