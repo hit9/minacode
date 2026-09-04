@@ -4,8 +4,7 @@ Invoked through the ``wizolt`` console script or ``python -m wizolt``.
 
 Deliberately imports nothing from the wizolt package at module level: argparse, help, version, and
 config initialization should answer before the interactive CLI — prompt_toolkit, the tools, the
-TUI, the session machinery — is imported, and a small startup spinner covers that import instead
-of a blank terminal. The interactive-CLI names `main` needs are reached
+TUI, the session machinery — is imported. The interactive-CLI names `main` needs are reached
 through the lazy `_cli` namespace below: reading `_cli.Session` imports it on first use and caches
 it on this module, so tests can keep substituting fakes here without importing wizolt at module
 load time.
@@ -159,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     if sys.platform == "win32":
         print("Error: wizolt does not support native Windows; use WSL instead.", file=sys.stderr)
         return 1
-    # Cheap exits answer before the interactive CLI and spinner are loaded. The explicit update
+    # Cheap exits answer before the interactive CLI is loaded. The explicit update
     # command loads its HTTP/update implementation here, but still never starts a session.
     if args.version:
         print(_cli.__version__)
@@ -171,32 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         print(("Created" if created else "Exists") + " config: " + path)
         return 0
 
-    # A session run is certain now: start the spinner while the imports below run. Resolving the
-    # lazy names imports their modules; a failure must erase the unfinished line before a traceback.
-    from wizolt import startup
-
-    startup.start()
-    try:
-        _cli.configure_logging()
-        # Resolve every lazy name once: the imports happen under the sweep, and a failure takes
-        # the swept line back instead of leaving it animating over a traceback.
-        for _name in (
-            "Agent",
-            "CatalogError",
-            "CatalogRuntime",
-            "CommandLoop",
-            "Config",
-            "ConfigError",
-            "ConfigFile",
-            "RuntimeSettings",
-            "Session",
-            "Theme",
-            "WizoltError",
-        ):
-            getattr(_cli, _name)
-    except Exception:
-        startup.abort()
-        raise
+    _cli.configure_logging()
     try:
         # Switching sessions ends one run and starts the next rather than re-pointing a live
         # object graph at another Session: everything below is built around one, and this is the
@@ -229,16 +203,11 @@ def main(argv: list[str] | None = None) -> int:
             if not resume:
                 return code
     except _cli.ConfigError as error:
-        startup.abort()
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2
     except (_cli.WizoltError, _cli.CatalogError) as error:
-        startup.abort()
         print("Error: " + str(error), file=sys.stderr)
         return 1
-    except BaseException:
-        startup.abort()
-        raise
 
 
 if __name__ == "__main__":

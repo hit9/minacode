@@ -227,10 +227,6 @@ Full documentation: https://wizolt.readthedocs.io
         # scheduling a write are the same race, so one lock decides both.
         self.scrollback: ScrollbackWriter | None = None
         self.interactive_input = input_fn is input and sys.stdin.isatty()
-        # True while the startup spinner has already written the banner line straight to the
-        # terminal, so `start_session` must not emit a second one above it. Reset when the run ends
-        # (a later session handoff in the same process prints its banner through `emit` again).
-        self._banner_preprinted = False
         # Bytes already read from the default non-TTY stdin after the first newline. Keeping the
         # remainder here lets the loop use non-blocking os.read() without losing a following line.
         self._stdin_buffer = bytearray()
@@ -456,18 +452,7 @@ Full documentation: https://wizolt.readthedocs.io
             pass
         else:
             raise RuntimeError("CommandLoop.run() cannot be called from a running event loop; await the frontend coroutine")
-        # `main` started the startup spinner before the heavy imports it is covering. Now that they
-        # are done, replace it with the finished banner -- written straight to the terminal
-        # before either frontend paints -- and let `start_session` know not to print another. When
-        # no spinner is running (a pipe, an embedding, tests) this is a no-op and start_session
-        # prints the banner as it always has.
-        from wizolt import startup
-
-        self._banner_preprinted = startup.finish_banner(f" {__version__}. /help for commands.")
-        try:
-            return asyncio.run(self._run_frontend())
-        finally:
-            self._banner_preprinted = False
+        return asyncio.run(self._run_frontend())
 
     async def _run_frontend(self) -> int:
         """Select the frontend inside the CLI's single event-loop entry."""
@@ -663,10 +648,7 @@ Full documentation: https://wizolt.readthedocs.io
 
     def start_session(self) -> None:
         """Initialize output and background services shared by both command-loop frontends."""
-        # The spinner run may already have written the banner line; a second emit would leave the
-        # terminal with two. Skip only when it did.
-        if not self._banner_preprinted:
-            self.emit(f"wizolt {__version__}. /help for commands.")
+        self.emit(f"wizolt {__version__}. /help for commands.")
         # Cached state is read synchronously -- it is small, local, and the first status display
         # needs it -- and only the remote half is scheduled. Nothing here may hold the prompt: a
         # slow index, a slow filesystem, or an unreachable PyPI is not a reason to wait to type.

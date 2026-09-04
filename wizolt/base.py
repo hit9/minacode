@@ -24,8 +24,7 @@ def _cwidth(text: str) -> int:
     """Display width of `text` in terminal cells.
 
     Imported lazily: `prompt_toolkit.utils` drags in the whole prompt_toolkit package (~70ms),
-    and base is imported by every module — including the early-startup splash, whose point is to
-    appear before anything heavy loads. The first render that actually measures text pays the
+    and base is imported by every module. The first render that actually measures text pays the
     import once."""
     global _get_cwidth
     if _get_cwidth is None:
