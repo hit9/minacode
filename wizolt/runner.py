@@ -486,7 +486,7 @@ class ToolRunner:
             if len(segment) > 1:
                 raw = await self._execute_readonly_segment(segment)
                 for call, outcome in zip(segment, raw):
-                    outcomes.append(("ok" if outcome[0] == "ok" else "failed", self.finalize_outcome(call, outcome)))
+                    outcomes.append(("ok" if outcome[0] == "ok" else "failed", await self.finalize_outcome(call, outcome)))
                 index = end
                 continue
             # A lone parallel-safe call has nothing to overlap with, and anything else must run on
@@ -599,7 +599,7 @@ class ToolRunner:
         for call, outcome in zip(segment, outcomes):
             suffix = batch_suffix if state["first"] else ""
             state["first"] = False
-            content = self.finalize_outcome(call, outcome, batch_suffix=suffix)
+            content = await self.finalize_outcome(call, outcome, batch_suffix=suffix)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
         return messages
 
@@ -676,16 +676,16 @@ class ToolRunner:
             return "error", f"ToolError: {error}", display, time.monotonic() - started, None
         return "ok", output, display, time.monotonic() - started, None
 
-    def finalize_outcome(self, call: ToolCall, outcome: tuple[str, str | ToolOutput, str | None, float, object | None], batch_suffix: str = "") -> str:
+    async def finalize_outcome(self, call: ToolCall, outcome: tuple[str, str | ToolOutput, str | None, float, object | None], batch_suffix: str = "") -> str:
         kind, output, display, elapsed, recovery = outcome
         d = ToolDisplay(batch_suffix=batch_suffix, display=display)
         if kind == "ok":
-            return self.finish(call, output, elapsed=elapsed, d=d)
+            return await self.finish(call, output, elapsed=elapsed, d=d)
         if kind == "reject":
             return self.reject(call, str(output), d=d, recovery=recovery)
         # An unexpected exception carries no structured recovery; only ToolError does, and that is
         # the "reject" branch above.
-        return self.finish(call, output, failed=True, elapsed=elapsed, d=d)
+        return await self.finish(call, output, failed=True, elapsed=elapsed, d=d)
 
     def edit_segment_end(self, calls: list[ToolCall], start: int) -> int:
         end = start
@@ -755,7 +755,7 @@ class ToolRunner:
                 confirmed, reason = await self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
-                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, d=d), None
+                    return "refused", await self.finish(call, output, failed=True, elapsed=time.monotonic() - started, d=d), None
                 d.approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 if not d.nested_display:
@@ -796,8 +796,8 @@ class ToolRunner:
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", d=d, recovery=error.recovery), None
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
-            return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d), None
-        message = self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d)
+            return "failed", await self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d), None
+        message = await self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d)
         await self.update_code_index(call, message)
         return "ok", message, observation
 
@@ -823,7 +823,7 @@ class ToolRunner:
         )
         return self.tool_message(call, "", text, failed=True, display=d.display, bound=not recovery_output)
 
-    def finish(
+    async def finish(
         self,
         call: ToolCall,
         output: str | ToolOutput,
@@ -840,14 +840,20 @@ class ToolRunner:
         retain = not failed and store and (tool_class is None or tool_class.STORES_RESULT)
         key = ""
         bound = True
+        artifact_path = ""
         if tool_output.has_source:
             # Source-bearing output is projected, keyed, and rendered here on the main thread:
             # view ids follow model call order, and the retained plain text is stored under tr.N.
-            model_text, key = self._source_output(call, tool_output, retain=retain)
+            # Its artifact write is awaited inside `_source_output` before the marker is rendered.
+            model_text, key = await self._source_output(call, tool_output, retain=retain)
             bound = False
         else:
             model_text = tool_output.retained_text
             key = self.session.store_tool_result(call.name, call.args, model_text) if retain else ""
+            if key and self.context.requires_artifact(model_text):
+                # The bounded marker may name a file, so the write must finish before the marker
+                # is rendered; the worker write lands first, empty on failure (Recall hint below).
+                artifact_path = await self.context.materialize_output(key, model_text)
         if failed:
             self.session.record_tool_error(key or "-", call.name, call.args, model_text)
         elif key and turn_diff and turn_diff.path and turn_diff.diff:
@@ -862,14 +868,15 @@ class ToolRunner:
             )
         if not (tool_class is not None and tool_class.SILENT) or failed:
             self.emit(toolblocks.finish_display(self.session, call, key, model_text, failed=failed, elapsed=elapsed, d=d, worker_rule=self.worker_rule))
-        return self.tool_message(call, key, model_text, failed=failed, display=d.display, bound=bound)
+        return self.tool_message(call, key, model_text, failed=failed, display=d.display, bound=bound, artifact_path=artifact_path)
 
-    def _source_output(self, call: ToolCall, tool_output: ToolOutput, *, retain: bool) -> tuple[str, str]:
+    async def _source_output(self, call: ToolCall, tool_output: ToolOutput, *, retain: bool) -> tuple[str, str]:
         """Project source blocks, store the retained plain text, register views, and render.
 
         Returns (model_text, tr.N key or ""). The note inside a bounded block names the
         retained key and its materialized file, so the model can Read the omitted middle back
-        into a fresh view; without a retained copy to point at there is nothing to name.
+        into a fresh view; without a retained copy to point at there is nothing to name. The
+        artifact write is awaited here, before the marker naming its path is rendered.
         """
         projected = tool_output.project(max_tokens=MAX_TOOL_OUTPUT_TOKENS, estimate=self.context.estimated_text_tokens)
         retained = tool_output.retained_text
@@ -878,7 +885,7 @@ class ToolRunner:
             key = self.session.store_tool_result(call.name, call.args, retained)
             bounded = [index for index, part in enumerate(projected.parts) if isinstance(part, TextBlock) or (isinstance(part, SourceBlock) and part.bounded)]
             if bounded:
-                path = self.context.materialize_output(key, retained)
+                path = await self.context.materialize_output(key, retained)
                 hint = self.context.OMITTED_OUTPUT_HINT if path else self.context.OMITTED_OUTPUT_RECALL_HINT
                 parts = list(projected.parts)
                 for index in bounded:
@@ -902,12 +909,22 @@ class ToolRunner:
         keys = self.session.register_source_drafts(list(projected.drafts))
         return projected.render(keys)
 
-    def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None, bound: bool = True) -> str:
+    def tool_message(
+        self,
+        call: ToolCall,
+        key: str,
+        output: str,
+        *,
+        failed: bool = False,
+        display: str | None = None,
+        bound: bool = True,
+        artifact_path: str = "",
+    ) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or tooloutput.short_call(self.session, call))
         rows = [head]
         if failed:
             rows.append("status: failed")
-        body = self.context.bound_output(output, key).rstrip() if bound else output.rstrip()
+        body = self.context.bound_output(output, key, path=artifact_path).rstrip() if bound else output.rstrip()
         rows.extend(["output:", body])
         return "\n".join(rows).strip()
 

@@ -76,7 +76,7 @@ async def test_materialized_tool_output_survives_the_asset_collector(tmp_path):
     s = session_with_data_dir(tmp_path)
     large = "\n".join(f"line {index}" for index in range(20000))
     key = s.store_tool_result("Bash", ["big"], large)
-    marker = ContextManager(s).bound_output(large, key)
+    marker = ContextManager(s).bound_output(large, key, path=await ContextManager(s).materialize_output(key, large))
     path = os.path.join(s.images.assets_dir(), key + ".txt")
     assert f'file="{path}"' in marker
 
@@ -110,7 +110,7 @@ async def test_materialized_tool_output_expires_with_its_tool_result(tmp_path):
     s = session_with_data_dir(tmp_path)
     large = "\n".join(f"line {index}" for index in range(20000))
     key = s.store_tool_result("Bash", ["big"], large)
-    ContextManager(s).bound_output(large, key)
+    await ContextManager(s).materialize_output(key, large)
     path = os.path.join(s.images.assets_dir(), key + ".txt")
     assert os.path.exists(path)
 

@@ -178,7 +178,7 @@ def test_note_validation_errors_are_actionable(tmp_path, payload, message):
         NoteTool(session(tmp_path), [payload]).call()
 
 
-def test_reading_a_materialized_tool_output_needs_no_confirmation(tmp_path):
+async def test_reading_a_materialized_tool_output_needs_no_confirmation(tmp_path):
     """The marker of a truncated result hands the model an absolute path outside the workspace, so
     the out-of-workspace prompt would stop the model from reading a file wizolt itself wrote and
     told it to read. Assets are exempt; anything else outside the workspace still asks."""
@@ -187,7 +187,7 @@ def test_reading_a_materialized_tool_output_needs_no_confirmation(tmp_path):
     s = Session(cwd=str(workspace), config=Config(data_dir=str(tmp_path / "data")))
     large = "\n".join(f"line {index}" for index in range(20000))
     key = s.store_tool_result("Bash", ["big"], large)
-    ContextManager(s).bound_output(large, key)
+    ContextManager(s).bound_output(large, key, path=await ContextManager(s).materialize_output(key, large))
     asset = os.path.join(s.images.assets_dir(), key + ".txt")
     outside = tmp_path / "elsewhere.txt"
     outside.write_text("private\n", encoding="utf-8")

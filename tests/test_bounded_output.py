@@ -78,32 +78,34 @@ def test_bounded_output_still_snaps_excerpts_to_line_boundaries(tmp_path):
     assert all(line in large.split("\n") for line in head.strip().split("\n"))
     assert all(line in large.split("\n") for line in tail.strip().split("\n"))
 
-def test_bounded_output_materializes_full_output_to_asset_file(tmp_path):
+async def test_bounded_output_materializes_full_output_to_asset_file(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
     large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
-    bounded = context.bound_output(large, "tr.1")
+    path = await context.materialize_output("tr.1", large)
+    bounded = context.bound_output(large, "tr.1", path=path)
 
-    path = os.path.join(s.images.assets_dir(), "tr.1.txt")
+    assert path == os.path.join(s.images.assets_dir(), "tr.1.txt")
     assert 'recall="tr.1"' in bounded
     assert f'file="{path}"' in bounded
     with open(path, encoding="utf-8") as file:
         assert file.read() == large
 
-def test_bounded_output_marker_names_the_cheaper_way_to_read_the_rest(tmp_path):
+async def test_bounded_output_marker_names_the_cheaper_way_to_read_the_rest(tmp_path):
     """`recall` and `file` say where the omitted middle went, not what to do about it, and the cheap
     move is the non-obvious one. The marker points at whichever one the result actually has."""
     s = session(tmp_path)
     context = ContextManager(s)
     large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
 
-    bounded = context.bound_output(large, "tr.1")
+    path = await context.materialize_output("tr.1", large)
+    bounded = context.bound_output(large, "tr.1", path=path)
     assert f'hint="{ContextManager.OMITTED_OUTPUT_HINT}"' in bounded
 
-    # No file to point at: the marker falls back to naming the Recall form that pages.
+    # No file to point at: the write failed, and the marker falls back to the Recall form.
     (tmp_path / "blocked.txt").write_text("x", encoding="utf-8")
     s.images.assets_dir = lambda: str(tmp_path / "blocked.txt" / "sub")
-    fileless = context.bound_output(large, "tr.2")
+    fileless = context.bound_output(large, "tr.2", path=await context.materialize_output("tr.2", large))
     assert 'file="' not in fileless
     assert f'hint="{ContextManager.OMITTED_OUTPUT_RECALL_HINT}"' in fileless
 
@@ -122,19 +124,20 @@ def test_bounded_output_small_or_keyless_never_writes_asset_file(tmp_path):
     assert 'recall="' not in keyless
     assert 'file="' not in keyless
 
-def test_bounded_output_survives_asset_write_failure(tmp_path, monkeypatch):
+async def test_bounded_output_survives_asset_write_failure(tmp_path, monkeypatch):
     s = session(tmp_path)
     context = ContextManager(s)
     large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
-    # A regular file where the assets dir would go: makedirs raises OSError.
+    # A regular file where the assets dir would go: makedirs raises OSError, and the artifact
+    # write reports its failure as an empty path.
     (tmp_path / "blocked.txt").write_text("x", encoding="utf-8")
     monkeypatch.setattr(s.images, "assets_dir", lambda: str(tmp_path / "blocked.txt" / "sub"))
 
-    bounded = context.bound_output(large, "tr.1")
+    bounded = context.bound_output(large, "tr.1", path=await context.materialize_output("tr.1", large))
     assert 'recall="tr.1"' in bounded
     assert 'file="' not in bounded
 
-def test_read_tool_message_inlines_bounded_output(tmp_path):
+async def test_read_tool_message_inlines_bounded_output(tmp_path):
     path = tmp_path / "large.txt"
     path.write_text("first\n" + "\n".join(f"middle-{index}" for index in range(20000)) + "\nlast\n", encoding="utf-8")
     s = session(tmp_path)
@@ -144,7 +147,7 @@ def test_read_tool_message_inlines_bounded_output(tmp_path):
 
     # The runner projects the source block, stores the retained text under tr.N, and inlines the
     # bounded marker (with the recall key) into the model-facing message.
-    message = runner.finish(call_obj, output)
+    message = await runner.finish(call_obj, output)
 
     # A whole-file read prints no range: 1:0 is the "to the end of the file" sentinel, and
     # echoing it raw would show the model an empty-looking range it never wrote.
@@ -154,7 +157,7 @@ def test_read_tool_message_inlines_bounded_output(tmp_path):
     assert 'recall="tr.1"' in message
     assert "-> FILE STATE" not in message
 
-def test_batched_read_projects_every_file_inside_one_output_budget(tmp_path):
+async def test_batched_read_projects_every_file_inside_one_output_budget(tmp_path):
     """The output budget covers the whole result, not each source block. A batched Read of several
     large files must not emit one full budget per file: source-bearing output skips the generic
     character bounding, so nothing downstream would catch the overflow."""
@@ -166,14 +169,14 @@ def test_batched_read_projects_every_file_inside_one_output_budget(tmp_path):
     runner = ToolRunner(s, context, output_fn=lambda text: None)
     call_obj = call("Read", [{"path": f"f{index}.txt", "ranges": [[1, 0]]} for index in range(4)])
 
-    message = runner.finish(call_obj, ReadTool(s, call_obj.args).call())
+    message = await runner.finish(call_obj, ReadTool(s, call_obj.args).call())
 
     assert message.count("<Read ") == 4  # every file still gets a view
     assert message.count("<bounded_output") == 4  # and every one of them says what it dropped
     assert context.estimated_text_tokens(message) < MAX_TOOL_OUTPUT_TOKENS * 1.2
 
 
-def test_bounded_read_cannot_authorize_its_omitted_middle(tmp_path, monkeypatch):
+async def test_bounded_read_cannot_authorize_its_omitted_middle(tmp_path, monkeypatch):
     """Only projected lines become part of the view. A line number guessed from the omitted middle
     is refused as unseen rather than resolved against whatever now occupies that position."""
     path = tmp_path / "large.txt"
@@ -182,7 +185,7 @@ def test_bounded_read_cannot_authorize_its_omitted_middle(tmp_path, monkeypatch)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     call_obj = call("Read", [{"path": "large.txt", "ranges": [[1, 0]]}])
 
-    message = runner.finish(call_obj, ReadTool(s, call_obj.args).call())
+    message = await runner.finish(call_obj, ReadTool(s, call_obj.args).call())
     view = s.get_source_view("view.1")
 
     assert "<bounded_output" in message
@@ -192,7 +195,7 @@ def test_bounded_read_cannot_authorize_its_omitted_middle(tmp_path, monkeypatch)
     guessed = head.end + 1  # a real line of the file, but one the model was never shown
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
-    runner.run_sync([ToolCall("edit", "Edit", ["large.txt", "view.1", [{"op": "replace", "start": guessed, "end": guessed, "content": "x\n"}]])])
+    await runner.run([ToolCall("edit", "Edit", ["large.txt", "view.1", [{"op": "replace", "start": guessed, "end": guessed, "content": "x\n"}]])])
 
     assert s.tool_errors and "source range unseen" in s.tool_errors[0].error
     assert path.read_text(encoding="utf-8") == "".join(f"line-{index}\n" for index in range(20000))
@@ -254,7 +257,7 @@ def test_projection_keeps_evidence_when_literal_parts_alone_fill_the_budget(tmp_
     assert projected.parts[1].draft.line_count >= 1
 
 
-def test_large_edit_diff_and_source_share_the_normal_output_budget(tmp_path, monkeypatch):
+async def test_large_edit_diff_and_source_share_the_normal_output_budget(tmp_path, monkeypatch):
     """A source-bearing Edit must not bypass output bounding through its ordinary diff text."""
     from wizolt.tools import EditTool
 
@@ -268,7 +271,7 @@ def test_large_edit_diff_and_source_share_the_normal_output_budget(tmp_path, mon
     monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
 
     result = EditTool(s, ["large.py", source, [{"op": "replace", "start": 1, "end": 1, "content": body}]]).call()
-    message = runner.finish(call("Edit", ["large.py", source, []]), result)
+    message = await runner.finish(call("Edit", ["large.py", source, []]), result)
 
     assert message.count("<bounded_output") >= 2  # the diff and the large fresh source block
     assert 'recall="tr.1"' in message

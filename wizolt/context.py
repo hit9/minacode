@@ -19,6 +19,7 @@ from wizolt.base import (
     TOOL_OUTPUT_ASSET_SUFFIX,
     Json,
     Text,
+    run_blocking,
 )
 from wizolt.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from wizolt.prompts import (
@@ -471,7 +472,12 @@ class ContextManager:
     OMITTED_OUTPUT_HINT = "file holds this output in full; Search it for the part you need, or Bash grep/jq -- cheaper than paging the text back with Recall"
     OMITTED_OUTPUT_RECALL_HINT = "Recall this key with ranges to page the omitted lines back"
 
-    def bound_output(self, text: str, key: str = "") -> str:
+    def requires_artifact(self, text: str) -> bool:
+        """True when bounding `text` would omit a middle, so a retained key deserves an artifact."""
+
+        return self.estimated_text_tokens(text) > MAX_TOOL_OUTPUT_TOKENS
+
+    def bound_output(self, text: str, key: str = "", *, path: str = "") -> str:
         estimated = self.estimated_text_tokens(text)
         if estimated <= MAX_TOOL_OUTPUT_TOKENS:
             return text
@@ -485,23 +491,28 @@ class ContextManager:
         note += f' estimated_tokens="{estimated}" omitted_tokens="{omitted_tokens}"'
         note += f' recall="{key}"' if key else ""
         if key:
-            path = self.materialize_output(key, text)
-            if path:
-                note += f' file="{path}"'
             # An attribute name is not an instruction: `recall` and `file` say where the rest of the
             # output is, not what to do about it. Say which one to reach for, because the cheap move
             # is the non-obvious one -- searching the file costs the matched lines, while recalling
             # pays context for every line it pages back, including all the ones that were skipped.
+            # `path` is empty when no artifact was written (or the write failed): the marker then
+            # falls back to the Recall hint, never a file that is still in flight.
+            note += f' file="{path}"' if path else ""
             note += f' hint="{self.OMITTED_OUTPUT_HINT if path else self.OMITTED_OUTPUT_RECALL_HINT}"'
         note += "/>"
         return "\n".join(part for part in (head.rstrip(), note, tail.lstrip()) if part)
 
-    def materialize_output(self, key: str, text: str) -> str:
+    async def materialize_output(self, key: str, text: str) -> str:
         """Write the full tool output next to the truncated marker as a navigable artifact.
 
-        Derived cache only: session.tool_results and the jsonl stay the source of truth. Failures
-        are swallowed so a read-only or full disk cannot break truncation itself.
+        Derived cache only: session.tool_results and the jsonl stay the source of truth. The write
+        runs on the executor; failures are swallowed so a read-only or full disk cannot break
+        truncation itself, and an empty return tells the marker to fall back to the Recall hint.
         """
+
+        return await run_blocking(lambda: self._materialize_output_sync(key, text))
+
+    def _materialize_output_sync(self, key: str, text: str) -> str:
         try:
             directory = self.session.images.assets_dir()
             path = os.path.join(directory, key + TOOL_OUTPUT_ASSET_SUFFIX)
