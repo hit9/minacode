@@ -1,5 +1,4 @@
 """tui hints (split from tests/test_tui_app.py)."""
-import asyncio
 import threading
 from types import SimpleNamespace
 
@@ -260,7 +259,7 @@ def test_quick_hint_tab_refreshes_hints_before_deciding_to_cycle():
     assert app.quick_hint_focus == -1
     assert app.input_buffer.text == "old hint"
 
-def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
+async def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
     app, _ = quick_hint_app()
     app.quick_hint_focus = 0
     app._pick_quick_hint(app.input_buffer)
@@ -269,7 +268,7 @@ def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
         return "edited text"
 
     monkeypatch.setattr(app, "_edit_text_in_editor", edited)
-    asyncio.run(app._run_input_editor())
+    await app._run_input_editor()
 
     assert app.input_buffer.text == "edited text"
     assert app.quick_hint_picked == []
