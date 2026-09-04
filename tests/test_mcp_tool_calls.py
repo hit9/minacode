@@ -127,7 +127,7 @@ class TestMCPContextBlocks:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         ctx = ContextManager(s)
         result = ctx.mcp_tools_context()
@@ -300,7 +300,7 @@ class TestDescribeTool:
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
         calls = []
-        monkeypatch.setattr(s.mcp, "discover_server_async", as_async(lambda name: calls.append(name)))
+        monkeypatch.setattr(s.mcp, "discover_server", as_async(lambda name: calls.append(name)))
 
         with pytest.raises(ToolError, match="not connected"):
             s.mcp.describe_tool("test", "echo")
@@ -312,16 +312,16 @@ class TestCallTool:
         s = Session(cwd="/tmp")
         bootstrap_features(s)
         with pytest.raises(ToolError, match="not found"):
-            await s.mcp.call_tool_async("unknown", "echo", {})
+            await s.mcp.call_tool("unknown", "echo", {})
 
     async def test_call_disconnected_server_does_not_rediscover(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         calls = []
-        monkeypatch.setattr(s.mcp, "discover_server_async", as_async(lambda name: calls.append(name)))
+        monkeypatch.setattr(s.mcp, "discover_server", as_async(lambda name: calls.append(name)))
 
         with pytest.raises(ToolError, match="not connected"):
-            await s.mcp.call_tool_async("test", "echo", {})
+            await s.mcp.call_tool("test", "echo", {})
 
         assert calls == []
 
@@ -333,7 +333,7 @@ class TestCallTool:
         s.mcp.server_errors["test"] = "connection failed"
 
         with pytest.raises(ToolError, match="error"):
-            await s.mcp.call_tool_async("test", "echo", {})
+            await s.mcp.call_tool("test", "echo", {})
 
     async def test_call_without_url(self):
         """Server without URL raises ToolError."""
@@ -341,7 +341,7 @@ class TestCallTool:
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
         with pytest.raises(ToolError, match="url"):
-            await s.mcp.call_tool_async("test", "echo", {})
+            await s.mcp.call_tool("test", "echo", {})
 
     async def test_call_and_resource_paths_share_oauth_gate(self):
         """call_tool and the resource path both reject an OAuth server with no stored authentication
@@ -349,6 +349,6 @@ class TestCallTool:
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
         with pytest.raises(ToolError, match="requires authentication"):
-            await s.mcp.call_tool_async("test", "echo", {})
+            await s.mcp.call_tool("test", "echo", {})
         with pytest.raises(ToolError, match="requires authentication"):
             s.mcp.list_resources("test")

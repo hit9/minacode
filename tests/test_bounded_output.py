@@ -188,7 +188,7 @@ def test_bounded_read_cannot_authorize_its_omitted_middle(tmp_path, monkeypatch)
     guessed = head.end + 1  # a real line of the file, but one the model was never shown
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
-    runner.run([ToolCall("edit", "Edit", ["large.txt", "view.1", [{"op": "replace", "start": guessed, "end": guessed, "content": "x\n"}]])])
+    runner.run_sync([ToolCall("edit", "Edit", ["large.txt", "view.1", [{"op": "replace", "start": guessed, "end": guessed, "content": "x\n"}]])])
 
     assert s.tool_errors and "source range unseen" in s.tool_errors[0].error
     assert path.read_text(encoding="utf-8") == "".join(f"line-{index}\n" for index in range(20000))

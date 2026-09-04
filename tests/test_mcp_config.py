@@ -418,7 +418,7 @@ class TestMCPManagerDiscovery:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
 
         assert s.mcp.discovery_status == "stale"
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         assert s.mcp.discovery_status == "ready"
 
     async def test_discover_auto_error_sets_status(self, monkeypatch):
@@ -432,7 +432,7 @@ class TestMCPManagerDiscovery:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_fail)
 
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         assert s.mcp.discovery_status == "ready"
         assert s.mcp.server_errors.get("test") is not None
 
@@ -446,7 +446,7 @@ class TestMCPManagerDiscovery:
 
         monkeypatch.setattr(s.mcp, "_gather_assets", cancelled)
 
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         assert s.mcp.discovery_status == "ready"
         assert "test" not in s.mcp.server_errors
@@ -470,7 +470,7 @@ class TestMCPManagerDiscovery:
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
 
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         assert "test" not in s.mcp.server_errors
         assert "test" in s.mcp.server_skips
@@ -494,7 +494,7 @@ class TestMCPManagerDiscovery:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
         started = time.monotonic()
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         elapsed = time.monotonic() - started
 
         assert elapsed < 0.18
@@ -516,9 +516,9 @@ class TestMCPManagerDiscovery:
             s.mcp.tools[config.name] = []
             s.mcp.resources[config.name] = []
 
-        monkeypatch.setattr(s.mcp, "_discover_one_async", fake_discover)
+        monkeypatch.setattr(s.mcp, "_discover_one", fake_discover)
 
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         assert discovered == ["automatic"]
         assert "manual" not in s.mcp.tools
@@ -539,7 +539,7 @@ class TestMCPManagerDiscovery:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         assert "test" in s.mcp.tools
         assert len(s.mcp.tools["test"]) == 1
@@ -565,7 +565,7 @@ class TestMCPManagerDiscovery:
         s.mcp.tools["manual_server"] = [mcp_tool_info("manual_server", "kept")]
         s.mcp.tools["stale_server"] = [mcp_tool_info("stale_server", "old")]
 
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         assert "stale_server" not in s.mcp.tools
         assert "manual_server" in s.mcp.tools
@@ -582,7 +582,7 @@ class TestMCPDiscoverServer:
         """discover_server for a server not in config sets server_errors."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
-        await s.mcp.discover_server_async("nonexistent")
+        await s.mcp.discover_server("nonexistent")
         assert "nonexistent" in s.mcp.server_errors
         assert "not found" in s.mcp.server_errors["nonexistent"]
 
@@ -591,7 +591,7 @@ class TestMCPDiscoverServer:
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         s.mcp.tools["gone"] = [mcp_tool_info("gone", "old_tool")]
-        await s.mcp.discover_server_async("gone")
+        await s.mcp.discover_server("gone")
         assert "gone" not in s.mcp.tools
         assert "gone" in s.mcp.server_errors
 
@@ -671,7 +671,7 @@ class TestServerStatusRendering:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         status = s.mcp.render_server_status()
         assert "test" in status
@@ -726,7 +726,7 @@ class TestServerStatusRendering:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         listing = s.mcp.render_tool_listing()
         assert "### `test`" in listing
@@ -744,7 +744,7 @@ class TestServerStatusRendering:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         listing = s.mcp.render_tool_listing("a")
         assert "### `a`" in listing

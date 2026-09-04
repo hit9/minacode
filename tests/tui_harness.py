@@ -72,7 +72,7 @@ def request_input_from_driver(app, prompt="Approve? "):
     def start() -> None:
         async def request() -> None:
             try:
-                result.set_result(await app.request_input_async(prompt))
+                result.set_result(await app.request_input(prompt))
             except BaseException as error:  # noqa: BLE001 - the driver reads every ending off the future
                 result.set_exception(error)
 
@@ -120,7 +120,7 @@ def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, a
 
             driver = threading.Thread(target=run_driver, daemon=True)
             driver.start()
-        tui.run()
+        tui.run_sync()
         if driver is not None:
             driver.join(timeout=1)
             assert not driver.is_alive()

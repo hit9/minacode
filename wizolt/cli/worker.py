@@ -38,7 +38,7 @@ class WorkerFlow:
         subcommand = parts[0].lower() if parts else ""
         rest = parts[1:]
         if subcommand == "reset" and not rest:
-            result = DelegateTool(self.loop.session, [{"action": "reset"}]).call()
+            result = DelegateTool(self.loop.session, [{"action": "reset"}])._reset()
             if 'action="reset"' not in result:
                 return result
             # The parent model does not know the user reset the worker; without this event the next

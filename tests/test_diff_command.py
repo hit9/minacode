@@ -87,7 +87,7 @@ def drive():
 
 
 threading.Thread(target=drive, daemon=True).start()
-app.run()
+app.run_sync()
 """
     )
     try:
@@ -266,7 +266,7 @@ def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_path):
     rendered = []
 
     class Modal:
-        def show_modal(self, fragments_fn, _key_fn, **_kwargs):
+        def show_modal_sync(self, fragments_fn, _key_fn, **_kwargs):
             rendered.extend(fragments_fn())
 
     lp.tui = Modal()

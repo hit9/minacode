@@ -117,7 +117,7 @@ def test_failed_edit_error_text_keeps_fresh_view_for_the_model(tmp_path, monkeyp
     EditTool(s, ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "A\n"}]]).call()
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("bad", "Edit", ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]])])
+    runner.run_sync([ToolCall("bad", "Edit", ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]])])
 
     assert len(s.tool_errors) == 1
     assert "source target changed" in s.tool_errors[0].error
@@ -133,7 +133,7 @@ def test_batch_stale_range_does_not_guess_after_prior_shift(tmp_path, monkeypatc
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall(
                 "first",
@@ -172,13 +172,13 @@ def test_deletion_fresh_view_shows_the_seam_it_left(tmp_path, monkeypatch):
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("cut", "Edit", ["code.txt", key, [{"op": "delete", "start": 2, "end": 3}]])])
+    runner.run_sync([ToolCall("cut", "Edit", ["code.txt", key, [{"op": "delete", "start": 2, "end": 3}]])])
 
     fresh = s.get_source_view("view.2")
     assert fresh.total_lines == 2
     assert fresh.spans and [line for span in fresh.spans for line in span.lines] == ["a\n", "d\n"]
 
-    runner.run([ToolCall("next", "Edit", ["code.txt", "view.2", [{"op": "replace", "start": 2, "end": 2, "content": "D\n"}]])])
+    runner.run_sync([ToolCall("next", "Edit", ["code.txt", "view.2", [{"op": "replace", "start": 2, "end": 2, "content": "D\n"}]])])
     assert path.read_text(encoding="utf-8") == "a\nD\n"
     assert s.tool_errors == []
 
@@ -192,11 +192,11 @@ def test_deleting_the_whole_file_leaves_an_empty_file_view(tmp_path, monkeypatch
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("cut", "Edit", ["code.txt", key, [{"op": "delete", "start": 1, "end": 2}]])])
+    runner.run_sync([ToolCall("cut", "Edit", ["code.txt", key, [{"op": "delete", "start": 1, "end": 2}]])])
 
     fresh = s.get_source_view("view.2")
     assert (fresh.total_lines, fresh.spans) == (0, ())
-    runner.run([ToolCall("fill", "Edit", ["code.txt", "", [{"op": "create", "content": "new\n"}]])])
+    runner.run_sync([ToolCall("fill", "Edit", ["code.txt", "", [{"op": "create", "content": "new\n"}]])])
     assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "new\n"
     assert s.tool_errors == []
 
@@ -212,7 +212,7 @@ def test_empty_file_create_rejects_once_another_writer_filled_it(tmp_path, monke
     path.write_text("written elsewhere\n", encoding="utf-8")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("fill", "Edit", ["empty.txt", "", [{"op": "create", "content": "mine\n"}]])])
+    runner.run_sync([ToolCall("fill", "Edit", ["empty.txt", "", [{"op": "create", "content": "mine\n"}]])])
 
     assert path.read_text(encoding="utf-8") == "written elsewhere\n"
     assert s.tool_errors and "file already exists" in s.tool_errors[0].error
@@ -233,7 +233,7 @@ def test_expired_view_is_answered_with_the_current_lines_it_asked_for(tmp_path, 
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     edits = [{"op": "replace", "start": 10, "end": 12, "content": "X\n"}]
 
-    runner.run([ToolCall("stale", "Edit", ["app.py", key, edits])])
+    runner.run_sync([ToolCall("stale", "Edit", ["app.py", key, edits])])
 
     error = s.tool_errors[0].error
     assert "source missing" in error and "use the fresh view below" in error
@@ -241,7 +241,7 @@ def test_expired_view_is_answered_with_the_current_lines_it_asked_for(tmp_path, 
     assert [(span.start, span.end) for span in fresh.spans] == [(7, 15)]  # the range plus context
     assert path.read_text(encoding="utf-8").splitlines()[9] == "line 10"
 
-    runner.run([ToolCall("retry", "Edit", ["app.py", "view.2", edits])])
+    runner.run_sync([ToolCall("retry", "Edit", ["app.py", "view.2", edits])])
 
     assert path.read_text(encoding="utf-8").splitlines()[9] == "X"
     assert len(s.tool_errors) == 1  # the retry did not fail

@@ -115,13 +115,13 @@ async def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_pat
     assert oneline(order, 60) in labels[0]
 
 
-def test_delegate_rejects_empty_title(tmp_path):
+async def test_delegate_rejects_empty_title(tmp_path):
     from wizolt.base import ToolError
     from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     with pytest.raises(ToolError, match="non-empty string"):
-        DelegateTool(parent, [{"action": "send", "order": "work", "title": "   "}]).call()
+        await DelegateTool(parent, [{"action": "send", "order": "work", "title": "   "}]).call()
 
 
 async def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, monkeypatch):
@@ -178,11 +178,11 @@ async def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, m
         self.stopped_at_max_steps = False
         return "Stopped after max_agent_steps=3 (cosmetic wording only)"
 
-    monkeypatch.setattr(Agent, "run_async", run_stopped)
+    monkeypatch.setattr(Agent, "run", run_stopped)
     result = await _delegate_call(parent, runner, action="send", order="o")
     assert 'stopped_at_max_steps="true"' in result
 
-    monkeypatch.setattr(Agent, "run_async", run_normal)
+    monkeypatch.setattr(Agent, "run", run_normal)
     result = await _delegate_call(parent, runner, action="send", order="o")
     assert 'stopped_at_max_steps="false"' in result  # the words are irrelevant; the fact is not set
 
@@ -197,7 +197,7 @@ async def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_pat
         self.stopped_at_max_steps = False
         return "done"
 
-    monkeypatch.setattr(Agent, "run_async", run_quiet)
+    monkeypatch.setattr(Agent, "run", run_quiet)
     result = await _delegate_call(parent, runner, action="send", order="o")
     assert 'tokens="' in result
     assert 'rounds="' in result

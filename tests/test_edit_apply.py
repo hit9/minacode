@@ -105,7 +105,7 @@ def test_tool_runner_batch_edit_accepts_drifted_view(tmp_path, monkeypatch):
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("insert", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nb\n"}]]),
             ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "C\n"}]]),
@@ -130,7 +130,7 @@ def test_tool_runner_relocates_view_drifted_before_batch(tmp_path, monkeypatch):
     path.write_text("x\nINS\na\nb\nc\n", encoding="utf-8")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "B\n"}]])])
+    runner.run_sync([ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "B\n"}]])])
 
     assert path.read_text(encoding="utf-8") == "x\nINS\na\nB\nc\n"
     assert s.tool_errors == []
@@ -150,7 +150,7 @@ def test_tool_runner_refuses_changed_target_drifted_before_batch(tmp_path, monke
     path.write_text("x\nINS\na\nCHANGED\nc\n", encoding="utf-8")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "B\n"}]])])
+    runner.run_sync([ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "B\n"}]])])
 
     assert path.read_text(encoding="utf-8") == "x\nINS\na\nCHANGED\nc\n"
     assert s.tool_errors and "source target changed" in s.tool_errors[0].error
@@ -165,7 +165,7 @@ def test_tool_runner_batch_edit_barrier_rejects_ambiguous_relocation(tmp_path, m
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("insert", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nb\n"}]]),
             ToolCall("barrier", "Bash", [":"]),
@@ -186,8 +186,8 @@ def test_tool_runner_batch_edit_can_create_empty_then_patch_same_file(tmp_path, 
 
     # create the empty file, then write into it with create: an existing zero-byte file has
     # nothing to preserve, so create may fill it.
-    runner.run([ToolCall("create", "Edit", ["empty.txt", "", [{"op": "create", "content": ""}]])])
-    runner.run([ToolCall("patch", "Edit", ["empty.txt", "", [{"op": "create", "content": "filled\n"}]])])
+    runner.run_sync([ToolCall("create", "Edit", ["empty.txt", "", [{"op": "create", "content": ""}]])])
+    runner.run_sync([ToolCall("patch", "Edit", ["empty.txt", "", [{"op": "create", "content": "filled\n"}]])])
 
     assert (tmp_path / "empty.txt").read_text(encoding="utf-8") == "filled\n"
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
@@ -203,7 +203,7 @@ def test_tool_runner_batch_edit_rejects_inline_patch_without_read(tmp_path, monk
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("create", "Edit", ["empty.txt", "", [{"op": "create", "content": ""}]]),
             ToolCall("patch", "Edit", ["empty.txt", "view.1", [{"op": "replace", "start": 1, "end": 1, "content": "filled\n"}]]),
@@ -221,9 +221,9 @@ def test_tool_runner_batch_edit_can_create_then_patch_same_file(tmp_path, monkey
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("create", "Edit", ["new.txt", "", [{"op": "create", "content": "a\nb\n"}]])])
+    runner.run_sync([ToolCall("create", "Edit", ["new.txt", "", [{"op": "create", "content": "a\nb\n"}]])])
     key = view(s, "new.txt")
-    runner.run([ToolCall("patch", "Edit", ["new.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])])
+    runner.run_sync([ToolCall("patch", "Edit", ["new.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])])
 
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "a\nB\n"
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
@@ -238,7 +238,7 @@ def test_tool_runner_batch_edit_create_and_existing_file_edit_are_independent(tm
     key = view(s, "old.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("create", "Edit", ["new.txt", "", [{"op": "create", "content": "n\n"}]]),
             ToolCall("edit", "Edit", ["old.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]),
@@ -260,7 +260,7 @@ def test_tool_runner_batch_edit_maps_original_view_after_delete(tmp_path, monkey
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("delete", "Edit", ["code.txt", key, [{"op": "delete", "start": 2, "end": 2}]]),
             ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 4, "end": 4, "content": "D\n"}]]),
@@ -280,7 +280,7 @@ def test_tool_runner_batch_edit_maps_original_view_after_insert(tmp_path, monkey
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("insert", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nb\n"}]]),
             ToolCall("replace", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "C\n"}]]),
@@ -301,7 +301,7 @@ def test_tool_runner_batch_edit_plans_files_independently(tmp_path, monkeypatch)
     key_b = view(s, "b.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("edit-a", "Edit", ["a.txt", key_a, [{"op": "replace", "start": 1, "end": 1, "content": "a\nA\n"}]]),
             ToolCall("edit-b", "Edit", ["b.txt", key_b, [{"op": "replace", "start": 2, "end": 2, "content": "Y\n"}]]),
@@ -322,7 +322,7 @@ def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_pa
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("insert", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nb\n"}]]),
             ToolCall("read", "Read", [{"path": "code.txt", "ranges": [[1, 0]]}]),
@@ -349,7 +349,7 @@ def test_inserting_past_an_unterminated_last_line_does_not_join_it(tmp_path, mon
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("append", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "b\nc\n"}]])])
+    runner.run_sync([ToolCall("append", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "b\nc\n"}]])])
 
     assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
     assert s.tool_errors == []
@@ -368,7 +368,7 @@ def test_batch_separates_a_consumed_target_from_a_shifted_one(tmp_path, monkeypa
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall("cut", "Edit", ["code.txt", key, [{"op": "delete", "start": 2, "end": 2}]]),
             ToolCall("gone", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]),

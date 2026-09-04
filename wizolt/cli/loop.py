@@ -218,6 +218,9 @@ Full documentation: https://wizolt.readthedocs.io
         # scheduling a write are the same race, so one lock decides both.
         self.scrollback: ScrollbackWriter | None = None
         self.interactive_input = input_fn is input and sys.stdin.isatty()
+        # Bytes already read from the default non-TTY stdin after the first newline. Keeping the
+        # remainder here lets the loop use non-blocking os.read() without losing a following line.
+        self._stdin_buffer = bytearray()
         # Set by run_tui() while the full-TUI shell is active; tool_input reroutes through it so
         # approval prompts land in the same input widget the user is already typing in.
         self.tui: TuiApp | None = None
@@ -433,13 +436,13 @@ Full documentation: https://wizolt.readthedocs.io
     def run(self) -> int:
         """Synchronous entry point for the CLI. Both frontends run on one loop from here."""
 
-        fail_if_running_loop("use await CommandLoop.run_simple_async(...) or TuiRuntime.run_async()")
+        fail_if_running_loop("use await CommandLoop.run_simple(...) or TuiRuntime.run()")
         # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
         if self.interactive_input:
             return self.run_tui()
-        return asyncio.run(self.run_simple_async())
+        return asyncio.run(self.run_simple())
 
-    async def run_simple_async(self) -> int:
+    async def run_simple(self) -> int:
         """The non-TTY frontend, on a loop of its own.
 
         The same loop as the TUI frontend gives the turn: one owner for startup discovery, the
@@ -447,7 +450,7 @@ Full documentation: https://wizolt.readthedocs.io
 
         self.session.next_hints_available = False  # the simple REPL has no chip UI; don't offer an invisible terminal tool
         self.start_session()
-        discovery = asyncio.ensure_future(self.discover_mcp_async())
+        discovery = asyncio.ensure_future(self.discover_mcp())
         try:
             return await self._simple_loop()
         finally:
@@ -464,11 +467,11 @@ Full documentation: https://wizolt.readthedocs.io
         """
 
         with contextlib.suppress(Exception):
-            await self.agent.model.close_async()
+            await self.agent.model.close()
         mcp = self.session.mcp
         if mcp is not None:
             with contextlib.suppress(Exception):
-                await mcp.close_async()
+                await mcp.close()
 
     async def _simple_loop(self) -> int:
         while True:
@@ -478,7 +481,7 @@ Full documentation: https://wizolt.readthedocs.io
                     "\n".join(str(item) for item in entered),
                     tuple(image for item in entered for image in item.images),
                 )
-                user_input = await asyncio.to_thread(self.read_input, initial_text=initial_input)
+                user_input = await self.read_input(initial_text=initial_input)
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()
@@ -500,7 +503,7 @@ Full documentation: https://wizolt.readthedocs.io
             try:
                 self.status_bar.start()
                 try:
-                    await self.agent.run_async(user_input)
+                    await self.agent.run(user_input)
                     answered = True
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     self.emit_turn("Cancelled")
@@ -525,7 +528,7 @@ Full documentation: https://wizolt.readthedocs.io
                 self.ui.emit_turn_end(started)
             self.session.save_snapshot()
 
-    async def discover_mcp_async(self) -> None:
+    async def discover_mcp(self) -> None:
         """Connect the auto_connect servers, as a task the caller's runtime owns.
 
         A task, not a wait: an unreachable server must not hold the prompt, and the tools index
@@ -535,7 +538,7 @@ Full documentation: https://wizolt.readthedocs.io
 
         mcp = self.session.mcp
         if mcp is not None:
-            await mcp.discover_auto_async()
+            await mcp.discover_auto()
 
     def start_session(self) -> None:
         """Initialize output and background services shared by both command-loop frontends."""
@@ -575,7 +578,7 @@ Full documentation: https://wizolt.readthedocs.io
         return f"removed {removed} saved {sessions} inactive for over {days} {'day' if days == 1 else 'days'} (runtime.session_retention_days)"
 
     def run_tui(self) -> int:
-        return TuiRuntime(self).run()
+        return TuiRuntime(self).run_sync()
 
     def render_resumed_session(self) -> None:
         # Transcript reconstruction owns historical call/result matching and ordering invariants.
@@ -778,7 +781,7 @@ Full documentation: https://wizolt.readthedocs.io
             name = self.session.name
             self.emit(f"Resume {name!r} with:\nwizolt --resume {uid}" if name else f"Resume with:\nwizolt --resume {uid}")
 
-    def read_input(
+    def read_input_sync(
         self,
         prompt_text: str = UiPrinter.PROMPT_PREFIX,
         *,
@@ -786,6 +789,78 @@ Full documentation: https://wizolt.readthedocs.io
     ) -> str:
         """Read from the injected/non-TTY input path; interactive terminals use TuiApp."""
         return initial_text or self.input_fn(prompt_text)
+
+    async def read_input(
+        self,
+        prompt_text: str = UiPrinter.PROMPT_PREFIX,
+        *,
+        initial_text: str | UserInput = "",
+    ) -> str | UserInput:
+        """Read one non-TTY line without parking the default executor on POSIX stdin.
+
+        An injected synchronous reader remains an embedding boundary and therefore runs in the
+        executor; its owner is responsible for unblocking it at shutdown. The process stdin path
+        is different: asyncio.run waits for its executor, so it is driven directly by fd readiness.
+        """
+
+        if initial_text:
+            return initial_text
+        if self.input_fn is not input:
+            return await asyncio.to_thread(self.read_input_sync, prompt_text)
+
+        if prompt_text:
+            sys.stdout.write(prompt_text)
+            sys.stdout.flush()
+
+        loop = asyncio.get_running_loop()
+        fd = sys.stdin.fileno()
+        result: asyncio.Future[bytes] = loop.create_future()
+        was_blocking = os.get_blocking(fd)
+
+        def finish_line() -> bool:
+            newline = self._stdin_buffer.find(b"\n")
+            if newline < 0:
+                return False
+            line = bytes(self._stdin_buffer[:newline])
+            del self._stdin_buffer[: newline + 1]
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            if not result.done():
+                result.set_result(line)
+            return True
+
+        def readable() -> None:
+            if finish_line():
+                return
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                return
+            except OSError as error:
+                if not result.done():
+                    result.set_exception(error)
+                return
+            if chunk:
+                self._stdin_buffer.extend(chunk)
+                finish_line()
+                return
+            if self._stdin_buffer:
+                line = bytes(self._stdin_buffer)
+                self._stdin_buffer.clear()
+                if not result.done():
+                    result.set_result(line)
+            elif not result.done():
+                result.set_exception(EOFError())
+
+        os.set_blocking(fd, False)
+        loop.add_reader(fd, readable)
+        readable()
+        try:
+            raw = await result
+        finally:
+            loop.remove_reader(fd)
+            os.set_blocking(fd, was_blocking)
+        return raw.decode(sys.stdin.encoding or "utf-8", errors=sys.stdin.errors or "strict")
 
     def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
         self.ui.emit(text, indent)
@@ -929,7 +1004,7 @@ Full documentation: https://wizolt.readthedocs.io
             return
         tui = self.tui
         if tui is not None:
-            tui.write_to_scrollback(callback)
+            tui.write_to_scrollback_sync(callback)
         else:
             callback()
 
@@ -956,7 +1031,9 @@ Full documentation: https://wizolt.readthedocs.io
         for the default executor, so an uninterruptible reader would hold the process there."""
 
         if self.tui is not None:
-            return await self.tui.request_input_async(prompt)
+            return await self.tui.request_input(prompt)
+        if self.input_fn is input:
+            return await self.read_input(prompt)
         return await asyncio.to_thread(lambda: self.with_status_paused(lambda: self.input_fn(prompt)))
 
     # How close a phase rule may come to the one above it, in rendered rows. Under this the rule

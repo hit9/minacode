@@ -82,7 +82,7 @@ def test_provider_wire_contracts_are_serialized_by_the_real_sdks(tmp_path, monke
         monkeypatch.setattr(openai, "AsyncOpenAI", factory)
         monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda **_kwargs: pytest.fail("provider resolved to Anthropic instead of OpenAI SDK"))
 
-    model.request([{"role": "user", "content": "hello"}], [])
+    model.request_sync([{"role": "user", "content": "hello"}], [])
 
     assert len(factory.calls) == 1
     request = factory.calls[0]

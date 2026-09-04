@@ -14,7 +14,7 @@ async def _requested_system(tmp_path, custom=None):
     if custom is not None:
         s.system_prompt = custom
     agent = Agent(s, output_fn=lambda text: None)
-    request = await agent.prepare_request_async([{"role": "user", "content": "hi"}])
+    request = await agent.prepare_request([{"role": "user", "content": "hi"}])
     return s, request.messages[0]["content"]
 
 
@@ -54,7 +54,7 @@ class FakeModelClient:
         self.received_tools = []
         self.last_compaction_model = ""
 
-    async def request_async(self, messages, request_tools=None):
+    async def request(self, messages, request_tools=None):
         self.requests.append(messages)
         self.received_tools.append(request_tools)
         return self.script.pop(0)
@@ -78,7 +78,7 @@ async def _delegate_call(parent, runner, **args):
 
     tool = DelegateTool(parent, [args])
     tool.runner = runner
-    return await tool.call_async()
+    return await tool.call()
 
 
 def _delegate_runner(parent):

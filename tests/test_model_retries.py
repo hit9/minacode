@@ -58,7 +58,7 @@ async def test_compaction_does_not_publish_internal_model_output(tmp_path, monke
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    result = await compaction.Compactor(ContextManager(s), model).compact_async("long context")
+    result = await compaction.Compactor(ContextManager(s), model).compact("long context")
     body = json.loads(factory.calls[0].content)
     assert body["stream"] is False
     assert "stream_options" not in body
@@ -88,7 +88,7 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     record_backoff(monkeypatch)
 
-    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(factory.calls) == 2
@@ -103,7 +103,7 @@ def test_request_retry_exhausted(tmp_path, monkeypatch):
     record_backoff(monkeypatch)
 
     with pytest.raises(ModelError, match="after 6 attempts"):
-        model.request([{"role": "user", "content": "hi"}], None)
+        model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert len(factory.calls) == 6
     assert s.usage.calls == 0
@@ -137,7 +137,7 @@ async def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path,
 
     monkeypatch.setattr(model, "api_request", expired)
     with pytest.raises(ModelResponseTimeout):
-        await model.request_async([{"role": "user", "content": "hi"}], [])
+        await model.request([{"role": "user", "content": "hi"}], [])
     assert calls == 1
     assert s.state.model_retry_count == 0
 
@@ -255,7 +255,7 @@ async def test_compaction_follows_the_configured_response_deadline(tmp_path, mon
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    assert await compaction.Compactor(ContextManager(s), model).compact_async("long context") == {"summary": "short"}
+    assert await compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
     assert len(seen) == 1
     assert seen[0]["allow_stream"] is False
     assert seen[0]["response_timeout"] == expected
@@ -275,7 +275,7 @@ async def test_compaction_timeout_error_names_the_summary(tmp_path, monkeypatch)
     monkeypatch.setattr(model, "api_request", api_request)
 
     with pytest.raises(ModelResponseTimeout, match=r"compaction summary on `default/gpt-4` exceeded provider.response_timeout=600s"):
-        await compaction.Compactor(ContextManager(s), model).compact_async("long context")
+        await compaction.Compactor(ContextManager(s), model).compact("long context")
 
 
 def _retry_wait_recorder(monkeypatch, factory=None):
@@ -311,7 +311,7 @@ def test_retry_backoff_sequence_within_jitter_bands(tmp_path, monkeypatch):
     monkeypatch.setattr(resilience.random, "random", lambda: 0.5)  # jitter factor exactly 1.0
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(waits()) == MODEL_REQUEST_RETRIES
@@ -329,7 +329,7 @@ def test_retry_after_seconds_preferred_over_backoff(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
     assert 6.9 <= waits()[0] <= 7.1
@@ -343,7 +343,7 @@ def test_retry_after_clamped_to_max_delay(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
     assert RETRY_MAX_DELAY - 0.2 <= waits()[0] <= RETRY_MAX_DELAY + 0.2
@@ -358,7 +358,7 @@ def test_retry_after_http_date_respected(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
     # A date far enough out that the wait is unmistakably the header's rather than the algorithm's
@@ -377,7 +377,7 @@ def test_retry_after_invalid_falls_back_to_backoff(tmp_path, monkeypatch, value)
     monkeypatch.setattr(resilience.random, "random", lambda: 0.5)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
     assert RETRY_BASE_DELAY - 0.2 <= waits()[0] <= RETRY_BASE_DELAY + 0.2
@@ -391,7 +391,7 @@ def test_retry_after_absurd_value_does_not_stall(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(waits()) == 1
@@ -407,7 +407,7 @@ async def test_retry_wait_is_cancellable(tmp_path, monkeypatch):
     factory = _MockClientFactory([(503, _OVERLOADED), (503, _OVERLOADED)])
     monkeypatch.setattr(model, "client", factory)
 
-    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+    request = asyncio.ensure_future(model.request([{"role": "user", "content": "hi"}], None))
     await _wait_for(lambda: s.state.model_retry_until > 0)
     request.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -431,7 +431,7 @@ def test_non_retryable_errors_skip_retry_path(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "api_request", truncated)
     monkeypatch.setattr(time, "sleep", lambda _seconds: pytest.fail("non-retryable error must not sleep"))
     with pytest.raises(ModelOutputTruncated):
-        model.request([{"role": "user", "content": "hi"}], [])
+        model.request_sync([{"role": "user", "content": "hi"}], [])
     assert calls["n"] == 1
     assert s.state.model_retry_count == 0
 
@@ -441,7 +441,7 @@ def test_non_retryable_errors_skip_retry_path(tmp_path, monkeypatch):
     factory = _MockClientFactory([(400, {"error": {"message": "bad request", "type": "invalid_request_error"}})])
     monkeypatch.setattr(model2, "client", factory)
     with pytest.raises(ModelError, match=r"400"):
-        model2.request([{"role": "user", "content": "hi"}], None)
+        model2.request_sync([{"role": "user", "content": "hi"}], None)
     assert len(factory.calls) == 1
     assert len(factory.calls) == 1
     assert s2.state.model_retry_count == 0
@@ -458,7 +458,7 @@ def test_retry_wait_phase_hook_pairs(tmp_path, monkeypatch):
     model.on_retry_wait = phases.append
     _retry_wait_recorder(monkeypatch, factory)
 
-    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert phases == [True, False]
@@ -475,7 +475,7 @@ async def test_retry_wait_phase_hook_resets_on_cancel(tmp_path, monkeypatch):
     phases: list[bool] = []
     model.on_retry_wait = phases.append
 
-    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+    request = asyncio.ensure_future(model.request([{"role": "user", "content": "hi"}], None))
     await _wait_for(lambda: s.state.model_retry_until > 0)
     request.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -498,7 +498,7 @@ async def test_resend_during_a_backoff_wait_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     refused = []
 
-    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+    request = asyncio.ensure_future(model.request([{"role": "user", "content": "hi"}], None))
     await _wait_for(lambda: s.state.model_retry_until > 0)
     refused.append(model.retry_active_request())
     _, _, content = await request
@@ -563,7 +563,7 @@ def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert calls["n"] == 2
@@ -708,7 +708,7 @@ async def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    assert await compaction.Compactor(ContextManager(s), model).compact_async("long context") == {"summary": "short"}
+    assert await compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
     provider = calls[0]
     assert provider.model == "compactor-1"
     assert provider.reasoning == "off"
@@ -741,7 +741,7 @@ async def test_compaction_response_timeout_follows_base_entry(tmp_path, monkeypa
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    await compaction.Compactor(ContextManager(s), model).compact_async("long context")
+    await compaction.Compactor(ContextManager(s), model).compact("long context")
     assert seen[0]["response_timeout"] == 30
     assert seen[0]["provider"].model == "base-1"
 
@@ -773,7 +773,7 @@ async def test_compaction_override_reaches_wire_params(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assert await compaction.Compactor(ContextManager(s), model).compact_async("long context") == {"summary": "short"}
+    assert await compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
     body = json.loads(factory.calls[0].content)
     assert body["model"] == "compactor-2"
     assert model.last_compaction_model == "compactor-2"
@@ -794,7 +794,7 @@ async def test_compaction_retries_once_when_the_model_replies_in_prose(tmp_path,
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    summary = await compaction.Compactor(ContextManager(s), model).compact_async("long context")
+    summary = await compaction.Compactor(ContextManager(s), model).compact("long context")
     assert summary["title"] == "Part B wrap-up"
     assert len(sent) == 2
     # The second attempt shows the model what it did and what to do instead.
@@ -813,7 +813,7 @@ async def test_compaction_failure_names_the_provider_entry(tmp_path, monkeypatch
     monkeypatch.setattr(model, "api_request", api_request)
 
     with pytest.raises(ModelError, match=r"compaction provider `default/gpt-4`"):
-        await compaction.Compactor(ContextManager(s), model).compact_async("long context")
+        await compaction.Compactor(ContextManager(s), model).compact("long context")
 
 
 def test_compaction_input_restates_the_contract_after_the_payload(tmp_path):
@@ -842,7 +842,7 @@ async def test_compaction_sends_json_response_format_only_where_the_provider_sup
 
         monkeypatch.setattr(model, "client", lambda **_k: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
         with contextlib.suppress(Exception):
-            await compaction.Compactor(ContextManager(s), model).compact_async("long context")
+            await compaction.Compactor(ContextManager(s), model).compact("long context")
 
     await run("api.deepseek.com")
     await run("api.moonshot.cn")
@@ -867,7 +867,7 @@ async def test_compaction_rejects_a_summary_that_copies_the_conversation(tmp_pat
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    data = await compaction.Compactor(ContextManager(s), model).compact_async("long context", echo_source=f"user:\n{echo}")
+    data = await compaction.Compactor(ContextManager(s), model).compact("long context", echo_source=f"user:\n{echo}")
     assert data["summary"].startswith("Wrapped up Part B")
     assert len(sent) == 2
     assert "copied the conversation" in sent[1][-1]["content"]
@@ -901,14 +901,14 @@ async def test_whole_turn_cancellation_and_resend_are_distinct_dispositions(tmp_
 
     model.api_request = hanging
 
-    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], []))
+    request = asyncio.ensure_future(model.request([{"role": "user", "content": "hi"}], []))
     await _wait_for(lambda: len(attempts) == 1)
     request.cancel()
     with pytest.raises(asyncio.CancelledError):
         await request
 
 
-    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], []))
+    request = asyncio.ensure_future(model.request([{"role": "user", "content": "hi"}], []))
     await _wait_for(lambda: len(attempts) == 2)
     assert model.retry_active_request() is True
     assert model.retry_active_request() is False  # the same attempt cannot be claimed twice
@@ -934,5 +934,5 @@ async def test_a_claimed_attempt_cannot_publish_a_result_that_arrived_first(tmp_
     model.api_request = racing
 
     with pytest.raises(ModelRequestRetry):
-        await model.request_async([{"role": "user", "content": "hi"}], [])
+        await model.request([{"role": "user", "content": "hi"}], [])
     assert claimed == [True]

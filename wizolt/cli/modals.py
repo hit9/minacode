@@ -167,7 +167,7 @@ async def mcp_manager(loop: CommandLoop) -> None:
     async def toggle(name: str, connect: bool) -> None:
         try:
             if connect:
-                result = await mcp.connect_server_async(name, interactive=True, notify=loop.emit)
+                result = await mcp.connect_server(name, interactive=True, notify=loop.emit)
             else:
                 result = mcp.disconnect_server(name)
         except Exception as error:  # noqa: BLE001 - keep background MCP failures visible in the selector.
@@ -196,7 +196,7 @@ async def mcp_manager(loop: CommandLoop) -> None:
         return TUI_MODAL_PENDING
 
     try:
-        await tui.show_modal_async(fragments, handle_key)
+        await tui.show_modal(fragments, handle_key)
     finally:
         modal_open = False
         outstanding = [task for task in toggles if not task.done()]
@@ -248,7 +248,7 @@ def choice_application(
     state.selected = options.index(current) if current in options else 0
     if loop.tui is None:
         return None
-    result = loop.tui.show_modal(lambda: state.fragments(title, preview_fn, label_fn), state.handle_key, exclusive=exclusive)
+    result = loop.tui.show_modal_sync(lambda: state.fragments(title, preview_fn, label_fn), state.handle_key, exclusive=exclusive)
     if isinstance(result, KeyboardInterrupt):
         raise result
     return result
@@ -261,11 +261,11 @@ async def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[
     the shared input row mid-flow and the modal reopens for the rest. Headless runs keep the
     plain per-question text prompts. The final tool log renders the returned answers."""
     if loop.tui is None or not loop.interactive_input:
-        return [await asyncio.to_thread(loop.read_input, "\n" + spec.question) for spec in specs]
+        return [str(await loop.read_input("\n" + spec.question)) for spec in specs]
     state = AskViewState.build(specs)
     while True:
         size = shutil.get_terminal_size((120, 24))
-        result = await loop.tui.show_modal_async(
+        result = await loop.tui.show_modal(
             lambda size=size: state.fragments(size.columns, max(1, size.lines - 6)),
             state.handle_key,
         )
@@ -274,7 +274,7 @@ async def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[
         if isinstance(result, tuple) and len(result) == 2 and result[0] is ASK_FREE_TEXT:
             index = result[1]
             prompt = f"({index + 1}/{len(specs)}) {specs[index].question}" if len(specs) > 1 else specs[index].question
-            answer = await loop.tui.request_input_async("\n" + prompt)
+            answer = await loop.tui.request_input("\n" + prompt)
             if answer is None:
                 return [DISMISSED] * len(specs)  # Ctrl-C on a free-text page dismisses the batch
             state.picked[index] = answer
@@ -562,7 +562,7 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: Choi
         view = entries[int(result)].view
         return view() if callable(view) else view
 
-    picked = loop.tui.show_modal(fragments, handle_key)
+    picked = loop.tui.show_modal_sync(fragments, handle_key)
     return (picked if isinstance(picked, ApprovalView) else None), state
 
 
@@ -715,7 +715,7 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
         scroll = max(0, scroll)
         return TUI_MODAL_PENDING
 
-    return loop.tui.show_modal(fragments, handle_key, exclusive=True)
+    return loop.tui.show_modal_sync(fragments, handle_key, exclusive=True)
 
 
 def diff_viewer(loop: CommandLoop) -> None:
@@ -804,7 +804,7 @@ def diff_viewer(loop: CommandLoop) -> None:
             return TUI_MODAL_PENDING
         return result
 
-    loop.tui.show_modal(fragments, modal_key, exclusive=True)
+    loop.tui.show_modal_sync(fragments, modal_key, exclusive=True)
 
 
 def compaction_log_viewer(loop: CommandLoop) -> None:
@@ -898,4 +898,4 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
     def modal_key(key: str, _data: str) -> Any:
         return state.handle_key(key, len(segments), size()[1])
 
-    loop.tui.show_modal(fragments, modal_key, exclusive=True)
+    loop.tui.show_modal_sync(fragments, modal_key, exclusive=True)

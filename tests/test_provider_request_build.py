@@ -243,7 +243,7 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
     record_backoff(monkeypatch, on_wait=lambda: seen.__setitem__(s.state.current_model_attempt, s.state.model_retry_reason))
 
     with pytest.raises(ModelError, match="after 6 attempts"):
-        client.request([{"role": "user", "content": "hi"}])
+        client.request_sync([{"role": "user", "content": "hi"}])
 
     assert len(calls) == 6
     assert seen == {2: "500", 3: "500", 4: "500", 5: "500", 6: "500"}

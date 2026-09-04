@@ -84,7 +84,7 @@ async def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path)
         def compact(self, text, *_args, **_kwargs):
             raise AssertionError(f"synthetic summary was compacted again: {text}")
 
-    await ContextManager(s).prepare_messages_async(FakeModel(), "system")
+    await ContextManager(s).prepare_messages(FakeModel(), "system")
 
     assert s.messages == [{"role": "user", "content": summary}]
     assert s.state.compaction_count == 0
@@ -136,7 +136,7 @@ async def test_prepare_request_persists_current_turn_compaction_without_pending_
     ]
     agent.model.compact = lambda _text, *_args, **_kwargs: {"summary": "compact summary"}
 
-    await agent.prepare_request_async(turn)
+    await agent.prepare_request(turn)
 
     assert len(turn) < 21  # incidental: a 1-token budget collapses the kept tail by size
     assert turn[0]["content"] == "continue"
@@ -157,7 +157,7 @@ async def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path
     agent.context.request_token_budget = lambda: 10
     agent.context.request_tokens = lambda messages, tools=None: 100 if any("old step" in str(message.get("content") or "") for message in messages) else 1
 
-    request = await agent.prepare_request_async(turn)
+    request = await agent.prepare_request(turn)
 
     assert any("old step" in str(message.get("content") or "") for message in turn)
     assert not any("old step" in str(message.get("content") or "") for message in request.turn_messages)
@@ -166,7 +166,7 @@ async def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path
     assert transcript[-1]["content"].endswith("late follow-up")
     assert s.state.compaction_count == 1
 
-    await agent.prepare_request_async(turn)
+    await agent.prepare_request(turn)
 
     assert s.state.compaction_count == 1
 
@@ -188,7 +188,7 @@ async def test_interrupted_current_turn_compaction_falls_back_before_cancelling(
             raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
-        await context.prepare_messages_async(InterruptedModel(s), "system", turn)
+        await context.prepare_messages(InterruptedModel(s), "system", turn)
 
     # The count is incidental here -- this budget is 1 token, so the size bound collapses the kept
     # tail. What matters is that the trim happened and left its marker before the interrupt flew.
@@ -243,7 +243,7 @@ async def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_p
         def compact(self, text, *_args, **_kwargs):
             raise AssertionError(text)
 
-    await context.prepare_messages_async(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
+    await context.prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
 
     assert compaction_phases == []
     assert s.messages == [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]

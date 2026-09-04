@@ -133,9 +133,7 @@ class TuiRuntime:
         # Submitted user input, on the runtime loop. TUI callbacks run there too, so they enqueue
         # directly; anything arriving from another thread schedules the put instead.
         self.pending: asyncio.Queue[UserInput] = asyncio.Queue()
-        self.stop = threading.Event()
-        self.cancel_pending = threading.Event()
-        self.main_busy = threading.Event()
+        self.cancel_pending = False
         self.force_exit_timer: threading.Timer | None = None
         self.error: BaseException | None = None
         # The loop this runtime owns, and everything it started on it. Every task created here is
@@ -147,6 +145,7 @@ class TuiRuntime:
         # Set to end the input loop: an asyncio event, so waiting for it is an await rather than a
         # poll, and it is owned by the loop that sets it.
         self.shutdown: asyncio.Event | None = None
+        self.application_ready: asyncio.Event | None = None
 
     @property
     def tui(self) -> TuiApp:
@@ -160,9 +159,9 @@ class TuiRuntime:
         the loop that owns it. The status stays on `cancelling` until the turn has quiesced and
         settled, which is the honest state -- an uncooperative tool may still be unwinding."""
 
-        if self.cancel_pending.is_set():
+        if self.cancel_pending:
             return
-        self.cancel_pending.set()
+        self.cancel_pending = True
         self.tui.set_running("cancelling")
         self.loop.agent.cancel()
 
@@ -230,8 +229,7 @@ class TuiRuntime:
         self.request_shutdown()
 
     def request_shutdown(self) -> None:
-        """Stop accepting new turns and let run_async begin its shutdown sequence."""
-        self.stop.set()
+        """Stop accepting new turns and let run begin its shutdown sequence."""
         event, loop = self.shutdown, self.runtime_loop
         if event is None or loop is None:
             return
@@ -303,8 +301,7 @@ class TuiRuntime:
         with self.loop.model_stream_lock:
             self.loop.model_stream_promoted_text = ""
         self.tui.set_idle()
-        self.cancel_pending.clear()
-        self.main_busy.clear()
+        self.cancel_pending = False
 
     async def dispatch(self, user_input: str | UserInput) -> bool:
         """Dispatch one input. Return true when it was fully handled as a command."""
@@ -318,7 +315,6 @@ class TuiRuntime:
             self.reset_turn()
             return True
         if exit_now:
-            self.main_busy.clear()
             self.request_shutdown()
             return True
         if handled:
@@ -337,7 +333,7 @@ class TuiRuntime:
         it must not read as the runtime itself being torn down. It is awaited to completion first,
         so by the time this raises, Agent has settled or retracted the turn and saved its snapshot."""
 
-        turn = asyncio.ensure_future(self.loop.agent.run_async(user_input))
+        turn = asyncio.ensure_future(self.loop.agent.run(user_input))
         try:
             await turn
         except asyncio.CancelledError:
@@ -411,9 +407,8 @@ class TuiRuntime:
             if not waiting.done() or waiting.cancelled():
                 return
             user_input = waiting.result()
-            self.main_busy.set()
             self.loop.session.clear_quick_hints()  # the user acted; drop last turn's offerings (also covers slash commands, which skip Agent.run)
-            if self.cancel_pending.is_set():
+            if self.cancel_pending:
                 self.loop.emit_turn("Cancelled")
                 self.reset_turn()
                 continue
@@ -449,7 +444,7 @@ class TuiRuntime:
         rather than leaving the turn and the writer running with no terminal under them."""
 
         try:
-            await self.tui.run_async(style=self.loop.view.style())
+            await self.tui.run(style=self.loop.view.style())
         except BaseException as error:
             if self.error is None:
                 self.error = error
@@ -457,13 +452,13 @@ class TuiRuntime:
         finally:
             self.request_shutdown()
 
-    def run(self) -> int:
+    def run_sync(self) -> int:
         """Synchronous entry point for the interactive CLI: one loop for the whole runtime."""
 
-        fail_if_running_loop("use await TuiRuntime.run_async(...)")
-        return asyncio.run(self.run_async())
+        fail_if_running_loop("use await TuiRuntime.run(...)")
+        return asyncio.run(self.run())
 
-    async def run_async(self) -> int:
+    async def run(self) -> int:
         """Own the interactive session: the application, the active turn, and the output queue.
 
         One loop for all of it, so a model request, a tool batch, an MCP call and a keystroke are
@@ -471,12 +466,14 @@ class TuiRuntime:
 
         self.runtime_loop = asyncio.get_running_loop()
         self.shutdown = asyncio.Event()
+        self.application_ready = asyncio.Event()
         self.loop.tui = self.build_tui()
+        self.tui.on_ready = self.application_ready.set
         application = self.spawn(self._run_application(), name="tui-application")
         assert application is not None
         try:
             await self._await_ready(application)
-            self.scrollback = ScrollbackWriter(self.runtime_loop, self.tui.write_to_scrollback_async, self.loop.ui.write_direct)
+            self.scrollback = ScrollbackWriter(self.runtime_loop, self.tui.write_to_scrollback, self.loop.ui.write_direct)
             self.loop.scrollback = self.scrollback
             self.loop.background_output_lock = self.scrollback.lock
             self.loop.agent.output_barrier = self.scrollback.barrier
@@ -488,7 +485,7 @@ class TuiRuntime:
             self.loop.start_session()
             if resuming:
                 self.tui.set_idle()
-            self.spawn(self.loop.discover_mcp_async(), name="mcp-discovery")
+            self.spawn(self.loop.discover_mcp(), name="mcp-discovery")
             if self.loop.session.mentions is not None:
                 # Git discovery can cost hundreds of milliseconds in a large worktree. Warm its
                 # runtime-only snapshot after the prompt is live so the first picker need not wait.
@@ -503,11 +500,19 @@ class TuiRuntime:
 
     async def _await_ready(self, application: asyncio.Task) -> None:
         """Wait for the application to be live, or for it to have failed trying."""
-        while not self.tui.ready.is_set():
+        assert self.application_ready is not None
+        ready = asyncio.ensure_future(self.application_ready.wait())
+        try:
+            await asyncio.wait({ready, application}, return_when=asyncio.FIRST_COMPLETED)
             if application.done():
                 await application  # re-raises whatever stopped it
-                return
-            await asyncio.sleep(0.001)
+            else:
+                await ready
+        finally:
+            if not ready.done():
+                ready.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ready
 
     async def _shutdown(self, application: asyncio.Task) -> None:
         """Unwind in a fixed order, so nothing is closed while something still needs it.
@@ -517,7 +522,6 @@ class TuiRuntime:
         then the accepted writes -- and only then exit the application and await it. The loop is
         closed by `asyncio.run` after this returns, which is why every close happens here."""
 
-        self.stop.set()
         if self.shutdown is not None:
             self.shutdown.set()
         if self.force_exit_timer is not None:

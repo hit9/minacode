@@ -26,7 +26,7 @@ def test_tool_runner_batch_edit_rejects_consumed_target(tmp_path, monkeypatch):
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
 
-    runner(s).run(
+    runner(s).run_sync(
         [
             ToolCall("first", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "C\n"}]]),
             ToolCall("second", "Edit", ["code.txt", key, [{"op": "replace", "start": 3, "end": 3, "content": "D\n"}]]),
@@ -46,7 +46,7 @@ def test_tool_runner_planned_edit_writes_adjacent_duplicates_without_warning(tmp
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
 
-    runner(s).run([ToolCall("duplicate", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nx\n"}]])])
+    runner(s).run_sync([ToolCall("duplicate", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\nx\n"}]])])
 
     record = next(record for record in s.tool_records if record.name == "Edit")
     assert "<warnings>" not in record.output
@@ -57,7 +57,7 @@ def test_tool_runner_batch_edit_rejects_create_mixed_with_patch_ops(tmp_path, mo
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
-    runner(s).run(
+    runner(s).run_sync(
         [
             ToolCall(
                 "bad",
@@ -81,7 +81,7 @@ def test_tool_runner_batch_edit_rejects_directory_target(tmp_path, monkeypatch):
     key = view(s, "pkg")
     path.unlink()
     path.mkdir()
-    runner(s).run([ToolCall("patch", "Edit", ["pkg", key, [{"op": "replace", "start": 1, "end": 1, "content": "y\n"}]])])
+    runner(s).run_sync([ToolCall("patch", "Edit", ["pkg", key, [{"op": "replace", "start": 1, "end": 1, "content": "y\n"}]])])
 
     assert s.tool_records == []
     assert s.tool_errors and "path is a directory" in s.tool_errors[0].error
@@ -91,7 +91,7 @@ def test_tool_runner_batch_edit_rejects_duplicate_create_same_file(tmp_path, mon
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
-    runner(s).run(
+    runner(s).run_sync(
         [
             ToolCall("create", "Edit", ["dup.txt", "", [{"op": "create", "content": "one\n"}]]),
             ToolCall("again", "Edit", ["dup.txt", "", [{"op": "create", "content": "two\n"}]]),
@@ -111,7 +111,7 @@ def test_tool_runner_batch_edit_rejects_patch_missing_file_without_create(tmp_pa
     path.write_text("x\n", encoding="utf-8")
     key = view(s, "missing.txt")
     path.unlink()
-    runner(s).run([ToolCall("patch", "Edit", ["missing.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]])])
+    runner(s).run_sync([ToolCall("patch", "Edit", ["missing.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]])])
 
     assert not path.exists()
     assert s.tool_records == []
@@ -158,7 +158,7 @@ def test_edit_creates_file_in_existing_external_directory(tmp_path, monkeypatch)
     s = session(workspace)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
-    runner(s).run([ToolCall("create", "Edit", ["../external/new.py", "", [{"op": "create", "content": "value = 1\n"}]])])
+    runner(s).run_sync([ToolCall("create", "Edit", ["../external/new.py", "", [{"op": "create", "content": "value = 1\n"}]])])
 
     assert (external / "new.py").read_text(encoding="utf-8") == "value = 1\n"
     assert not s.tool_errors
@@ -173,7 +173,7 @@ def test_yolo_approves_mutating_tools_without_prompt(tmp_path):
         input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
         output_fn=lambda text: None,
     )
-    r.run([ToolCall("create", "Edit", ["auto.txt", "", [{"op": "create", "content": "ok\n"}]])])
+    r.run_sync([ToolCall("create", "Edit", ["auto.txt", "", [{"op": "create", "content": "ok\n"}]])])
 
     assert (tmp_path / "auto.txt").read_text(encoding="utf-8") == "ok\n"
     assert len(s.tool_records) == 1
@@ -232,7 +232,7 @@ def test_batch_insert_far_from_later_target_keeps_edit_alive(tmp_path, monkeypat
     path.write_text("a\nb\nc\nd\ne\n", encoding="utf-8")
     key = view(s, "code.txt")
 
-    runner(s).run(
+    runner(s).run_sync(
         [
             ToolCall("ins", "Edit", ["code.txt", key, [{"op": "replace", "start": 4, "end": 4, "content": "d\nINS\n"}]]),
             ToolCall("rep", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]),
@@ -346,7 +346,7 @@ def test_batch_refuses_two_insertions_at_one_point(tmp_path, monkeypatch):
     path.write_text("a\nb\nc\nd\n", encoding="utf-8")
     key = view(s, "code.txt")
 
-    runner(s).run(
+    runner(s).run_sync(
         [
             ToolCall(
                 "both",
@@ -380,7 +380,7 @@ def test_batch_accepts_two_views_of_one_path(tmp_path, monkeypatch):
     tail = view(s, "code.txt", ranges=[[3, 4]])
 
     assert whole != tail
-    runner(s).run(
+    runner(s).run_sync(
         [
             ToolCall("first", "Edit", ["code.txt", whole, [{"op": "replace", "start": 1, "end": 1, "content": "a\nX\n"}]]),
             ToolCall("second", "Edit", ["code.txt", tail, [{"op": "replace", "start": 4, "end": 4, "content": "D\n"}]]),
@@ -403,7 +403,7 @@ def test_batch_relocates_a_view_line_the_file_no_longer_has_room_for(tmp_path, m
     key = view(s, "code.txt")
     path.write_text("a\nb\ne\n", encoding="utf-8")  # c and d removed elsewhere; e moves up
 
-    runner(s).run([ToolCall("edit", "Edit", ["code.txt", key, [{"op": "replace", "start": 5, "end": 5, "content": "E\n"}]])])
+    runner(s).run_sync([ToolCall("edit", "Edit", ["code.txt", key, [{"op": "replace", "start": 5, "end": 5, "content": "E\n"}]])])
 
     assert path.read_text(encoding="utf-8") == "a\nb\nE\n"
     assert s.tool_errors == []
@@ -423,7 +423,7 @@ def test_batch_trusts_a_tracked_index_when_an_earlier_edit_changed_a_neighbour(t
     path.write_text("a\npass\npass\npass\nb\npass\n", encoding="utf-8")
     key = view(s, "code.py")
 
-    runner(s).run(
+    runner(s).run_sync(
         [
             ToolCall("first", "Edit", ["code.py", key, [{"op": "replace", "start": 2, "end": 2, "content": "TWO\n"}]]),
             ToolCall("second", "Edit", ["code.py", key, [{"op": "replace", "start": 3, "end": 3, "content": "THREE\n"}]]),
@@ -446,7 +446,7 @@ def test_batch_untracked_target_still_needs_its_neighbours(tmp_path, monkeypatch
     key = view(s, "code.py")
     path.write_text("x\ny\npass\npass\npass\npass\npass\npass\n", encoding="utf-8")  # drifted before the batch
 
-    runner(s).run([ToolCall("ins", "Edit", ["code.py", key, [{"op": "replace", "start": 4, "end": 4, "content": "pass\nNEW\n"}]])])
+    runner(s).run_sync([ToolCall("ins", "Edit", ["code.py", key, [{"op": "replace", "start": 4, "end": 4, "content": "pass\nNEW\n"}]])])
 
     assert path.read_text(encoding="utf-8") == "x\ny\npass\npass\npass\npass\npass\npass\n"
     assert s.tool_errors and "cannot relocate" in s.tool_errors[0].error

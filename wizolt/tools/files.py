@@ -148,7 +148,7 @@ class ViewImageTool(Tool):
     def __init__(self, session: Session, args: ToolArgs):
         super().__init__(session, args)
         self.image: ImageRef | None = None
-        # Injected by ToolRunner.call_tool_async. The tool owns validation and result shape;
+        # Injected by ToolRunner.call_tool. The tool owns validation and result shape;
         # orchestration owns the model-client lifecycle so cancellation reaches every request.
         self.vision_observe: Callable[[tuple[ImageRef, ...], str], Awaitable[str]] | None = None
         self._uses_vision_provider = False
@@ -198,24 +198,10 @@ class ViewImageTool(Tool):
         return f"{self.session.config.vision_provider}/{provider.model}"
 
     async def _vision_observe(self, question: str) -> str:
-        assert self.image is not None  # call_async() loaded it before bridging
+        assert self.image is not None  # call() loaded it before bridging
         if self.vision_observe is None:
             raise ToolError("ViewImage with a configured vision provider requires ToolRunner")
         return await self.vision_observe((self.image,), question)
-
-    def call(self) -> str:
-        """ViewImage bridges to a provider, so its work is a coroutine; see call_async.
-
-        Reached only if something outside the runner invokes it as an ordinary tool, which cannot
-        do the observation -- the local half still answers, so the model gets the image's identity
-        rather than an error about plumbing."""
-
-        path = self.path()
-        try:
-            self.image = self.session.images.load(path, source_text=self.session.relpath(path))
-        except ModelError as error:
-            raise ToolError(str(error)) from error
-        return self._header(path) + "/>"
 
     def _header(self, path: str) -> str:
         assert self.image is not None
@@ -225,7 +211,7 @@ class ViewImageTool(Tool):
             f"height={self.image.height} bytes={self.image.size}"
         )
 
-    async def call_async(self) -> str:
+    async def call(self) -> str:
         path = self.path()
         try:
             self.image = self.session.images.load(path, source_text=self.session.relpath(path))

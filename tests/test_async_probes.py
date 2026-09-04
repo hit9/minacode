@@ -45,7 +45,7 @@ async def main():
         await asyncio.Event().wait()
 
     agent.model.api_request = never_answers
-    turn = asyncio.ensure_future(agent.run_async("go"))
+    turn = asyncio.ensure_future(agent.run("go"))
     await asyncio.sleep(0.2)
     agent.cancel()
     try:
@@ -60,14 +60,14 @@ async def main():
         await asyncio.Event().wait()
 
     session.mcp._call_tool = hangs
-    call = asyncio.ensure_future(session.mcp.call_tool_async("slow", "echo", {}))
+    call = asyncio.ensure_future(session.mcp.call_tool("slow", "echo", {}))
     await asyncio.sleep(0.1)
-    await session.mcp.close_async()
+    await session.mcp.close()
     try:
         await call
     except BaseException:
         pass
-    await agent.model.close_async()
+    await agent.model.close()
     return 0
 
 
@@ -124,7 +124,7 @@ async def main():
     session.settings.yolo = True
     runner = ToolRunner(session, ContextManager(session), output_fn=lambda text: None)
 
-    batch = asyncio.ensure_future(runner.run_async([ToolCall("m1", "SlowMutation", [])]))
+    batch = asyncio.ensure_future(runner.run([ToolCall("m1", "SlowMutation", [])]))
     await asyncio.sleep(0.05)
     batch.cancel()
     try:
@@ -137,7 +137,7 @@ async def main():
 
     # A second turn, on the same runner: the first tool must not write again underneath it.
     second = ToolRunner(session, ContextManager(session), output_fn=lambda text: None)
-    await second.run_async([ToolCall("m2", "Note", [{"replace_plan": ["next"]}])])
+    await second.run([ToolCall("m2", "Note", [{"replace_plan": ["next"]}])])
     await asyncio.sleep(0.4)
 
     if os.stat(MARKER).st_mtime_ns != stamp:

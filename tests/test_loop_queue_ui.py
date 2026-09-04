@@ -1,5 +1,8 @@
 """loop queue ui (split from tests/test_loop_commands.py)."""
+import asyncio
 import itertools
+import os
+import sys
 import time
 
 import pytest
@@ -208,6 +211,42 @@ async def test_tool_input_without_tui_uses_injected_input(tmp_path):
 
     assert calls == ["[Y/n or reason] "]
 
+
+async def test_default_pipe_input_is_loop_driven_and_preserves_following_lines(tmp_path, monkeypatch):
+    """The process stdin path reads readiness itself: no input() worker is left behind, and one
+    kernel read may safely supply more than one prompt."""
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    s = session(tmp_path)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    try:
+        os.write(write_fd, b"first\nsecond\n")
+        assert await loop.read_input("") == "first"
+        assert await loop.read_input("") == "second"
+    finally:
+        os.close(write_fd)
+        stdin.close()
+
+
+async def test_cancelling_default_pipe_input_removes_the_reader(tmp_path, monkeypatch):
+    """A pipe whose writer remains open cannot hold asyncio.run's executor during shutdown."""
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    s = session(tmp_path)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    read = asyncio.create_task(loop.read_input(""))
+    await asyncio.sleep(0)
+    read.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await read
+        assert os.get_blocking(read_fd)
+    finally:
+        os.close(write_fd)
+        stdin.close()
+
 def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
     s = session(tmp_path)
     outputs = []
@@ -215,7 +254,7 @@ def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypa
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
     content = "".join(f"line {index}\n" for index in range(50))
 
-    runner.run([call("Edit", ["new.txt", "", [{"op": "create", "content": content}]])])
+    runner.run_sync([call("Edit", ["new.txt", "", [{"op": "create", "content": content}]])])
 
     assert outputs[0].startswith("  Edit  new.txt\n    ├ preview")
     assert "+line 49" in outputs[0]

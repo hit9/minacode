@@ -225,7 +225,7 @@ class TuiApp:
         self.input_buffer.on_text_changed += self._on_input_text_changed
         self.search_toolbar = SearchToolbar()
         self.app: Application | None = None
-        self.ready = threading.Event()
+        self.on_ready: Callable[[], None] = lambda: None
         self.input_mode = "chat"  # chat | dispatch | running | approval
         self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
         self._quick_hint_resume_focus = -1  # last picked chip; Tab resumes after it once
@@ -257,7 +257,7 @@ class TuiApp:
         self.exclusive_modal_window: Window | None = None
         self.status_window: Window | None = None
 
-    async def request_input_async(self, prompt: str) -> str | None:
+    async def request_input(self, prompt: str) -> str | None:
         """Ask for a line of user input inline (an approval prompt, an Ask free-text page) and await it.
 
         Returns None when the input was cancelled instead of answered: Ctrl-C, Ctrl-D on an empty
@@ -417,7 +417,7 @@ class TuiApp:
         if self.input_mode != "running":
             self.invalidate()
 
-    async def write_to_scrollback_async(self, callback: Callable[[], None]) -> None:
+    async def write_to_scrollback(self, callback: Callable[[], None]) -> None:
         """Print above the live application, on its own loop, and return once the terminal took it.
 
         `run_in_terminal` owns the erase/write/redraw sequence, while `create_app_session` routes
@@ -438,7 +438,7 @@ class TuiApp:
 
         await run_in_terminal(render)
 
-    def write_to_scrollback(self, callback: Callable[[], None]) -> None:
+    def write_to_scrollback_sync(self, callback: Callable[[], None]) -> None:
         """Print above the live application and wait until the terminal has accepted it.
 
         The blocking form, for callers that are not on the application's loop -- a modal viewer on
@@ -894,7 +894,7 @@ class TuiApp:
         first = old[: delta.prefix].count(IMAGE_MARKER)
         self.input_images = self.input_images[:first] + self.input_images[first + removed :]
 
-    async def show_modal_async(
+    async def show_modal(
         self,
         fragments_fn: Callable[[], StyleAndTextTuples],
         key_fn: Callable[[str, str], Any],
@@ -926,7 +926,7 @@ class TuiApp:
             self._use_alternate_screen(True)
         app.invalidate()
 
-    def show_modal(
+    def show_modal_sync(
         self,
         fragments_fn: Callable[[], StyleAndTextTuples],
         key_fn: Callable[[str, str], Any],
@@ -1473,25 +1473,24 @@ class TuiApp:
 
         app._on_resize = on_resize
 
-    def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
+    def run_sync(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         """Standalone entry point: own a loop for this application alone.
 
         The interactive runtime does not use this. It owns one loop for the application, the active
-        turn, and its own background work, and awaits `run_async` on it."""
+        turn, and its own background work, and awaits `run` on it."""
 
-        fail_if_running_loop("use await TuiApp.run_async(...)")
-        return asyncio.run(self.run_async(style))
+        fail_if_running_loop("use await TuiApp.run(...)")
+        return asyncio.run(self.run(style))
 
-    async def run_async(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
+    async def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         app = self._build_application(style)
         self.app = app
-        self.ready.clear()
 
         def start() -> None:
             # pre_run already runs inside the application's loop, and the task it starts is
             # cancelled with the rest of the application's background tasks on exit.
             app.create_background_task(self.animate())
-            self.ready.set()
+            self.on_ready()
 
         try:
             with patch_stdout():
@@ -1500,7 +1499,6 @@ class TuiApp:
             self._after_run()
 
     def _after_run(self) -> None:
-        self.ready.set()
         # Flush anything still queued in the scrollback batching window before the terminal is
         # handed back; a timer fired inside the app loop would never get to run again.
         self.on_app_stop()

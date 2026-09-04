@@ -157,7 +157,7 @@ class ToolScript(Tool):
         'Learn call shapes before scripting them. Example: {"action":"describe","tools":["Read","server.tool"]}',
     )
     MUTATES = True
-    runner: ToolRunner | None = None  # injected by ToolRunner.call_tool_async; the runner owns the confirm wiring
+    runner: ToolRunner | None = None  # injected by ToolRunner.call_tool; the runner owns the confirm wiring
     # Injected by the runner for the length of one script: publishes this run's cancellation token,
     # so the loop can set it without reaching into the worker.
     on_budget: Callable[[_ScriptTimeBudget], None] | None = None

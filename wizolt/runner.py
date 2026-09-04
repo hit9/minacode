@@ -119,7 +119,7 @@ class _NestedGateway:
 
     async def _serve(self, request: NestedRequest, future: concurrent.futures.Future) -> None:
         try:
-            outcomes = await self._runner.run_nested_async(request)
+            outcomes = await self._runner.run_nested(request)
         except asyncio.CancelledError:
             self._settle(future, ScriptCancelled())
             raise
@@ -144,7 +144,7 @@ class _NestedGateway:
     async def close(self) -> None:
         """Close admission, quiesce active nested work, and unblock every waiting worker.
 
-        Awaited before `run_async` returns, so no gateway task and no blocked worker future can
+        Awaited before `run` returns, so no gateway task and no blocked worker future can
         outlive the ToolScript call that owns them."""
 
         with self._lock:
@@ -236,7 +236,7 @@ class ToolRunner:
         # a worker parked on the user can be unblocked when the turn is cancelled. None (headless,
         # piped stdin) means the injected input function owns its own unblocking.
         self.cancel_input: Callable[[], None] | None = None
-        # Loop-bound state for one run_async() invocation. Never reused across invocations: a
+        # Loop-bound state for one run() invocation. Never reused across invocations: a
         # semaphore belongs to the loop that created it, and this runner outlives any single loop.
         self._capacity: asyncio.Semaphore | None = None
         self._gateway: _NestedGateway | None = None
@@ -362,7 +362,7 @@ class ToolRunner:
             return
         self.session.record_tool_error("-", "cancel", [], f"ToolError while cancelling: {error}")
 
-    async def call_tool_async(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str | ToolOutput:
+    async def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str | ToolOutput:
         """Run one tool's own work under the execution policy for its kind.
 
         The policy lives here rather than on each Tool: what may overlap, what must not be
@@ -372,8 +372,8 @@ class ToolRunner:
         if isinstance(tool, ViewImageTool):
             # The runner owns the vision client, so cancelling the turn reaches an in-flight
             # observation instead of leaving it to wait out the provider timeout.
-            tool.vision_observe = VisionObserver(self.vision_client()).observe_async
-            return await tool.call_async()
+            tool.vision_observe = VisionObserver(self.vision_client()).observe
+            return await tool.call()
         if isinstance(tool, ToolScript):
             tool.runner = self
             return await self._run_script(tool)
@@ -381,7 +381,7 @@ class ToolRunner:
             # Awaited directly: the worker's turn is a child of this one, so the parent's
             # cancellation reaches it by propagation and its diffs still merge on every ending.
             tool.runner = self
-            return await tool.call_async()
+            return await tool.call()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):
                 return await self._run_in_executor(tool.call, tool)
@@ -391,11 +391,11 @@ class ToolRunner:
         if isinstance(tool, AskTool):
             # The user is asked on the loop and may take as long as they like; the prompt stays
             # live and cancellable rather than parking a worker on them.
-            return await tool.call_async()
+            return await tool.call()
         if isinstance(tool, MCPTool):
             # Native: the manager's operations are coroutines on this loop, so a cancelled turn
             # reaches the FastMCP client itself and its teardown is awaited before this returns.
-            return await tool.call_async()
+            return await tool.call()
         if tool.MUTATES or tool.PRODUCES_MODEL_OBSERVATION or isinstance(tool, NextHintsTool):
             # Short local mutation stays on the loop: single-writer, and an Edit or a Note can
             # never outlive the turn that ordered it. Cancellation is observed on both sides.
@@ -413,13 +413,13 @@ class ToolRunner:
         if current is not None and current.cancelling():
             raise asyncio.CancelledError
 
-    def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
-        """Synchronous entry point for direct tests and embedding; the agent awaits run_async."""
+    def run_sync(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
+        """Synchronous entry point for direct tests and embedding; the agent awaits run."""
 
-        fail_if_running_loop("use await ToolRunner.run_async(...)")
-        return asyncio.run(self.run_async(calls, batch_suffix))
+        fail_if_running_loop("use await ToolRunner.run(...)")
+        return asyncio.run(self.run(calls, batch_suffix))
 
-    async def run_async(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
+    async def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         loop = asyncio.get_running_loop()
         # Per invocation, never per runner: these are loop-bound, and this runner outlives loops.
         self._capacity = asyncio.Semaphore(max(1, self.session.settings.max_parallel_tools))
@@ -459,7 +459,7 @@ class ToolRunner:
             index = end
         return [*messages, *observations]
 
-    async def run_nested_async(self, request: NestedRequest) -> list[tuple[str, str]]:
+    async def run_nested(self, request: NestedRequest) -> list[tuple[str, str]]:
         """The loop-side half of ToolScript's gateway: run one nested request the runner's own way.
 
         A `call_many` gets the baseline segmentation, concurrency cap, and original-order
@@ -663,7 +663,7 @@ class ToolRunner:
                 raise ToolError(call.error)
             # MCP's work is a coroutine on this loop, so a read-only MCP call in a parallel batch is
             # cancelled at the client itself; every other read-only tool is bounded blocking work.
-            output = await (tool.call_async() if isinstance(tool, MCPTool) else self._run_in_executor(tool.call))
+            output = await (tool.call() if isinstance(tool, MCPTool) else self._run_in_executor(tool.call))
         except ToolError as error:
             return "reject", f"ToolError: {error}", display, time.monotonic() - started, error.recovery
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
@@ -783,7 +783,7 @@ class ToolRunner:
                     LogBlock.hierarchy(toolblocks.log_root(d.display or tooloutput.short_call(self.session, call), batch_suffix=batch_suffix, call=call), [])
                 )
                 d.nested_display = True
-            output = await self.call_tool_async(tool, planned_edit)
+            output = await self.call_tool(tool, planned_edit)
             if isinstance(tool, ViewImageTool) and tool.vision_entry_label:
                 d.vision_entry = tool.vision_entry_label
             observation = tool.model_observation()

@@ -68,7 +68,7 @@ class Compactor:
         self.ctx = ctx
         self.model = model
 
-    async def run_async(
+    async def run(
         self,
         compacted: list[Json],
         keep: list[Json],
@@ -92,7 +92,7 @@ class Compactor:
                 # slice carries one message more, and the flattened payload carries `compacted`.
                 sent = req[0][:-1] if req else compacted
                 flat = self.input(compacted) if req is None else ""
-                data = await self.compact_async(flat, *(req or ()), echo_source=self.echo_source(sent))
+                data = await self.compact(flat, *(req or ()), echo_source=self.echo_source(sent))
             except (asyncio.CancelledError, KeyboardInterrupt) as error:
                 # The deterministic trim still runs: a cancelled turn must not be left with a
                 # projection the provider would reject. Cancellation is re-raised after that.
@@ -119,7 +119,7 @@ class Compactor:
             raise cancelled
         return True
 
-    async def compact_async(
+    async def compact(
         self,
         context: str,
         inline_messages: list[Json] | None = None,
@@ -156,15 +156,13 @@ class Compactor:
         entry_label = f"{entry_name}/{provider.model}"
         model.session.state.compaction_entry = entry_label
         try:
-            data = await self.compact_attempts_async(
-                messages, provider, response_timeout, entry_label, tools=tools if inline else None, echo_source=echo_source
-            )
+            data = await self.compact_attempts(messages, provider, response_timeout, entry_label, tools=tools if inline else None, echo_source=echo_source)
         finally:
             model.session.state.compaction_entry = ""
         model.last_compaction_model = provider.model
         return data
 
-    async def compact_attempts_async(
+    async def compact_attempts(
         self,
         messages: list[Json],
         provider: ProviderConfig,

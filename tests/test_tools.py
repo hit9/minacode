@@ -206,9 +206,9 @@ async def test_mcp_tool_handles_missing_manager_and_invalid_arguments(tmp_path):
 
     assert tool.needs_confirmation() is False
     with pytest.raises(ToolError, match="MCP not configured"):
-        tool.call()
+        await tool.call()
     with pytest.raises(ToolError, match="arguments must be an object"):
-        await MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": []}]).call_async()
+        await MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": []}]).call()
 
 
 def test_code_index_failure_helpers_keep_session_state_consistent(tmp_path, monkeypatch):
@@ -527,14 +527,14 @@ def test_run_one_rejects_tools_outside_session_whitelist(tmp_path):
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y")
 
     s.tool_names = ("Read",)
-    (message,) = runner.run([ToolCall("c1", "Bash", ["echo hi"])])
+    (message,) = runner.run_sync([ToolCall("c1", "Bash", ["echo hi"])])
     content = str(message["content"])
     assert "failed" in content.lower()
     assert "ToolError: Bash is not available in this session" in content
 
     # Empty tuple = no filtering (parent behavior): the same call executes.
     s.tool_names = ()
-    (message,) = runner.run([ToolCall("c2", "Bash", ["echo hi"])])
+    (message,) = runner.run_sync([ToolCall("c2", "Bash", ["echo hi"])])
     assert "hi" in str(message["content"])
 
 
@@ -722,7 +722,7 @@ def test_mixed_batch_whitelisted_tool_runs_and_excluded_rejected(tmp_path):
         ToolCall("r1", "Read", [{"path": "a.txt"}]),
         ToolCall("s2", "Search", [{"pattern": "hello"}]),
     ]
-    contents = {message["tool_call_id"]: str(message["content"]) for message in runner.run(calls)}
+    contents = {message["tool_call_id"]: str(message["content"]) for message in runner.run_sync(calls)}
     assert "hello" in contents["r1"]
     assert "Search is not available in this session" in contents["s1"]
     assert "Search is not available in this session" in contents["s2"]

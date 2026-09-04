@@ -33,7 +33,7 @@ class TestMCPResources:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_resources)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         return s
 
     def test_action_schema_includes_resource_actions(self):
@@ -70,7 +70,7 @@ class TestMCPResources:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", boom)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         assert s.mcp.tools["test"]  # tool discovery still succeeded
         assert s.mcp.resources["test"] == []
         assert "test" not in s.mcp.server_errors
@@ -82,14 +82,14 @@ class TestMCPResources:
             return [SimpleNamespace(text="hello " + uri, blob=None)]
 
         monkeypatch.setattr(s.mcp, "_read_resource", fake_read)
-        out = await MCPTool(s, [{"action": "read_resource", "server": "test", "uri": "docs://a.md"}]).call_async()
+        out = await MCPTool(s, [{"action": "read_resource", "server": "test", "uri": "docs://a.md"}]).call()
         assert '<MCPResource server="test" uri="docs://a.md">' in out
         assert "hello docs://a.md" in out
 
     async def test_read_resource_requires_uri(self, monkeypatch):
         s = await self._server_with_resources(monkeypatch, [])
         with pytest.raises(ToolError, match="requires a uri"):
-            await MCPTool(s, [{"action": "read_resource", "server": "test"}]).call_async()
+            await MCPTool(s, [{"action": "read_resource", "server": "test"}]).call()
 
     async def test_read_resource_is_read_only(self, monkeypatch):
         s = await self._server_with_resources(monkeypatch, [])
@@ -98,7 +98,7 @@ class TestMCPResources:
 
     async def test_list_resources_dispatch(self, monkeypatch):
         s = await self._server_with_resources(monkeypatch, [_fake_resource(uri="docs://a.md", description="Doc A")])
-        out = await MCPTool(s, [{"action": "list_resources", "server": "test"}]).call_async()
+        out = await MCPTool(s, [{"action": "list_resources", "server": "test"}]).call()
         assert "docs://a.md" in out and "Doc A" in out
 
     def test_normalize_resource_blob(self):
@@ -119,13 +119,13 @@ class TestMCPResources:
             return SimpleNamespace(content=[SimpleNamespace(type="text", text="ok " + name)])
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
-        out = await MCPTool(s, [{"server": "test", "tool": "query", "arguments": {"q": 1}}]).call_async()
+        out = await MCPTool(s, [{"server": "test", "tool": "query", "arguments": {"q": 1}}]).call()
         assert "ok query" in out
 
     async def test_unknown_action_error_is_actionable(self, monkeypatch):
         s = await self._server_with_resources(monkeypatch, [])
         with pytest.raises(ToolError, match=r"tool=.search"):
-            await MCPTool(s, [{"action": "search", "server": "test", "arguments": {}}]).call_async()
+            await MCPTool(s, [{"action": "search", "server": "test", "arguments": {}}]).call()
 
     def test_extract_uris_from_description(self):
         text = "See metabase://docs/cq.md for syntax. Also https://x.io/a, and (file://y.txt)."
@@ -149,7 +149,7 @@ class TestMCPResources:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", empty)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         idx = s.mcp.render_tools_index()
         # URI survives even though the description is truncated to 80 chars on the main line.
         assert "metabase://docs/construct-query.md" in idx
@@ -157,7 +157,7 @@ class TestMCPResources:
 
     async def test_mention_block_lists_resources(self, monkeypatch):
         s = await self._server_with_resources(monkeypatch, [_fake_resource(uri="docs://a.md", description="Doc A")])
-        block = await s.mcp._mention_block_async("test", "")
+        block = await s.mcp._mention_block("test", "")
         assert "docs://a.md" in block and "read_resource" in block
 
     async def test_mention_block_lists_resources_without_tools(self):
@@ -166,7 +166,7 @@ class TestMCPResources:
         s.mcp.tools["test"] = []
         s.mcp.resources["test"] = [MCPResourceInfo("test", "docs://guide.md", "guide", "Usage guide", "text/markdown")]
 
-        block = await s.mcp._mention_block_async("test", "")
+        block = await s.mcp._mention_block("test", "")
 
         assert "docs://guide.md" in block
         assert "no tools or resources" not in block
@@ -215,7 +215,7 @@ class TestMCPResources:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_resources)
         monkeypatch.setattr(s.mcp, "_read_resource", fake_read)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         return s
 
     async def test_auto_read_injects_doc_on_first_call(self, monkeypatch):
@@ -226,10 +226,10 @@ class TestMCPResources:
             return SimpleNamespace(content=[SimpleNamespace(type="text", text="ROWS")])
 
         monkeypatch.setattr(s.mcp, "_call_tool", ok)
-        out1 = await MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call_async()
+        out1 = await MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
         assert "MCPAutoResources" in out1 and "GRAMMAR DOC" in out1 and "ROWS" in out1
         # injected once: a second call neither re-reads nor re-injects
-        out2 = await MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call_async()
+        out2 = await MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
         assert "MCPAutoResources" not in out2
         assert reads == ["metabase://docs/cq.md"]
 
@@ -242,7 +242,7 @@ class TestMCPResources:
 
         monkeypatch.setattr(s.mcp, "_call_tool", boom)
         with pytest.raises(ToolError) as exc:
-            await MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call_async()
+            await MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
         assert "Invalid body" in str(exc.value) and "GRAMMAR DOC" in str(exc.value)
 
     async def test_auto_read_skips_web_links(self, monkeypatch):
@@ -253,7 +253,7 @@ class TestMCPResources:
             return SimpleNamespace(content=[SimpleNamespace(type="text", text="ROWS")])
 
         monkeypatch.setattr(s.mcp, "_call_tool", ok)
-        out = await MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call_async()
+        out = await MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
         assert "MCPAutoResources" not in out and reads == []
 
 class TestToolOutputSchemaCapture:

@@ -131,7 +131,7 @@ async def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, mo
     JobTool(s, [{"action": "start", "command": "sleep 60"}]).call()
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 900}])
 
-    call = asyncio.ensure_future(runner.call_tool_async(tool))
+    call = asyncio.ensure_future(runner.call_tool(tool))
     deadline = time.monotonic() + 2
     while runner._active_job.value is not tool and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
@@ -282,7 +282,7 @@ def test_job_wait_prints_call_line_before_blocking(tmp_path, monkeypatch):
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "y", output_fn=blocks.append)
     JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call()
 
-    runner.run([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 30}])])
+    runner.run_sync([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 30}])])
 
     # The first output is the call line printed before the block: a leaf LogBlock whose root is a
     # LogLine carrying the tool name and args, with no children yet.
@@ -300,7 +300,7 @@ def test_job_wait_prints_call_line_before_blocking(tmp_path, monkeypatch):
     assert any(line[0].label in {"stored", "done"} for block in finish_blocks for line in block.walk())
     # A non-blocking action (list) prints no pre-block call line: only the finish block appears.
     blocks.clear()
-    runner.run([ToolCall("call_2", "Job", [{"action": "list"}])])
+    runner.run_sync([ToolCall("call_2", "Job", [{"action": "list"}])])
     assert len(blocks) == 1
 
 
@@ -315,7 +315,7 @@ def test_job_wait_call_line_is_not_repeated_after_an_approval(tmp_path, monkeypa
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "y", output_fn=blocks.append)
     JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call()
 
-    runner.run([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 30}])])
+    runner.run_sync([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 30}])])
 
     call_lines = _job_call_lines(blocks)
     assert len(call_lines) == 1, f"the call line was drawn {len(call_lines)} times: {call_lines}"
@@ -343,7 +343,7 @@ def test_bash_starts_in_workspace_but_can_create_external_directory_after_approv
     prompts = []
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
 
-    runner.run([ToolCall("mkdir", "Bash", ["mkdir ../external"])])
+    runner.run_sync([ToolCall("mkdir", "Bash", ["mkdir ../external"])])
 
     assert (tmp_path / "external").is_dir()
     assert len(prompts) == 1
@@ -688,7 +688,7 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
-    runner.run([ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
+    runner.run_sync([ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
 
     display = [text for kind, text in events if kind == "display"]
     assert display[0].startswith("  Bash  ")
@@ -749,7 +749,7 @@ def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypa
     runner.live_output = lambda _stream, _text: None
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
 
-    runner.run([ToolCall("bash", "Bash", ["printf duplicate"])])
+    runner.run_sync([ToolCall("bash", "Bash", ["printf duplicate"])])
 
     assert output[0] == "  Bash  printf duplicate"
     assert output[1].startswith("    └ error ")
@@ -796,7 +796,7 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
-    runner.run([ToolCall("bash", "Bash", ["printf live"])])
+    runner.run_sync([ToolCall("bash", "Bash", ["printf live"])])
 
     assert events[0] == ("display", "  Bash  printf live")
     assert events[1] == ("start", "")
@@ -819,7 +819,7 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
-    runner.run([ToolCall("bash", "Bash", ["printf live"])])
+    runner.run_sync([ToolCall("bash", "Bash", ["printf live"])])
 
     assert events[0] == ("start", "")
     assert ("stdout", "live") in events
@@ -843,14 +843,14 @@ def test_tool_runner_job_wait_starts_live_preview_with_budget(tmp_path, monkeypa
     runner.live_output = lambda stream, text: events.append((stream, text))
     JobTool(s, [{"action": "start", "command": "sleep 0.2; printf done"}]).call()
 
-    runner.run([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 5}])])
+    runner.run_sync([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 5}])])
 
     assert events[0] == ("start", 5)
     assert events[-1] == ("", "")
 
     # A status without a timeout holds nothing and opens no live region.
     events.clear()
-    runner.run([ToolCall("call_2", "Job", [{"action": "status", "job": "job.1"}])])
+    runner.run_sync([ToolCall("call_2", "Job", [{"action": "status", "job": "job.1"}])])
     assert not any(kind == "start" for kind, _ in events)
 
 

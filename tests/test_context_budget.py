@@ -150,7 +150,7 @@ async def test_compaction_uses_configured_context_budget(tmp_path):
             return json.loads(content)
 
     model = FakeModel(s)
-    await context.prepare_messages_async(model, "system", [{"role": "user", "content": "request"}])
+    await context.prepare_messages(model, "system", [{"role": "user", "content": "request"}])
     assert compaction_phases == [True, False]
     assert model.input is not None
     assert "old answer" in model.input
@@ -218,6 +218,6 @@ async def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_pa
             return json.loads(content)
 
     model = FakeModel(s)
-    await context.prepare_messages_async(model, "system", turn, tools)
+    await context.prepare_messages(model, "system", turn, tools)
 
     assert model.called is True

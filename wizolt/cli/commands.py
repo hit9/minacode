@@ -154,7 +154,7 @@ async def mcp_command(loop: CommandLoop, args: str) -> str | None:
         return usage
 
     if sub == "connect":
-        return await mcp.connect_servers_async(rest, interactive=loop.interactive_input, notify=loop.emit)
+        return await mcp.connect_servers(rest, interactive=loop.interactive_input, notify=loop.emit)
     if sub == "disconnect":
         return mcp.disconnect_server(rest[0])
     if sub == "tools":
@@ -715,7 +715,7 @@ async def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
         # Same pairing as the automatic path: the echo guard checks what the model is handed, and
         # the inline slice carries one message more than `compacted` does.
         sent = request[0][:-1] if request else compacted
-        data = await compactor.compact_async(compactor.input(compacted), *(request or ()), echo_source=compactor.echo_source(sent))
+        data = await compactor.compact(compactor.input(compacted), *(request or ()), echo_source=compactor.echo_source(sent))
     except (asyncio.CancelledError, KeyboardInterrupt):
         return "Cancelled"
     except Exception as error:  # noqa: BLE001 - manual compaction uses the same deterministic fallback as automatic compaction.

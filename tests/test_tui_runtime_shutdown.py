@@ -5,7 +5,6 @@ what is exercised is the runtime's ordering -- not prompt-toolkit's rendering, w
 interactive TUI tests cover.
 """
 import asyncio
-import threading
 
 import pytest
 from tui_harness import loop as command_loop_for
@@ -20,15 +19,14 @@ class FakeTui:
     """The application as the runtime sees it: a task it awaits, not a thread it joins."""
 
     def __init__(self):
-        self.ready = threading.Event()
-        self.ready.set()
         self.statuses: list[str] = []
         self.input_mode = "chat"
         self.exited = asyncio.Event()
         self.write_error: BaseException | None = None
 
-    async def run_async(self, style=None):
+    async def run(self, style=None):
         del style
+        self.on_ready()
         await self.exited.wait()
 
     def exit(self):
@@ -48,7 +46,7 @@ class FakeTui:
     def invalidate_frame(self):
         pass
 
-    async def write_to_scrollback_async(self, callback):
+    async def write_to_scrollback(self, callback):
         if self.write_error is not None:
             raise self.write_error
         callback()
@@ -59,7 +57,7 @@ def runtime_for(tmp_path, monkeypatch, tui=None):
     command_loop = command_loop_for(tmp_path)
     tui = tui or FakeTui()
     runtime = TuiRuntime(command_loop)
-    # Attached for the tests that drive one turn directly; `run_async` installs the same object.
+    # Attached for the tests that drive one turn directly; `run` installs the same object.
     command_loop.tui = tui
     monkeypatch.setattr(runtime, "build_tui", lambda: tui)
     monkeypatch.setattr(command_loop, "start_session", lambda: None)
@@ -69,7 +67,7 @@ def runtime_for(tmp_path, monkeypatch, tui=None):
 
 async def run_until(runtime, action):
     """Run one whole runtime session, calling `action` once it is live, and return its exit code."""
-    session = asyncio.ensure_future(runtime.run_async())
+    session = asyncio.ensure_future(runtime.run())
     await wait_for(lambda: runtime.scrollback is not None)
     result = action()
     if asyncio.iscoroutine(result):
@@ -78,13 +76,13 @@ async def run_until(runtime, action):
 
 
 def turn_that_unwinds(started, quiesced):
-    """An `Agent.run_async` that owns its task the way the real one does, and unwinds slowly.
+    """An `Agent.run` that owns its task the way the real one does, and unwinds slowly.
 
     Cancellation is where the interesting part is: the turn keeps running past its own
     CancelledError -- a tool still reaping a process, a snapshot still being written -- and only
     then settles, which is the moment the runtime is allowed to call itself idle."""
 
-    async def run_async(_user_input, agent=None):
+    async def run(_user_input, agent=None):
         agent._active_task = asyncio.current_task()
         agent._active_loop = asyncio.get_running_loop()
         try:
@@ -97,7 +95,7 @@ def turn_that_unwinds(started, quiesced):
             agent._active_task = None
             agent._active_loop = None
 
-    return run_async
+    return run
 
 
 async def test_ctrl_c_holds_cancelling_until_the_turn_has_settled(tmp_path, monkeypatch):
@@ -109,7 +107,7 @@ async def test_ctrl_c_holds_cancelling_until_the_turn_has_settled(tmp_path, monk
     runtime.runtime_loop = asyncio.get_running_loop()
     started, quiesced = asyncio.Event(), asyncio.Event()
     agent = command_loop.agent
-    monkeypatch.setattr(agent, "run_async", lambda user_input: turn_that_unwinds(started, quiesced)(user_input, agent))
+    monkeypatch.setattr(agent, "run", lambda user_input: turn_that_unwinds(started, quiesced)(user_input, agent))
     emitted: list[str] = []
     monkeypatch.setattr(command_loop, "emit_turn", emitted.append)
 
@@ -127,7 +125,7 @@ async def test_ctrl_c_holds_cancelling_until_the_turn_has_settled(tmp_path, monk
 
     assert tui.statuses == ["working", "cancelling", "idle"]
     assert emitted == ["Cancelled"]
-    assert not runtime.cancel_pending.is_set()  # cleared for the next turn
+    assert not runtime.cancel_pending  # cleared for the next turn
 
 
 async def test_a_second_ctrl_c_during_the_unwind_does_not_re_cancel(tmp_path, monkeypatch):
@@ -136,7 +134,7 @@ async def test_a_second_ctrl_c_during_the_unwind_does_not_re_cancel(tmp_path, mo
     runtime.runtime_loop = asyncio.get_running_loop()
     started, quiesced = asyncio.Event(), asyncio.Event()
     agent = command_loop.agent
-    monkeypatch.setattr(agent, "run_async", lambda user_input: turn_that_unwinds(started, quiesced)(user_input, agent))
+    monkeypatch.setattr(agent, "run", lambda user_input: turn_that_unwinds(started, quiesced)(user_input, agent))
     cancels: list[int] = []
     real_cancel = agent.cancel
     monkeypatch.setattr(agent, "cancel", lambda: cancels.append(1) or real_cancel())
@@ -198,7 +196,7 @@ async def test_a_terminal_write_error_reaches_the_runtime():
     and hands it to whoever next awaits a barrier."""
     tui = FakeTui()
     tui.write_error = OSError("terminal went away")
-    writer = ScrollbackWriter(asyncio.get_running_loop(), tui.write_to_scrollback_async, lambda callback: None)
+    writer = ScrollbackWriter(asyncio.get_running_loop(), tui.write_to_scrollback, lambda callback: None)
     writer.submit(lambda: None)
 
     with pytest.raises(OSError, match="terminal went away"):
@@ -223,15 +221,15 @@ def _appending(sink, label):
 async def test_exit_during_a_model_request_shuts_down_gracefully(tmp_path, monkeypatch):
     """Ctrl-D while a turn is in flight: the turn is cancelled and awaited, then the app exits.
 
-    `run_async` returning 0 is the whole assertion -- a shutdown that left the turn, the writer, or
+    `run` returning 0 is the whole assertion -- a shutdown that left the turn, the writer, or
     the application task behind would either hang here or surface as an unobserved task error."""
     runtime, command_loop, tui = runtime_for(tmp_path, monkeypatch)
     started, quiesced = asyncio.Event(), asyncio.Event()
     agent = command_loop.agent
-    monkeypatch.setattr(agent, "run_async", lambda user_input: turn_that_unwinds(started, quiesced)(user_input, agent))
+    monkeypatch.setattr(agent, "run", lambda user_input: turn_that_unwinds(started, quiesced)(user_input, agent))
     monkeypatch.setattr(command_loop, "save_and_emit_resume", lambda: None)
 
-    session = asyncio.ensure_future(runtime.run_async())
+    session = asyncio.ensure_future(runtime.run())
     await wait_for(lambda: runtime.runtime_loop is not None)
     runtime.submit_chat("do it")
     await started.wait()
@@ -321,7 +319,7 @@ async def test_cancelling_a_pending_approval_restores_the_input_mode():
     a cancelled tool from stranding the input row on `approval` for the rest of the session."""
     app = TuiApp()
 
-    pending = asyncio.ensure_future(app.request_input_async("Approve? "))
+    pending = asyncio.ensure_future(app.request_input("Approve? "))
     await wait_for(lambda: app.input_mode == "approval")
 
     app.cancel_input()
@@ -340,7 +338,7 @@ async def test_cancelling_the_waiter_itself_leaves_no_unobserved_task_error():
     unobserved: list[dict] = []
     asyncio.get_running_loop().set_exception_handler(lambda _loop, context: unobserved.append(context))
 
-    pending = asyncio.ensure_future(app.request_input_async("Approve? "))
+    pending = asyncio.ensure_future(app.request_input("Approve? "))
     await wait_for(lambda: app.input_mode == "approval")
     pending.cancel()
 

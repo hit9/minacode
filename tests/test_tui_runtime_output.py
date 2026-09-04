@@ -21,21 +21,21 @@ from wizolt.tui import TuiApp
 
 
 def _answering(answer):
-    """A stand-in for Agent.run_async that just answers; the runtime awaits it like the real one."""
+    """A stand-in for Agent.run that just answers; the runtime awaits it like the real one."""
 
-    async def run_async(_user_input):
+    async def run(_user_input):
         return answer
 
-    return run_async
+    return run
 
 
 def _raising(error):
-    """A stand-in for Agent.run_async that fails the way the engine would."""
+    """A stand-in for Agent.run that fails the way the engine would."""
 
-    async def run_async(_user_input):
+    async def run(_user_input):
         raise error
 
-    return run_async
+    return run
 
 
 async def _not_a_command(_text):
@@ -55,7 +55,7 @@ async def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: output.append("set_running:" + label)
     command_loop.command = _not_a_command
-    command_loop.agent.run_async = _answering("done")
+    command_loop.agent.run = _answering("done")
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
     assert not await runtime.dispatch("answer me")
@@ -76,7 +76,7 @@ async def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, mo
     runtime = TuiRuntime(command_loop)
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: None
-    command_loop.agent.run_async = _answering("the final answer")
+    command_loop.agent.run = _answering("the final answer")
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
     emitted: list[tuple] = []
     command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
@@ -98,7 +98,7 @@ async def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monke
     runtime = TuiRuntime(command_loop)
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: None
-    command_loop.agent.run_async = _answering("the final answer")
+    command_loop.agent.run = _answering("the final answer")
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
     emitted: list[tuple] = []
     command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
@@ -114,7 +114,7 @@ async def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_pa
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: None
-    command_loop.agent.run_async = _answering("the final answer")
+    command_loop.agent.run = _answering("the final answer")
     command_loop.agent.turn_sources = [{"url": "https://a.example", "title": "A"}]
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
     emitted: list[tuple[str, int]] = []
@@ -147,7 +147,7 @@ async def test_automatic_compaction_replaces_working_divider_status(tmp_path):
 
     command_loop.agent.model.api_request = compact
 
-    await command_loop.agent.context.prepare_messages_async(command_loop.agent.model, "system")
+    await command_loop.agent.context.prepare_messages(command_loop.agent.model, "system")
 
     assert "compacting context (" in divider_during_compaction[0]
     assert command_loop.tui.status_label == "working"
@@ -180,7 +180,7 @@ async def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, mon
         command_loop.model_stream_output("reasoning", "private reasoning")
         raise asyncio.CancelledError
 
-    command_loop.agent.run_async = interrupt
+    command_loop.agent.run = interrupt
     command_loop.emit = lambda text="", indent=0: emitted.append((text, command_loop.view.model_stream_fragments()))
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
@@ -243,7 +243,7 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
 
     def request():
         try:
-            _, _, content = command_loop.agent.model.request([{"role": "user", "content": "make the change"}], [])
+            _, _, content = command_loop.agent.model.request_sync([{"role": "user", "content": "make the change"}], [])
             command_loop.agent_output(content)
         except Exception as error:  # noqa: BLE001 - harness collects every worker-thread failure
             worker_errors.append(error)
@@ -314,7 +314,7 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
 
-    _, _, content = command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
+    _, _, content = command_loop.agent.model.request_sync([{"role": "user", "content": "search"}], None)
     command_loop.agent_output(content)
 
     assert emitted == [answer]
@@ -354,7 +354,7 @@ def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(t
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
 
-    _, _, content = command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
+    _, _, content = command_loop.agent.model.request_sync([{"role": "user", "content": "search"}], None)
     command_loop.agent_output(content)
 
     assert emitted == [lead, rest]
@@ -379,7 +379,7 @@ async def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback
         command_loop.agent_output("Let me look that up.\n\nThe searched answer.")
         return "Let me look that up.\n\nThe searched answer."
 
-    command_loop.agent.run_async = answer
+    command_loop.agent.run = answer
 
     await runtime.run_agent_turn("question")
 
@@ -411,7 +411,7 @@ def test_stream_promotion_waits_for_the_follow_up_it_answers(tmp_path, monkeypat
         def __init__(self):
             self.calls = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.calls += 1
             if self.calls > 1:
                 return {"role": "assistant", "content": "done"}, [], "done"
@@ -426,7 +426,7 @@ def test_stream_promotion_waits_for_the_follow_up_it_answers(tmp_path, monkeypat
     command_loop.agent.model = FakeModel()
     command_loop.agent.context.model = None
 
-    assert command_loop.agent.run("update the code") == "done"
+    assert command_loop.agent.run_sync("update the code") == "done"
 
     assert timeline == [
         ("user", ["also update the README"]),
@@ -451,7 +451,7 @@ async def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marke
     answers = []
     turns_ended = []
 
-    command_loop.agent.run_async = _raising(MalformedToolCallError("Model emitted Bash as text 6 times; none of the textual calls were executed."))
+    command_loop.agent.run = _raising(MalformedToolCallError("Model emitted Bash as text 6 times; none of the textual calls were executed."))
     command_loop.ui.emit_answer = lambda text, **_kwargs: answers.append(text)
     command_loop.ui.emit_turn_end = turns_ended.append
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)

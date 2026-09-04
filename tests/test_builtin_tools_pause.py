@@ -40,7 +40,7 @@ def test_paused_turn_is_reported_and_replays_unchanged(tmp_path, monkeypatch):
     factory = _AnthropicMockClientFactory([(200, paused)])
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, calls, _ = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, calls, _ = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert assistant[PAUSED_TURN_KEY] is True
     assert calls == []
@@ -69,7 +69,7 @@ def test_an_unpaused_response_carries_no_pause_marker(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, _, _ = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert PAUSED_TURN_KEY not in assistant
 
@@ -83,7 +83,7 @@ def test_agent_continues_a_paused_turn_instead_of_answering(tmp_path):
         def __init__(self):
             self.requests = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
                 return {"role": "assistant", "content": None, PAUSED_TURN_KEY: True}, [], ""
@@ -91,7 +91,7 @@ def test_agent_continues_a_paused_turn_instead_of_answering(tmp_path):
 
     agent.model = PausingModel()
 
-    assert agent.run("look it up") == "found it"
+    assert agent.run_sync("look it up") == "found it"
     assert len(agent.model.requests) == 2
     # The paused message is part of the conversation the second request sends back.
     assert agent.model.requests[1][-1].get(PAUSED_TURN_KEY) is True
@@ -108,13 +108,13 @@ def test_a_paused_turn_is_bounded_by_max_steps(tmp_path):
         def __init__(self):
             self.count = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.count += 1
             return {"role": "assistant", "content": None, PAUSED_TURN_KEY: True}, [], ""
 
     agent.model = AlwaysPausing()
 
-    assert "Stopped after max_agent_steps=3" in agent.run("look it up")
+    assert "Stopped after max_agent_steps=3" in agent.run_sync("look it up")
     assert agent.model.count == 3
 
 def test_builtin_function_names_are_collected_from_config():
@@ -129,7 +129,7 @@ def test_a_declared_builtin_function_call_is_answered_with_its_arguments(tmp_pat
     logged = []
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=logged.append)
 
-    messages = runner.run([ToolCall("c1", "$web_search", [{"search_query": "httpx timeout"}])])
+    messages = runner.run_sync([ToolCall("c1", "$web_search", [{"search_query": "httpx timeout"}])])
 
     assert messages == [{"role": "tool", "tool_call_id": "c1", "name": "$web_search", "content": '{"search_query": "httpx timeout"}'}]
     # No confirmation was asked for, and nothing was stored as a recallable result.
@@ -141,7 +141,7 @@ def test_an_undeclared_builtin_function_call_is_still_an_unknown_tool(tmp_path):
     s = agent_session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: None)
 
-    messages = runner.run([ToolCall("c1", "$web_search", [{"search_query": "x"}])])
+    messages = runner.run_sync([ToolCall("c1", "$web_search", [{"search_query": "x"}])])
 
     assert "unknown tool $web_search" in messages[0]["content"]
 
@@ -151,7 +151,7 @@ def test_a_batch_mixing_an_echo_and_a_real_tool_runs_both(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: None)
 
-    messages = runner.run([ToolCall("c1", "$web_search", [{"search_query": "q"}]), ToolCall("c2", "Read", [{"path": "a.txt", "ranges": [[0, 1]]}])])
+    messages = runner.run_sync([ToolCall("c1", "$web_search", [{"search_query": "q"}]), ToolCall("c2", "Read", [{"path": "a.txt", "ranges": [[0, 1]]}])])
 
     assert [message["tool_call_id"] for message in messages] == ["c1", "c2"]
     assert messages[0]["content"] == '{"search_query": "q"}'

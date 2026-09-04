@@ -426,7 +426,7 @@ def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "\n".join(["把这个仓库里的审批快捷键改造一遍并补上测试" * 3, "", "```python", "def nested():", "    x = 1", "```"])
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
 
@@ -454,7 +454,7 @@ def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     captured = {}
     loop = SimpleNamespace(
         tui=SimpleNamespace(
-            show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(
+            show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(
                 fragments_fn=fragments_fn, key_fn=key_fn, exclusive=kwargs.get("exclusive", False)
             )
         )
@@ -508,7 +508,7 @@ def test_delegate_order_viewer_renders_markdown(monkeypatch):
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "## Section\n\n- item one\n- item two\n\n```python\nprint(1)\n```"
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
@@ -533,7 +533,7 @@ def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "Touch these files:\nwizolt/loop.py\nwizolt/parser.py\nDo not touch tests."
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
@@ -554,7 +554,7 @@ def test_delegate_order_viewer_field_header_alignment(monkeypatch):
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     approval_text_viewer(loop, ApprovalView("order", "order", "", [("title", "fix"), ("lang", "python"), ("max_steps", "3")]))
 
     fragments = captured["fragments_fn"]()
@@ -575,7 +575,7 @@ def test_delegate_order_viewer_header_separator(monkeypatch):
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     approval_text_viewer(loop, ApprovalView("order", "order", "", [("title", "fix things")]))
 
     lines = "".join(text for _, text in captured["fragments_fn"]()).splitlines()
@@ -599,7 +599,7 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = '## 标题\n\n- 把这段中文说明加进审批流程并补充测试\n\n```python\nprint("中文")\n```'
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
 

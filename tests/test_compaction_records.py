@@ -89,7 +89,7 @@ async def test_compaction_keeps_current_turn_tool_records(tmp_path):
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
-    await ContextManager(s).prepare_messages_async(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
+    await ContextManager(s).prepare_messages(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
 
     assert old_key not in s.tool_results
     assert current_key in s.tool_results

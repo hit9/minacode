@@ -38,7 +38,7 @@ def session(tmp_path, *, vision=True, model="main-model", vision_api="chat"):
 
 async def call_view_image(s, args):
     tool = ViewImageTool(s, args)
-    output = await ToolRunner(s, ContextManager(s), output_fn=lambda _text: None).call_tool_async(tool)
+    output = await ToolRunner(s, ContextManager(s), output_fn=lambda _text: None).call_tool(tool)
     return tool, output
 
 
@@ -61,13 +61,13 @@ def test_config_rejects_unknown_vision_provider():
         Config.from_dict({"provider": {"default": {"url": "u", "key": "k", "model": "m"}}, "vision": {"provider": "nope"}})
 
 
-def test_view_image_on_unknown_route_keeps_raw_observation_even_with_vision(tmp_path):
+async def test_view_image_on_unknown_route_keeps_raw_observation_even_with_vision(tmp_path):
     """Main-first: [vision] never intercepts an unknown route; the raw observation stays intact."""
     s = session(tmp_path, model="main-model", vision=True)
     image_file(tmp_path / "shot.png")
 
     tool = ViewImageTool(s, ["shot.png", "exact error?"])
-    output = tool.call()  # nothing is bridged, so no runner is required
+    output = await tool.call()  # nothing is bridged, so no runner is required
     observation = tool.model_observation()
 
     assert output.startswith("<ViewImage") and "vision=" not in output
@@ -76,12 +76,12 @@ def test_view_image_on_unknown_route_keeps_raw_observation_even_with_vision(tmp_
     assert observation.get(IMAGE_TEXT_ONLY_KEY) is not True
 
 
-def test_view_image_without_vision_returns_direct_model_observation(tmp_path):
+async def test_view_image_without_vision_returns_direct_model_observation(tmp_path):
     s = session(tmp_path, vision=False)
     image_file(tmp_path / "shot.png")
     tool = ViewImageTool(s, ["shot.png", "what is shown?"])
 
-    output = tool.call()
+    output = await tool.call()
     observation = tool.model_observation()
 
     assert output.startswith("<ViewImage") and "vision=" not in output
@@ -105,7 +105,7 @@ async def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monk
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
     model = ModelClient(s)
-    observation = await VisionObserver(model).observe_async((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
+    observation = await VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
 
     assert observation == OBSERVATION
     assert captured["tools"] is None
@@ -167,7 +167,7 @@ async def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path
             ]
         ),
     )
-    await VisionObserver(model).observe_async((s.images.load(str(tmp_path / "shot.png")),), "")
+    await VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "")
     assert (s.usage.calls, s.usage.total_tokens) == (2, 10_820)
     assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (10_000, 200_000)
 
@@ -176,7 +176,7 @@ async def test_vision_bridge_requires_runner_and_reports_errors(tmp_path, monkey
     s = session(tmp_path, model="deepseek-chat", vision=True)
     image_file(tmp_path / "shot.png")
     with pytest.raises(ToolError, match="requires ToolRunner"):
-        await ViewImageTool(s, ["shot.png"]).call_async()
+        await ViewImageTool(s, ["shot.png"]).call()
 
     def fail(*args, **kwargs):
         raise ModelError("boom")

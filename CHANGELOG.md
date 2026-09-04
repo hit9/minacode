@@ -16,6 +16,9 @@
 
 ### Changed
 
+- **Breaking.** Async Python APIs now use the natural operation name (`Agent.run`,
+  `ToolRunner.run`, `ModelClient.request`, and `TuiApp.run`); retained synchronous entry points use
+  an explicit `_sync` suffix. Internal async APIs follow the same convention.
 - The prompt stays live and responsive for the whole turn. The TUI, the running turn, model
   requests, MCP, compaction, and vision now share one event loop instead of the TUI having a thread
   of its own, so input, redraws, the status line, and the queue keep working while a request, an

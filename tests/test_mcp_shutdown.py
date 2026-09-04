@@ -40,7 +40,7 @@ async def test_one_unreachable_server_does_not_cancel_its_healthy_siblings(tmp_p
     monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
     monkeypatch.setattr(s.mcp, "_list_resources", list_resources)
 
-    await s.mcp.discover_auto_async()
+    await s.mcp.discover_auto()
 
     assert s.mcp.connected("healthy")
     assert "service unavailable" in s.mcp.server_errors["broken"]
@@ -66,10 +66,10 @@ async def test_close_cancels_an_operation_and_waits_for_its_client(tmp_path, mon
             raise
 
     monkeypatch.setattr(s.mcp, "_call_tool", slow_call)
-    call = asyncio.ensure_future(s.mcp.call_tool_async("test", "echo", {}))
+    call = asyncio.ensure_future(s.mcp.call_tool("test", "echo", {}))
     await asyncio.wait_for(entered.wait(), 2)
 
-    await s.mcp.close_async()
+    await s.mcp.close()
 
     assert unwound.is_set()
     assert s.mcp._tasks == set()
@@ -82,10 +82,10 @@ async def test_a_closed_manager_refuses_new_operations(tmp_path):
     s = session(tmp_path)
     s.config.mcp = mcp_cfg()["mcp"]
     s.mcp.tools["test"] = []
-    await s.mcp.close_async()
+    await s.mcp.close()
 
     with pytest.raises(ToolError, match="MCP manager is closed"):
-        await s.mcp.call_tool_async("test", "echo", {})
+        await s.mcp.call_tool("test", "echo", {})
 
 
 async def test_runtime_shutdown_drains_the_discovery_task(tmp_path, monkeypatch):
@@ -106,7 +106,7 @@ async def test_runtime_shutdown_drains_the_discovery_task(tmp_path, monkeypatch)
             unwound.set()
             raise
 
-    monkeypatch.setattr(command_loop, "discover_mcp_async", discovery)
+    monkeypatch.setattr(command_loop, "discover_mcp", discovery)
 
     async def stop_once_discovering():
         await asyncio.wait_for(started.wait(), 2)

@@ -315,7 +315,7 @@ class ImageInputs:
         message[IMAGE_TEXT_ONLY_KEY] = True
         return message
 
-    async def observe_current_async(
+    async def observe_current(
         self,
         messages: list[Json],
         current: list[Json],

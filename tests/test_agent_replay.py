@@ -31,14 +31,14 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
         def __init__(self):
             self.messages = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Bash", [])], ""
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FeedbackModel()
-    assert agent.run("run bad tool") == "done"
+    assert agent.run_sync("run bad tool") == "done"
     assert len(s.tool_errors) == 1
     assert s.tool_records == []
     second_context = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
@@ -157,7 +157,7 @@ def test_deferred_tool_error_surfaces_as_tool_result(tmp_path):
     ctx = ContextManager(s)
     runner = ToolRunner(s, ctx, input_fn=lambda *a: "", output_fn=lambda *a: None)
     call = ToolCall(id="x1", name="Bash", args=[], error="Bash command must be non-empty")
-    results = runner.run([call])
+    results = runner.run_sync([call])
     assert len(results) == 1
     assert results[0]["role"] == "tool"
     assert "non-empty" in results[0]["content"]
@@ -203,7 +203,7 @@ def test_parallel_readonly_preserves_request_order(tmp_path):
 
     ReadTool.call = traced
     try:
-        messages = runner.run(calls)
+        messages = runner.run_sync(calls)
     finally:
         ReadTool.call = original
 
@@ -228,7 +228,7 @@ def test_parallel_view_ids_follow_model_call_order(tmp_path):
 
     ReadTool.call = traced
     try:
-        messages = runner.run(calls)
+        messages = runner.run_sync(calls)
     finally:
         ReadTool.call = original
 
@@ -261,7 +261,7 @@ def test_parallel_disabled_runs_serial(tmp_path):
 
     ReadTool.call = traced
     try:
-        messages = runner.run(calls)
+        messages = runner.run_sync(calls)
     finally:
         ReadTool.call = original
 
@@ -279,7 +279,7 @@ def test_refusal_short_circuits_across_parallel_and_serial(tmp_path):
         ToolCall(id="b0", name="Bash", args=[":"]),  # confirmation required, refused
         ToolCall(id="r2", name="Read", args=[{"path": "f2.txt", "ranges": [[0, 0]]}]),  # skipped
     ]
-    messages = runner.run(calls)
+    messages = runner.run_sync(calls)
     by_id = {m["tool_call_id"]: m["content"] for m in messages}
     assert [m["tool_call_id"] for m in messages] == ["r0", "r1", "b0", "r2"]
     assert "refused" in by_id["b0"].lower()
@@ -291,7 +291,7 @@ def test_silent_tool_success_emits_no_log_line(tmp_path):
     s = session(tmp_path)
     outputs: list[str] = []
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: outputs.append(str(text)))
-    messages = runner.run([call("NextHints", [{"inputs": ["run the tests", "show the diff"]}])])
+    messages = runner.run_sync([call("NextHints", [{"inputs": ["run the tests", "show the diff"]}])])
 
     assert outputs == []  # no log line for a successful pure-UI tool
     assert len(messages) == 1  # the model still receives its tool result
@@ -302,7 +302,7 @@ def test_silent_tool_failure_still_emits_a_log_line(tmp_path):
     s = session(tmp_path)
     outputs: list[str] = []
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: outputs.append(str(text)))
-    messages = runner.run([call("NextHints", [{"inputs": []}])])
+    messages = runner.run_sync([call("NextHints", [{"inputs": []}])])
 
     assert outputs and "rejected" in outputs[0]  # argument error is surfaced, not swallowed
     assert len(messages) == 1
@@ -343,7 +343,7 @@ def test_agent_followup_turn_snapshot_resume_invariant(tmp_path, monkeypatch):
         return responses.pop(0)
 
     monkeypatch.setattr(agent.model, "api_request", fake_api_request)
-    assert agent.run("initial request") == "done"
+    assert agent.run_sync("initial request") == "done"
 
     s.save_snapshot()
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)

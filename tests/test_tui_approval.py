@@ -118,7 +118,7 @@ def test_tui_ctrl_g_and_ctrl_x_ctrl_e_open_editor():
 
 async def test_tui_app_approval_mode_resolves_the_pending_request():
     app = TuiApp()
-    request = asyncio.ensure_future(app.request_input_async("[Y/n] "))
+    request = asyncio.ensure_future(app.request_input("[Y/n] "))
     await wait_for(lambda: app.input_mode == "approval")
 
     app.input_buffer.insert_text("y")
@@ -132,7 +132,7 @@ async def test_tui_approval_restores_half_typed_draft():
     app.set_running("working")
     app.input_buffer.insert_text("unfinished draft")
 
-    request = asyncio.ensure_future(app.request_input_async("Approve? "))
+    request = asyncio.ensure_future(app.request_input("Approve? "))
     await wait_for(lambda: app.input_mode == "approval")
     assert app.input_buffer.text == ""
     app.input_buffer.insert_text("y")
@@ -156,7 +156,7 @@ async def test_tui_approval_prompt_never_renders_a_newline_as_a_control_characte
     split processor output on "\n" the way FormattedTextControl does -- a literal newline reaches
     the screen as "^J". Every line but the last is rendered as its own row above the input."""
     app = TuiApp()
-    request = asyncio.ensure_future(app.request_input_async(prompt))
+    request = asyncio.ensure_future(app.request_input(prompt))
     await wait_for(lambda: app.input_mode == "approval")
 
     assert app.input_prompt == expected_prefix

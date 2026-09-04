@@ -87,7 +87,7 @@ class TestToolIndexRendering:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         idx = s.mcp.render_tools_index()
         assert "--- MCP TOOLS ---" in idx
@@ -97,7 +97,7 @@ class TestToolIndexRendering:
         raw = {"mcp": {"test": {"url": "http://x/mcp", "enabled": False}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         idx = s.mcp.render_tools_index()
         assert idx == ""
 
@@ -266,7 +266,7 @@ class TestToolIndexTruncation:
             return many_tools
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
 
         idx = s.mcp.render_tools_index()
         assert len(idx) <= MCPManager.INDEX_TOTAL_LIMIT + 100

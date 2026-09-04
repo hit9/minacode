@@ -78,7 +78,7 @@ class ModalHarness:
         self.frames = []
         self.exclusive = []
 
-    def show_modal(self, fragments_fn, key_fn, *, exclusive=False):
+    def show_modal_sync(self, fragments_fn, key_fn, *, exclusive=False):
         self.exclusive.append(exclusive)
         self.frames.append(fragments_fn())
         result = TUI_MODAL_PENDING

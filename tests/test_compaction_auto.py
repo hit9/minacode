@@ -15,7 +15,7 @@ async def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path
     model = _CountingModel(s)
 
     for _ in range(5):
-        await context.prepare_messages_async(model, "system")
+        await context.prepare_messages(model, "system")
 
     assert model.calls == 1
     assert s.state.compaction_count == 1
@@ -25,7 +25,7 @@ async def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path
     # smaller message no longer re-triggers one and the guard under test would never be exercised.
     s.messages.append({"role": "assistant", "content": "another step " + "y" * 700_000})
     for _ in range(5):
-        await context.prepare_messages_async(model, "system")
+        await context.prepare_messages(model, "system")
 
     assert model.calls == 2
 
@@ -41,7 +41,7 @@ async def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
         before = context.request_tokens(context.model_messages("system"), None)
         model = _CountingModel(s)
 
-        await context.prepare_messages_async(model, "system")
+        await context.prepare_messages(model, "system")
 
         after = context.request_tokens(context.model_messages("system"), None)
         if before < budget:
@@ -68,7 +68,7 @@ async def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     model = _CountingModel(s)
 
     for _ in range(4):
-        await context.prepare_messages_async(model, "system")
+        await context.prepare_messages(model, "system")
 
     assert model.calls == 0  # nothing could be compacted, so nothing was sent to the model
     assert len(reports) == 1, "the dead end must be reported, and only once"
@@ -79,7 +79,7 @@ async def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     # enormous result, the call and its result can be lifted out together, which the old cut --
     # confined to what follows the latest user message -- could never reach.
     s.messages.append({"role": "assistant", "content": "still working"})
-    await context.prepare_messages_async(model, "system")
+    await context.prepare_messages(model, "system")
     assert reports[1:] == [(True, ""), (False, "")]
     assert all("read the file" != str(message.get("content") or "") or index == 1 for index, message in enumerate(s.messages))
     assert not any(message.get("tool_calls") for message in s.messages)  # the 1MB pair is gone
@@ -88,7 +88,7 @@ async def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     # And that pass actually fixed it: the request fits again, so a further message asks for no
     # further compaction. The dead end was reported once and then stopped being one.
     s.messages.append({"role": "user", "content": "carry on"})
-    await context.prepare_messages_async(model, "system")
+    await context.prepare_messages(model, "system")
     assert model.calls == 1
     assert context.request_tokens(context.model_messages("system")) < context.request_token_budget()
     assert reports[-2:] == [(True, ""), (False, "")]
@@ -103,16 +103,16 @@ async def test_automatic_turn_compaction_runs_once_until_the_turn_grows(tmp_path
     turn = [{"role": "user", "content": "request"}, *({"role": "assistant", "content": "t " + "y" * 160_000} for _ in range(30))]
 
     for _ in range(5):
-        await context.prepare_messages_async(model, "system", turn)
+        await context.prepare_messages(model, "system", turn)
     first = model.calls
     assert first >= 1
 
     for _ in range(5):
-        await context.prepare_messages_async(model, "system", turn)
+        await context.prepare_messages(model, "system", turn)
     assert model.calls == first  # nothing changed, nothing recompacted
 
     next_turn = [{"role": "user", "content": "next"}, *({"role": "assistant", "content": "n " + "y" * 160_000} for _ in range(30))]
-    await context.prepare_messages_async(model, "system", next_turn)
+    await context.prepare_messages(model, "system", next_turn)
     assert model.calls > first  # a new turn is not blocked by the previous turn's mark
 
 
@@ -127,6 +127,6 @@ async def test_prepare_messages_builds_under_budget_context_once(tmp_path, monke
         return original(base_system, turn_messages)
 
     monkeypatch.setattr(context, "model_messages", model_messages)
-    await context.prepare_messages_async(object(), "system", [{"role": "user", "content": "request"}])
+    await context.prepare_messages(object(), "system", [{"role": "user", "content": "request"}])
 
     assert calls == 1

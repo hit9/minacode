@@ -330,7 +330,7 @@ async def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(
     # Snapshot the live projection first: _compact_messages rewrites session.messages, and the
     # prefix being ridden is the one that existed before it did.
     before = ModelClient(midturn).wire(midturn.config.provider).messages(context.model_messages(midturn.system_prompt, turn))
-    assert await compaction.Compactor(context, CapturingModel(midturn)).run_async(compacted, _keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn)
+    assert await compaction.Compactor(context, CapturingModel(midturn)).run(compacted, _keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn)
     request = captured["messages"]
     summary = ModelClient(midturn).wire(midturn.config.provider).messages(request)
     at = next((index for index, (a, b) in enumerate(zip(before, summary)) if a != b), None)
@@ -362,7 +362,7 @@ async def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, 
             return json.loads(text)
 
     compacted, keep = compaction.Compactor(context, _StubModel()).parts()
-    assert await compaction.Compactor(context, FakeModel(live)).run_async(compacted, keep, PREVIOUS_CONTEXT_TRIMMED)
+    assert await compaction.Compactor(context, FakeModel(live)).run(compacted, keep, PREVIOUS_CONTEXT_TRIMMED)
 
 
 def test_recent_window_is_a_floor_for_small_messages_and_a_ceiling_for_large_ones(tmp_path):

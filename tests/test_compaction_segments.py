@@ -183,7 +183,7 @@ async def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(t
             return json.loads(content)
 
     model = FakeModel(s)
-    await context.prepare_messages_async(model, "system", turn)
+    await context.prepare_messages(model, "system", turn)
 
     assert model.calls == 2
     assert [segment.key for segment in s.history] == ["seg.1", "seg.2"]
@@ -234,7 +234,7 @@ async def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
         def compact(self, text, *_args, **_kwargs):
             raise ModelError("failed")
 
-    await context.prepare_messages_async(FailingModel(), "system", [{"role": "user", "content": "request"}])
+    await context.prepare_messages(FailingModel(), "system", [{"role": "user", "content": "request"}])
 
     assert compaction_phases == [True, False]
     assert s.state.summary != "existing"
@@ -380,7 +380,7 @@ async def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path)
     # The chars/4 figure sits under the budget; the UTF-8 bytes/4 estimate clears it.
     assert len(json.dumps(messages, ensure_ascii=False)) // 4 < budget < raw
 
-    await context.prepare_messages_async(FakeModel(), "system", turn)
+    await context.prepare_messages(FakeModel(), "system", turn)
     assert compaction_phases == [True, False]
     assert s.state.compaction_count == 1
 
@@ -412,13 +412,13 @@ async def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_pat
     # 98%: estimate fits and nothing compacts.
     s.usage.last_prompt_budget = 520
     s.usage.last_prompt_tokens = 510
-    await context.prepare_messages_async(FakeModel(), "system", turn)
+    await context.prepare_messages(FakeModel(), "system", turn)
     assert compaction_phases == []
     assert s.state.compaction_count == 0
 
     # 100%: the overdue flag forces compaction despite the fitting estimate.
     s.usage.last_prompt_tokens = 520
-    await context.prepare_messages_async(FakeModel(), "system", turn)
+    await context.prepare_messages(FakeModel(), "system", turn)
     assert compaction_phases == [True, False]
     assert s.state.compaction_count == 1
     # Compaction cleared the last-* signals, so the next request is not double-compacted by the
@@ -426,7 +426,7 @@ async def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_pat
     # ordinary 100%-full context).
     assert s.usage.last_prompt_tokens == 0
     assert s.usage.last_prompt_budget == 0
-    await context.prepare_messages_async(FakeModel(), "system", turn)
+    await context.prepare_messages(FakeModel(), "system", turn)
     assert compaction_phases == [True, False]
     assert s.state.compaction_count == 1
 
@@ -503,7 +503,7 @@ async def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_p
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
-    messages = await context.prepare_messages_async(FakeModel(), "system", turn)
+    messages = await context.prepare_messages(FakeModel(), "system", turn)
     assert turn[0]["content"] == "the whole order"
     assert any(message.get("content") == "the whole order" for message in messages)
     # Kept verbatim instead of summarized: the segment holds the steps, never the order itself.
@@ -551,7 +551,7 @@ async def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_p
 
     client = ModelClient(s)
     before = client.wire(client.session.config.provider).messages(context.model_messages("system", turn))
-    after = client.wire(client.session.config.provider).messages(await context.prepare_messages_async(FakeModel(), "system", turn))
+    after = client.wire(client.session.config.provider).messages(await context.prepare_messages(FakeModel(), "system", turn))
     shared = 0
     for old, new in zip(before, after):
         if old != new:
@@ -575,16 +575,16 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     async def mcp_mentions(_text):
         return "--- MCP MENTIONS ---"
 
-    s.mcp = SimpleNamespace(resolve_mentions_async=mcp_mentions, render_tools_index=lambda: "", tools={}, resources={})
+    s.mcp = SimpleNamespace(resolve_mentions=mcp_mentions, render_tools_index=lambda: "", tools={}, resources={})
     agent = Agent(s, output_fn=lambda text: None)
 
     class FakeModel:
         last_compaction_model = ""
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run("please $triage @file:issue.py") == "done"
+    assert agent.run_sync("please $triage @file:issue.py") == "done"
 
     assert [message.get(SESSION_EVENT_KEY) for message in s.messages] == [None, "mcp_mentions", "skill_mentions", "file_mentions", None]
     assert ContextManager(s).latest_user_index(s.messages) == 0
@@ -634,7 +634,7 @@ async def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path
         *steps("a"),
     ]
     for round_index in range(4):
-        messages = await context.prepare_messages_async(model, "system", turn)
+        messages = await context.prepare_messages(model, "system", turn)
         assert [message.get("content") for message in messages].count("the whole order") == 1
         assert turn[0]["content"] == "the whole order"
         assert sum(1 for message in turn if str(message.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE)) == 1

@@ -22,7 +22,7 @@ ANTHROPIC_BODY = {"id": "m", "type": "message", "role": "assistant", "model": "c
 
 def sent_body(model: ModelClient, factory, monkeypatch, attribute: str = "client") -> dict:
     monkeypatch.setattr(model, attribute, factory)
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
     return json.loads(factory.calls[0].content)
 
 

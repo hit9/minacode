@@ -70,7 +70,7 @@ class Agent:
         self.session = session
         self.model = ModelClient(session)
         self.context = ContextManager(session, self.model)
-        self.vision_observe = VisionObserver(self.model).observe_async
+        self.vision_observe = VisionObserver(self.model).observe
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
         # How a turn's final answer is published, when it should look different from interim
@@ -140,13 +140,13 @@ class Agent:
         if current is not None and current.cancelling():
             raise asyncio.CancelledError
 
-    def run(self, user_input: str | UserInput) -> str:
+    def run_sync(self, user_input: str | UserInput) -> str:
         """Synchronous entry point for direct and headless Python callers."""
 
-        fail_if_running_loop("use await Agent.run_async(...)")
-        return asyncio.run(self.run_async(user_input))
+        fail_if_running_loop("use await Agent.run(...)")
+        return asyncio.run(self.run(user_input))
 
-    async def run_async(self, user_input: str | UserInput) -> str:
+    async def run(self, user_input: str | UserInput) -> str:
         self._active_task = asyncio.current_task()
         self._active_loop = asyncio.get_running_loop()
         try:
@@ -182,13 +182,13 @@ class Agent:
                 while True:
                     try:
                         self.raise_if_cancelled()
-                        request = await self.prepare_request_async(turn_messages)
+                        request = await self.prepare_request(turn_messages)
                         failed_request = request
                         try:
-                            assistant, tool_calls, content = await self.model.request_async(request.messages, request.tools)
+                            assistant, tool_calls, content = await self.model.request(request.messages, request.tools)
                             accepted = request
                         except ModelError as error:
-                            fallback = await self._image_fallback_request_async(error, request)
+                            fallback = await self._image_fallback_request(error, request)
                             if fallback is None:
                                 raise
                             accepted, replacements = fallback
@@ -196,7 +196,7 @@ class Agent:
                             while True:
                                 try:
                                     self.raise_if_cancelled()
-                                    assistant, tool_calls, content = await self.model.request_async(accepted.messages, accepted.tools)
+                                    assistant, tool_calls, content = await self.model.request(accepted.messages, accepted.tools)
                                     break
                                 except ModelRequestRetry:
                                     # The paid observation is already in `accepted`; resend that
@@ -290,7 +290,7 @@ class Agent:
                     self.output_fn(content.strip())
                 tool_batches += 1
                 await self.await_output_barrier()
-                tool_messages = await self.tools.run_async(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
+                tool_messages = await self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
                 if self.on_tool_batch is not None:
                     self.on_tool_batch(not content.strip())
                 turn_messages.extend(tool_messages)
@@ -379,7 +379,7 @@ class Agent:
             correction_messages = [*base_messages, *corrections]
             while True:
                 try:
-                    assistant, tool_calls, content = await self.model.request_async(correction_messages, tools)
+                    assistant, tool_calls, content = await self.model.request(correction_messages, tools)
                     self.record_sources(assistant)
                     break
                 except ModelRequestRetry:
@@ -457,7 +457,7 @@ class Agent:
         transcript_messages.append(self.transcript_message(assistant_message))
         batches = tool_batches + 1
         await self.await_output_barrier()
-        result_messages = await self.tools.run_async(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else "")
+        result_messages = await self.tools.run(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else "")
         if self.on_tool_batch is not None:
             self.on_tool_batch(not answer)
         turn_messages.extend(result_messages)
@@ -540,7 +540,7 @@ class Agent:
             raise ValueError("internal messages cannot be added to the visible transcript")
         return projected
 
-    async def prepare_request_async(self, turn_messages: list[Json]) -> PreparedRequest:
+    async def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
         # Without a queued follow-up this must be the real active-turn list: current-turn compaction
         # rewrites it in place, and a throwaway copy would make the next step compact the same prefix
@@ -566,7 +566,7 @@ class Agent:
             # notice, so a failed vision call never shows a fake described-by success. The reason
             # names the route truthfully: static catalog evidence says text-only; a learned route
             # only ever rejected an image-carrying request with an eligible 400.
-            request_turn = await self.session.images.observe_current_async(request_turn, current, self.vision_observe)
+            request_turn = await self.session.images.observe_current(request_turn, current, self.vision_observe)
             reason = "main model is text-only" if self.session.image_route.state() == IMAGE_ROUTE_TEXT_ONLY_STATIC else "main model rejected image input (400)"
             names = tuple(image.name for message in current_raw for image in ImageInputs.input_refs(message))
             self._emit_image_route_notice(ImageRouteNotice(reason, described_by=self._vision_entry_label(), images=names))
@@ -577,11 +577,11 @@ class Agent:
                 turn_messages[:] = request_turn
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
-        messages = await self.context.prepare_messages_async(self.model, self.session.system_prompt, request_turn, tools)
+        messages = await self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending, request_turn, tuple(current_raw))
 
-    async def _image_fallback_request_async(
+    async def _image_fallback_request(
         self,
         error: ModelError,
         request: PreparedRequest,
@@ -601,11 +601,11 @@ class Agent:
         if not self.session.config.vision_provider:
             self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400); no vision provider configured", images=names))
             return None
-        converted = await self.session.images.observe_current_async(request.turn_messages, current, self.vision_observe)
+        converted = await self.session.images.observe_current(request.turn_messages, current, self.vision_observe)
         replacements = [(before, after) for before, after in zip(request.turn_messages, converted, strict=True) if before is not after]
         self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label(), images=names))
         tools = Tool.resolved_schemas(self.session)
-        messages = await self.context.prepare_messages_async(self.model, self.session.system_prompt, converted, tools)
+        messages = await self.context.prepare_messages(self.model, self.session.system_prompt, converted, tools)
         self.context.update_percent(messages, tools)
         retry = PreparedRequest(messages, tools, request.pending, converted)
         self.session.state.turn_messages = len(converted)
@@ -647,7 +647,7 @@ class Agent:
         file resolvers are local lookups and stay synchronous."""
         blocks: list[Json] = []
         for event, resolver in (
-            ("mcp_mentions", self.session.mcp.resolve_mentions_async if self.session.mcp is not None else None),
+            ("mcp_mentions", self.session.mcp.resolve_mentions if self.session.mcp is not None else None),
             ("skill_mentions", self.session.skills.resolve_mentions if self.session.skills is not None else None),
             ("file_mentions", self.session.mentions.resolve_mentions if self.session.mentions is not None else None),
         ):

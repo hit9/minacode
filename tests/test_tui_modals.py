@@ -27,7 +27,7 @@ def test_interactive_tui_modal_uses_real_j_and_enter_keys(monkeypatch):
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
-        waiter = threading.Thread(target=lambda: result.append(app.show_modal(lambda: [("", "one\ntwo")], key)), daemon=True)
+        waiter = threading.Thread(target=lambda: result.append(app.show_modal_sync(lambda: [("", "one\ntwo")], key)), daemon=True)
         waiter.start()
         wait_until(lambda: app.modal is not None)
         pipe_input.send_text("j\r")
@@ -57,7 +57,7 @@ def test_interactive_tui_modal_survives_repeated_resize(monkeypatch, exclusive):
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
-        waiter = threading.Thread(target=lambda: result.append(app.show_modal(fragments, key, exclusive=exclusive)), daemon=True)
+        waiter = threading.Thread(target=lambda: result.append(app.show_modal_sync(fragments, key, exclusive=exclusive)), daemon=True)
         waiter.start()
         wait_until(lambda: app.modal is not None)
         for rows, columns in ((10, 40), (35, 120), (8, 24), (24, 80)):
@@ -119,7 +119,7 @@ def test_interactive_tui_modal_presentation_matches_legacy_scope(monkeypatch, ex
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         waiter = threading.Thread(
-            target=lambda: app.show_modal(lambda: [("", "modal marker")], lambda key, _data: None if key == "q" else TUI_MODAL_PENDING, exclusive=exclusive),
+            target=lambda: app.show_modal_sync(lambda: [("", "modal marker")], lambda key, _data: None if key == "q" else TUI_MODAL_PENDING, exclusive=exclusive),
             daemon=True,
         )
         waiter.start()
@@ -180,7 +180,7 @@ def test_interactive_tui_ctrl_c_closes_modal_and_restores_input_focus(monkeypatc
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         waiter = threading.Thread(
-            target=lambda: app.show_modal(lambda: [("", "selector")], lambda _key, _data: TUI_MODAL_PENDING),
+            target=lambda: app.show_modal_sync(lambda: [("", "selector")], lambda _key, _data: TUI_MODAL_PENDING),
             daemon=True,
         )
         waiter.start()
@@ -205,7 +205,7 @@ def test_interactive_tui_resolved_modal_allows_followup_approval(monkeypatch):
         wait_until(lambda: app.app is not None and app.app.is_running)
         selector = threading.Thread(
             target=lambda: selected.append(
-                app.show_modal(
+                app.show_modal_sync(
                     lambda: [("", "selector")],
                     lambda key, _data: "chosen" if key == "enter" else TUI_MODAL_PENDING,
                 )

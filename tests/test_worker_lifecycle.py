@@ -154,13 +154,13 @@ async def test_delegate_reset_deletes_disk_only_worker_after_parent_resume(tmp_p
     assert not os.path.exists(snapshot)
 
 @pytest.mark.parametrize("max_steps", [0, -1, True, "3"])
-def test_delegate_rejects_invalid_max_steps(tmp_path, max_steps):
+async def test_delegate_rejects_invalid_max_steps(tmp_path, max_steps):
     from wizolt.base import ToolError
     from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     with pytest.raises(ToolError, match="integer >= 1"):
-        DelegateTool(parent, [{"action": "send", "order": "work", "max_steps": max_steps}]).call()
+        await DelegateTool(parent, [{"action": "send", "order": "work", "max_steps": max_steps}]).call()
 
 async def test_delegate_merges_worker_diffs_into_parent(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
@@ -207,7 +207,7 @@ async def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch
             super().__init__([])
             self.requests = []
 
-        async def request_async(self, messages, request_tools=None):
+        async def request(self, messages, request_tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
                 return (
@@ -229,7 +229,7 @@ async def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch
     tool = DelegateTool(parent, [{"action": "send", "order": "create f.txt"}])
     tool.runner = runner
 
-    send = asyncio.ensure_future(tool.call_async())
+    send = asyncio.ensure_future(tool.call())
     await asyncio.wait_for(started.wait(), 5)
     send.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -268,7 +268,7 @@ async def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
-    real_run = ToolRunner.run_async
+    real_run = ToolRunner.run
     batches = {"n": 0}
 
     async def run_then_fail(self, tool_calls, **kwargs):
@@ -277,7 +277,7 @@ async def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_
             raise RuntimeError("provider timeout")
         return await real_run(self, tool_calls, **kwargs)
 
-    monkeypatch.setattr(ToolRunner, "run_async", run_then_fail)
+    monkeypatch.setattr(ToolRunner, "run", run_then_fail)
 
     with pytest.raises(ToolError) as excinfo:
         await _delegate_call(parent, runner, action="send", order="create f.txt then die")
@@ -343,7 +343,7 @@ async def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, mo
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
-    real_run = ToolRunner.run_async
+    real_run = ToolRunner.run
     batches = {"n": 0}
 
     async def run_then_die(self, tool_calls, **kwargs):
@@ -356,7 +356,7 @@ async def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, mo
             raise RuntimeError("provider timeout")
         return await real_run(self, tool_calls, **kwargs)
 
-    monkeypatch.setattr(ToolRunner, "run_async", run_then_die)
+    monkeypatch.setattr(ToolRunner, "run", run_then_die)
 
     with pytest.raises(ToolError) as excinfo:
         await _delegate_call(parent, runner, action="send", order="create f.txt then die mid-batch")
@@ -406,12 +406,12 @@ async def test_delegate_status_reports_last_failure_until_a_success(tmp_path, mo
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
-    real_run = ToolRunner.run_async
+    real_run = ToolRunner.run
 
     async def fail(self, tool_calls, **kwargs):
         raise RuntimeError("provider timeout")
 
-    monkeypatch.setattr(ToolRunner, "run_async", fail)
+    monkeypatch.setattr(ToolRunner, "run", fail)
     with pytest.raises(ToolError):
         await _delegate_call(parent, runner, action="send", order="first")
 
@@ -422,7 +422,7 @@ async def test_delegate_status_reports_last_failure_until_a_success(tmp_path, mo
     assert 'alive="true"' in status
 
     # A successful send clears the remembered failure.
-    monkeypatch.setattr(ToolRunner, "run_async", real_run)
+    monkeypatch.setattr(ToolRunner, "run", real_run)
     await _delegate_call(parent, runner, action="send", order="second")
     assert parent.worker.state.last_error == "" and parent.worker.state.last_error_round == 0
     status = await _delegate_call(parent, runner, action="status")
@@ -449,7 +449,7 @@ async def test_delegate_failure_bounds_and_sanitizes_the_error_text(tmp_path, mo
     async def fail(self, tool_calls, **kwargs):
         raise RuntimeError(body)
 
-    monkeypatch.setattr(ToolRunner, "run_async", fail)
+    monkeypatch.setattr(ToolRunner, "run", fail)
     with pytest.raises(ToolError):
         await _delegate_call(parent, runner, action="send", order="first")
 
@@ -525,7 +525,7 @@ async def test_worker_reset_appends_event_message(tmp_path):
     assert parent.worker is None
     assert parent.messages[-1].get(SESSION_EVENT_KEY) == "worker_reset"
     assert parent.messages[-1].get("role") == "user"
-    request = await agent.prepare_request_async([{"role": "user", "content": "continue"}])
+    request = await agent.prepare_request([{"role": "user", "content": "continue"}])
     assert any(message.get("role") == "user" and "starts from scratch" in str(message.get("content")) for message in request.messages)
 
 async def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):

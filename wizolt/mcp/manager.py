@@ -165,7 +165,7 @@ class MCPManager:
         self.server_errors.pop(name, None)
         self.server_skips.pop(name, None)
 
-    async def discover_auto_async(self) -> None:
+    async def discover_auto(self) -> None:
         configs = self.parse_configs()
         discoverable = [config for config in configs if config.auto_connect]
         names = tuple(config.name for config in discoverable)
@@ -175,7 +175,7 @@ class MCPManager:
                 for name in list(self.tools.keys() | self.resources.keys()):
                     if name not in configured:
                         self._forget(name)
-                await self._gather_bounded([self._discover_one_async(config) for config in discoverable])
+                await self._gather_bounded([self._discover_one(config) for config in discoverable])
         except Exception as error:  # noqa: BLE001 - discovery aggregates failures from arbitrary MCP transports.
             self.server_errors["-"] = str(error)
 
@@ -196,14 +196,14 @@ class MCPManager:
 
         return list(await asyncio.gather(*(bounded(coroutine) for coroutine in coroutines)))
 
-    async def discover_server_async(self, name: str) -> None:
+    async def discover_server(self, name: str) -> None:
         config = self.find_config(name)
         if config is None:
             self._forget(name)
             self.server_errors[name] = "server not found"
             return
         with self._discovery((name,)):
-            await self._discover_one_async(config)
+            await self._discover_one(config)
 
     def disconnect_server(self, name: str) -> str:
         config = self.find_config(name)
@@ -217,7 +217,7 @@ class MCPManager:
     def connected(self, name: str) -> bool:
         return name in self.tools or name in self.resources
 
-    async def connect_server_async(
+    async def connect_server(
         self,
         name: str,
         *,
@@ -237,7 +237,7 @@ class MCPManager:
                 return f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
             if interactive:
                 if has_tokens:
-                    await self.discover_server_async(name)
+                    await self.discover_server(name)
                     if not self._oauth_reauthorization_required(name):
                         return self._connect_result(name, compact=_compact)
                 async with self._oauth_gate():
@@ -245,12 +245,12 @@ class MCPManager:
                     # either is rejected, discard both so the new random callback port is
                     # registered together with the replacement token.
                     self._oauth_token_store.clear_server(config.url)
-                    if error := await self._authenticate_oauth_async(config, notify=notify):
+                    if error := await self._authenticate_oauth(config, notify=notify):
                         if _compact:
                             prefix = f"MCP OAuth authentication failed for {name}: "
                             return self._compact_line("error", name, error.removeprefix(prefix))
                         return error
-        await self.discover_server_async(name)
+        await self.discover_server(name)
         return self._connect_result(name, compact=_compact)
 
     def _compact_line(self, kind: str, name: str, detail: str) -> str:
@@ -280,7 +280,7 @@ class MCPManager:
             return self._compact_line("connected", name, assets)
         return f"MCP server connected: {name}; tools={tool_count}; resources={resource_count}"
 
-    async def connect_servers_async(
+    async def connect_servers(
         self,
         names: list[str],
         *,
@@ -290,14 +290,14 @@ class MCPManager:
         """Connect a de-duplicated batch concurrently while preserving result order."""
         selected = list(dict.fromkeys(names))
         if len(selected) == 1:
-            return await self.connect_server_async(selected[0], interactive=interactive, notify=notify)
+            return await self.connect_server(selected[0], interactive=interactive, notify=notify)
 
-        connected = await self._gather_bounded([self.connect_server_async(name, interactive=interactive, notify=notify, _compact=True) for name in selected])
+        connected = await self._gather_bounded([self.connect_server(name, interactive=interactive, notify=notify, _compact=True) for name in selected])
         results = dict(zip(selected, connected, strict=True))
         items = ("- " + results[name].replace("\n", "\n    ") for name in selected)
         return "MCP connection results:\n\n" + "\n".join(items)
 
-    async def _discover_one_async(self, config: MCPServerConfig) -> None:
+    async def _discover_one(self, config: MCPServerConfig) -> None:
         if config.error:
             self.set_server_error(config.name, config.error)
             return
@@ -450,7 +450,7 @@ class MCPManager:
     async def _bounded(self, coroutine: Coroutine[Any, Any, _MCPResultT], *, timeout: int | None = None) -> _MCPResultT:
         """Await one MCP operation under a deadline, as a task this manager owns.
 
-        A task rather than a bare await so `close_async()` has something to cancel: an operation
+        A task rather than a bare await so `close()` has something to cancel: an operation
         started by a turn that is gone must still be brought down before the loop closes.
 
         `wait_for` cancels the operation and *awaits* it, so the FastMCP client's `async with` has
@@ -491,7 +491,7 @@ class MCPManager:
         if not task.cancelled():
             task.exception()
 
-    async def close_async(self) -> None:
+    async def close(self) -> None:
         """Cancel and await everything this manager still has in flight.
 
         Called by the runtime's shutdown, on the loop that owns those tasks -- a FastMCP client
@@ -613,13 +613,13 @@ class MCPManager:
         if not self.connected(server):
             raise ToolError(f"MCP server '{server}' is not connected; run /mcp connect {server}")
 
-    async def call_tool_async(self, server: str, tool_name: str, arguments: Json) -> str:
-        result = await self._call_result_async(server, tool_name, arguments)
+    async def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
+        result = await self._call_result(server, tool_name, arguments)
 
         text = self.normalize_result(result)
         return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
 
-    async def _call_result_async(self, server: str, tool_name: str, arguments: Json) -> Any:
+    async def _call_result(self, server: str, tool_name: str, arguments: Json) -> Any:
         """Shared transport path for call_tool and call_tool_structured: resolve, run, normalize errors."""
         config, headers = self._resolve_server(server)
         try:
@@ -627,7 +627,7 @@ class MCPManager:
         except Exception as e:
             raise ToolError("MCP call failed: " + self.error_text(e)) from e
 
-    async def call_tool_structured_async(self, server: str, tool_name: str, arguments: Json) -> Any:
+    async def call_tool_structured(self, server: str, tool_name: str, arguments: Json) -> Any:
         """Call an MCP tool and return its payload as a parsed JSON value.
 
         `Any`, not `Json`: a declared outputSchema may describe an array as legitimately as an
@@ -638,7 +638,7 @@ class MCPManager:
         text. Without a declared schema the call's text body is parsed as JSON; a non-JSON body is
         an error so the caller can decide whether to fall back to text.
         """
-        result = await self._call_result_async(server, tool_name, arguments)
+        result = await self._call_result(server, tool_name, arguments)
 
         info = self.tool_info(server, tool_name)
         if info is not None and info.output_schema:
@@ -676,7 +676,7 @@ class MCPManager:
         lines.append("</MCPResources>")
         return "\n".join(lines)
 
-    async def read_resource_async(self, server: str, uri: str) -> str:
+    async def read_resource(self, server: str, uri: str) -> str:
         if not uri:
             raise ToolError("MCP read_resource requires a uri")
         config, headers = self._resolve_server(server)
@@ -689,7 +689,7 @@ class MCPManager:
 
     AUTO_READ_LIMIT: ClassVar[int] = 6_000  # per-doc cap for resources auto-injected on first tool call
 
-    async def auto_read_prefix_async(self, server: str, tool_name: str) -> str:
+    async def auto_read_prefix(self, server: str, tool_name: str) -> str:
         """On the first call to a tool whose description references a resource doc, fetch it once.
 
         Returns a block to attach to that call's result (so the grammar reaches the model on the
@@ -711,7 +711,7 @@ class MCPManager:
                 continue
             self._auto_read_done.add((server, uri))  # mark before fetching so failures don't retry
             try:
-                blocks.append((await self.read_resource_async(server, uri))[: self.AUTO_READ_LIMIT])
+                blocks.append((await self.read_resource(server, uri))[: self.AUTO_READ_LIMIT])
             except Exception:  # noqa: BLE001, S112 - referenced resources are injected best-effort.
                 continue
         if not blocks:
@@ -752,7 +752,7 @@ class MCPManager:
         """
         return normalize_result(result, raw_output_limit=self.RAW_OUTPUT_LIMIT)
 
-    async def _authenticate_oauth_async(self, config: MCPServerConfig, notify: Callable[[str], None] | None = None) -> str | None:
+    async def _authenticate_oauth(self, config: MCPServerConfig, notify: Callable[[str], None] | None = None) -> str | None:
         """Validate cached OAuth credentials or complete interactive authorization."""
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
@@ -909,7 +909,7 @@ class MCPManager:
 
     MAX_MENTION_BLOCKS = 50
 
-    async def resolve_mentions_async(self, text: str) -> str:
+    async def resolve_mentions(self, text: str) -> str:
         configs = {config.name: config for config in self.parse_configs()}
         if not configs:
             return ""
@@ -927,7 +927,7 @@ class MCPManager:
             if key in seen:
                 continue
             seen.add(key)
-            blocks.append(await self._mention_block_async(name, raw_tool))
+            blocks.append(await self._mention_block(name, raw_tool))
             if len(blocks) >= self.MAX_MENTION_BLOCKS:
                 break
         if not blocks:
@@ -939,9 +939,9 @@ class MCPManager:
         ]
         return "\n".join(header + blocks).strip()
 
-    async def _mention_block_async(self, server: str, tool: str) -> str:
+    async def _mention_block(self, server: str, tool: str) -> str:
         if not self.connected(server) and not self.discovering(server):
-            await self.discover_server_async(server)
+            await self.discover_server(server)
         if issue := self.server_issue(server):
             kind, message = issue
             return f"[{server}] {'unavailable' if kind == 'error' else 'skipped'}: {message}"

@@ -186,7 +186,7 @@ class ModelClient:
         and nothing about the request or the session's retry counters has changed.
 
         This is not turn cancellation. The turn's own task is untouched; only this attempt ends,
-        and `request_async` re-enters its loop with the same messages."""
+        and `request` re-enters its loop with the same messages."""
 
         with self._attempt_lock:
             task, loop = self._attempt, self._attempt_loop
@@ -199,7 +199,7 @@ class ModelClient:
             loop.call_soon_threadsafe(task.cancel)
         return True
 
-    async def close_async(self) -> None:
+    async def close(self) -> None:
         """Release what this client still owns: the in-flight attempt, if there is one.
 
         Idempotent, and an ownership check rather than a best-effort close: the attempt's clients
@@ -211,7 +211,7 @@ class ModelClient:
         if task is None or loop is None or task.done():
             return
         if loop is not asyncio.get_running_loop():
-            raise RuntimeError("ModelClient.close_async() must run on the loop that owns the active request")
+            raise RuntimeError("ModelClient.close() must run on the loop that owns the active request")
         task.cancel()
         with contextlib.suppress(BaseException):
             await task
@@ -339,13 +339,13 @@ class ModelClient:
             if lease.active:
                 callback()
 
-    def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
-        """Synchronous entry point for direct Python callers; production code awaits request_async."""
+    def request_sync(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
+        """Synchronous entry point for direct Python callers; production code awaits request."""
 
-        fail_if_running_loop("use await ModelClient.request_async(...)")
-        return asyncio.run(self.request_async(messages, tools))
+        fail_if_running_loop("use await ModelClient.request(...)")
+        return asyncio.run(self.request(messages, tools))
 
-    async def request_async(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
+    async def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         tools = tools if tools is not None else Tool.resolved_schemas(self.session)

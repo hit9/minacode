@@ -16,7 +16,7 @@ from wizolt.tools import ReadTool, Tool, toolblocks, tooloutput
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
-    runner.run([call("Bash", [":"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
+    runner.run_sync([call("Bash", [":"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
@@ -25,7 +25,7 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
 
     outputs = []
     bad = session(tmp_path)
-    ToolRunner(bad, ContextManager(bad), output_fn=lambda text: outputs.append(str(text))).run([call("Bash", [])])
+    ToolRunner(bad, ContextManager(bad), output_fn=lambda text: outputs.append(str(text))).run_sync([call("Bash", [])])
     assert bad.tool_records == []
     assert len(bad.tool_errors) == 1
     assert outputs and "· rejected:" in outputs[0]  # argument errors collapse to a quiet line
@@ -61,7 +61,7 @@ def test_tool_runner_refuses_without_reason_on_n(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "n", output_fn=lambda text: None)
 
-    runner.run([call("Bash", [":"])])
+    runner.run_sync([call("Bash", [":"])])
 
     assert s.tool_errors[0].error == "Cancelled: user refused tool call"
 
@@ -70,7 +70,7 @@ def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "not now", output_fn=lambda text: None)
 
-    runner.run([call("Bash", [":"])])
+    runner.run_sync([call("Bash", [":"])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
@@ -82,7 +82,7 @@ def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
     key = s.store_tool_result("Read", ["a.txt"], "result")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([call("Recall", [key])])
+    runner.run_sync([call("Recall", [key])])
     assert [record.key for record in s.tool_records] == [key]
 
 
@@ -134,7 +134,7 @@ def test_read_only_batch_keeps_model_order_and_honors_the_concurrency_cap(tmp_pa
 
     monkeypatch.setattr(ReadTool, "call", traced)
     calls = [ToolCall(f"r{index}", "Read", [{"path": f"{name}.txt"}]) for index, name in enumerate("abcd")]
-    messages = runner.run(calls)
+    messages = runner.run_sync(calls)
 
     assert [message["tool_call_id"] for message in messages] == ["r0", "r1", "r2", "r3"]
     assert peak == 2
@@ -154,7 +154,7 @@ def test_one_failing_read_only_call_leaves_its_siblings_alone(tmp_path):
         ToolCall("bad", "Read", [{"path": "missing.txt"}]),
         ToolCall("ok2", "Read", [{"path": "b.txt"}]),
     ]
-    contents = {message["tool_call_id"]: str(message["content"]) for message in runner.run(calls)}
+    contents = {message["tool_call_id"]: str(message["content"]) for message in runner.run_sync(calls)}
 
     assert list(contents) == ["ok1", "bad", "ok2"]
     assert "alpha" in contents["ok1"]
@@ -178,7 +178,7 @@ def test_edit_barrier_splits_a_batch_and_serializes_its_mutations(tmp_path):
     assert runner.edit_segment_end(calls, 0) == 2  # edits plan and run as one segment
     assert runner.parallel_segment_end(calls, 0) == 0  # Edit never joins a parallel segment
 
-    messages = runner.run(calls)
+    messages = runner.run_sync(calls)
     assert [message["tool_call_id"] for message in messages] == ["e1", "e2"]
     assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "two\n"
     assert (tmp_path / "c.txt").read_text(encoding="utf-8") == "three\n"
@@ -211,7 +211,7 @@ async def test_cancellation_waits_for_a_thread_backed_tool_before_reporting(tmp_
     monkeypatch.setattr(_SlowTool, "marker", marker)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    call = asyncio.ensure_future(runner.call_tool_async(_SlowTool(s, [])))
+    call = asyncio.ensure_future(runner.call_tool(_SlowTool(s, [])))
     await asyncio.sleep(0.02)
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -243,7 +243,7 @@ async def test_a_stop_hook_is_requested_once_per_cancellation_and_awaited(tmp_pa
             released.set()
 
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-    call = asyncio.ensure_future(runner.call_tool_async(Cooperative(s, [])))
+    call = asyncio.ensure_future(runner.call_tool(Cooperative(s, [])))
     await asyncio.sleep(0.02)
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -254,14 +254,14 @@ async def test_a_stop_hook_is_requested_once_per_cancellation_and_awaited(tmp_pa
 
 
 def test_repeated_synchronous_runs_retain_no_loop_bound_state(tmp_path):
-    """`run()` is `asyncio.run` over `run_async`, so anything it left behind would belong to a
+    """`run()` is `asyncio.run` over `run`, so anything it left behind would belong to a
     closed loop. Two calls on the same runner must therefore both work."""
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    first = runner.run([ToolCall("r1", "Read", [{"path": "a.txt"}])])
-    second = runner.run([ToolCall("r2", "Read", [{"path": "a.txt"}])])
+    first = runner.run_sync([ToolCall("r1", "Read", [{"path": "a.txt"}])])
+    second = runner.run_sync([ToolCall("r2", "Read", [{"path": "a.txt"}])])
 
     assert "alpha" in str(first[0]["content"])
     assert "alpha" in str(second[0]["content"])
@@ -274,5 +274,5 @@ async def test_the_synchronous_facade_refuses_to_run_inside_a_loop(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    with pytest.raises(RuntimeError, match="ToolRunner.run_async"):
-        runner.run([])
+    with pytest.raises(RuntimeError, match="ToolRunner.run"):
+        runner.run_sync([])

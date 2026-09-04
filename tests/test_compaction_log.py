@@ -188,7 +188,7 @@ class Modal:
         self.key = None
         self.exclusive = False
 
-    def show_modal(self, fragments_fn, key_fn, **kwargs):
+    def show_modal_sync(self, fragments_fn, key_fn, **kwargs):
         self.fragments, self.key = fragments_fn, key_fn
         self.exclusive = kwargs.get("exclusive", False)
 

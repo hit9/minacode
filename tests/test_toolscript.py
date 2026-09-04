@@ -42,7 +42,7 @@ def _describe(s, tools):
 
 def _run_script(s, code, input_fn=None):
     runner = _runner(s, input_fn=input_fn)
-    (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+    (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
     return str(message["content"])
 
 
@@ -72,7 +72,7 @@ class TestRenderingReuse:
         """The describe block is exactly MCP(describe)'s rendering with the json line appended."""
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", output_schema=OUTPUT_SHAPE)]
-        describe = await MCPTool(s, [{"action": "describe", "server": "test", "tool": "echo"}]).call_async()
+        describe = await MCPTool(s, [{"action": "describe", "server": "test", "tool": "echo"}]).call()
         assert _describe(s, ["test.echo"]) == describe + "\njson:    yes"
 
 
@@ -188,7 +188,7 @@ class TestNestedCalls:
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         code = 'for i in range(3):\n    call("MCP", {"server": "test", "tool": "echo", "arguments": {"text": str(i)}})\nprint("done")\n'
         runner = _runner(s)
-        messages = runner.run(
+        messages = runner.run_sync(
             [
                 ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
                 ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
@@ -239,7 +239,7 @@ class TestNestedCalls:
         code = 'call("MCP", {"server": "test", "tool": "echo", "arguments": {}})\nprint("after")\n'
         answers = iter(["y", "n"])
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
-        messages = runner.run(
+        messages = runner.run_sync(
             [
                 ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
                 ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
@@ -397,7 +397,7 @@ class TestGate:
             raise AssertionError("input_fn must not be called under yolo")
 
         runner = ToolRunner(s, ContextManager(s), input_fn=no_prompt, output_fn=lambda text: None)
-        (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
         content = str(message["content"])
         assert "ToolScript ok" in content
         assert "ok" in content
@@ -469,7 +469,7 @@ class TestNestedBuiltinCalls:
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         code = 't = call("Read", {"path": "f.txt"})\nprint(t)\n'
         runner = _runner(s)
-        messages = runner.run(
+        messages = runner.run_sync(
             [
                 ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
                 ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
@@ -522,7 +522,7 @@ class TestNestedBuiltinCalls:
         code = 'call("Bash", {"command": "mkdir sub"})\nprint("after")\n'
         answers = iter(["y", "n"])
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
-        (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
         content = str(message["content"])
         assert "ToolScript failed" in content
         assert "nested call refused by user" in content
@@ -538,7 +538,7 @@ class TestNestedBuiltinCalls:
             raise AssertionError("input_fn must not be called under yolo")
 
         runner = ToolRunner(s, ContextManager(s), input_fn=no_prompt, output_fn=lambda text: None)
-        (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
         content = str(message["content"])
         assert "ToolScript ok" in content
         assert (tmp_path / "made").is_dir()
@@ -549,7 +549,7 @@ class TestNestedBuiltinCalls:
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         code = 'for i in range(3):\n    call("Read", {"path": "f.txt"})\nprint("done")\n'
         runner = _runner(s)
-        messages = runner.run(
+        messages = runner.run_sync(
             [
                 ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
                 ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
@@ -613,7 +613,7 @@ class TestScriptLogShape:
         blocks = []
         runner = _runner(s)
         runner.output_fn = blocks.append
-        runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])], **kwargs)
+        runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])], **kwargs)
         return blocks
 
     def test_nested_calls_are_indented_under_the_script(self, tmp_path):
@@ -656,7 +656,7 @@ class TestScriptLogShape:
         """A script that raises must not leave the rest of the session permanently indented."""
         s = _mcp_session(tmp_path)
         runner = _runner(s)
-        runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'raise ValueError("boom")\n'}])])
+        runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'raise ValueError("boom")\n'}])])
         assert runner.nesting == 0
 
     def test_finish_line_summarizes_the_script_run(self, tmp_path):
@@ -704,7 +704,7 @@ class TestScriptCannotEndTheSession:
         s = _mcp_session(tmp_path)
         runner = _runner(s)
         with pytest.raises(KeyboardInterrupt):
-            runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": "raise KeyboardInterrupt\n"}])])
+            runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": "raise KeyboardInterrupt\n"}])])
 
 
 class TestFailedScriptLooksFailed:
@@ -716,7 +716,7 @@ class TestFailedScriptLooksFailed:
         runner = _runner(s)
         blocks = []
         runner.output_fn = blocks.append
-        runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'print("partial")\nraise ValueError("boom")\n'}])])
+        runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'print("partial")\nraise ValueError("boom")\n'}])])
         lines = [line for block in blocks for line, _ in block.walk()]
         head = next(line for line in lines if line.label.startswith(("calls", "failed")))
         assert head.label.startswith("failed · calls 0")
@@ -738,7 +738,7 @@ class TestNestedCallsDoNotStealTheScriptStdout:
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=print)  # the headless default
         terminal = io.StringIO()
         with contextlib.redirect_stdout(terminal):
-            (message,) = runner.run(
+            (message,) = runner.run_sync(
                 [ToolCall("ts1", "ToolScript", [{"action": "call", "code": 't = call("Read", {"path": "f.txt"})\nprint("script says hi")\n'}])]
             )
 
@@ -757,7 +757,7 @@ class TestNestedCallsDoNotStealTheScriptStdout:
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=print)
         outer = io.StringIO()
         with contextlib.redirect_stdout(outer):
-            runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'call("Read", {"path": "f.txt"})\n'}])])
+            runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'call("Read", {"path": "f.txt"})\n'}])])
 
         assert "Read f.txt" in outer.getvalue()
 
@@ -861,7 +861,7 @@ class TestCallMany:
         code = 'call_many([("Bash", {"command": "mkdir sub"})])\nprint("after")\n'
         answers = iter(["y", "n"])
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
-        (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
         content = str(message["content"])
         assert "ToolScript failed" in content
         assert "nested call refused by user" in content
@@ -916,7 +916,7 @@ class TestCallMany:
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={"readOnlyHint": True})]
 
         async def fake_call(config, headers, name, arguments):
-            return SimpleNamespace(content=[SimpleNamespace(type="text", text='{"a": %d}' % arguments["n"])])
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text=f'{{"a": {arguments["n"]}}}')])
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         code = 'rows = call_many([("test.echo", {"n": i}) for i in range(3)], format="json")\nprint([r["a"] for r in rows])\n'
@@ -942,7 +942,7 @@ class TestScriptCancellation:
         runner = _runner(s)
         code = "import time\nwhile True:\n    time.sleep(0.005)\n"
 
-        batch = asyncio.ensure_future(runner.run_async([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])]))
+        batch = asyncio.ensure_future(runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])]))
         await asyncio.sleep(0.1)
         batch.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -978,7 +978,7 @@ class TestScriptCancellation:
         runner = _runner(s)
         code = 'call("test.echo", {"n": 1})\nprint("unreachable")\n'
 
-        batch = asyncio.ensure_future(runner.run_async([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])]))
+        batch = asyncio.ensure_future(runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])]))
         await asyncio.wait_for(entered.wait(), 3)
 
         batch.cancel()
@@ -1001,7 +1001,7 @@ class TestScriptCancellation:
         runner = _runner(s)
         code = 'print("read" if "alpha" in call("Read", {"path": "a.txt"}) else "missing")\n'
 
-        (message,) = await runner.run_async([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
 
         assert "ToolScript ok" in str(message["content"])
         assert "read" in str(message["content"])

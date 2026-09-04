@@ -35,7 +35,7 @@ class TestMCPUserScenarios:
                 self.requests = []
                 self.tools = []
 
-            async def request_async(self, messages, tools=None):
+            async def request(self, messages, tools=None):
                 self.requests.append(messages)
                 self.tools.append(tools or [])
                 return {"role": "assistant", "content": "done"}, [], "done"
@@ -88,24 +88,24 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", list_resources)
-        await s.mcp.discover_auto_async()
+        await s.mcp.discover_auto()
         agent = Agent(s, output_fn=lambda _text: None)
         agent.model = self.model()
         loop = CommandLoop(agent, input_fn=lambda _: "", output_fn=lambda _text: None)
 
-        assert await agent.run_async("Search the project") == "done"
+        assert await agent.run("Search the project") == "done"
         assert "[search]" in self.mcp_context(agent.model)
         assert "[docs]" not in self.mcp_context(agent.model)
 
         assert await mcp_command(loop, "connect docs") == "MCP server connected: docs; tools=1; resources=1"
-        assert await agent.run_async("Read the project guide") == "done"
+        assert await agent.run("Read the project guide") == "done"
         context = self.mcp_context(agent.model)
         assert "[search]" in context
         assert "[docs]" in context
         assert "docs://guide.md" in context
 
         assert await mcp_command(loop, "disconnect search") == "MCP server disconnected: search"
-        assert await agent.run_async("Continue with the documentation") == "done"
+        assert await agent.run("Continue with the documentation") == "done"
         context = self.mcp_context(agent.model)
         assert "[search]" not in context
         assert "[docs]" in context
@@ -126,7 +126,7 @@ class TestMCPUserScenarios:
         agent = Agent(s, output_fn=lambda _text: None)
         agent.model = self.model()
 
-        assert await agent.run_async("Use @handbook to check the deployment process") == "done"
+        assert await agent.run("Use @handbook to check the deployment process") == "done"
 
         request_text = "\n".join(str(message.get("content", "")) for message in agent.model.requests[-1])
         assert "--- MCP MENTIONS ---" in request_text
@@ -159,7 +159,7 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", authorize)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authorize)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         loop.interactive_input = True
 
@@ -182,7 +182,7 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", rejected)
         monkeypatch.setattr(s.mcp, "_list_resources", rejected)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", as_async(lambda *_args, **_kwargs: pytest.fail("non-interactive connect opened OAuth")))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", as_async(lambda *_args, **_kwargs: pytest.fail("non-interactive connect opened OAuth")))
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
 
         result = await mcp_command(loop, "connect metabase")
@@ -204,11 +204,11 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", rejected)
         monkeypatch.setattr(s.mcp, "_list_resources", rejected)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", as_async(lambda *_args, **_kwargs: pytest.fail("mention opened OAuth")))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", as_async(lambda *_args, **_kwargs: pytest.fail("mention opened OAuth")))
         agent = Agent(s, output_fn=lambda _text: None)
         agent.model = self.model()
 
-        assert await agent.run_async("Use @metabase to inspect the dashboard") == "done"
+        assert await agent.run("Use @metabase to inspect the dashboard") == "done"
 
         request_text = "\n".join(str(message.get("content", "")) for message in agent.model.requests[-1])
         assert "[metabase] unavailable: authentication required" in request_text
@@ -249,7 +249,7 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", authorize)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authorize)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         loop.interactive_input = True
 
@@ -289,7 +289,7 @@ class TestMCPUserScenarios:
         assert "● connected  `catalog`" in result
         assert "● error  `offline` — service unavailable" in result
 
-        assert await agent.run_async("Search available products") == "done"
+        assert await agent.run("Search available products") == "done"
         context = self.mcp_context(agent.model)
         assert "[catalog]" in context
         assert "[offline]" not in context

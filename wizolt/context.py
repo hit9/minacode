@@ -179,7 +179,7 @@ class ContextManager:
         self.session.state.context_percent = min(100, tokens * 100 // self.request_token_budget())
         return tokens
 
-    async def prepare_messages_async(
+    async def prepare_messages(
         self, model: ModelClient, base_system: str, turn_messages: list[Json] | None = None, tools: list[Json] | None = None
     ) -> list[Json]:
         messages = self.model_messages(base_system, turn_messages)
@@ -196,7 +196,7 @@ class ContextManager:
             if not compacted:
                 recent = compactor.COMPACT_MINIMUM_RECENT
                 compacted, keep = compactor.parts(recent)
-            if await compactor.run_async(compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages, recent=recent):
+            if await compactor.run(compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages, recent=recent):
                 compacted_any = True
                 messages = self.model_messages(base_system, turn_messages)
             self._auto_compacted_at["history"] = len(self.session.messages)
@@ -207,7 +207,7 @@ class ContextManager:
             if not compacted:
                 recent = compactor.COMPACT_MINIMUM_RECENT
                 compacted, keep = compactor.turn_parts(turn_messages, recent)
-            if await compactor.run_async(compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages, recent=recent):
+            if await compactor.run(compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages, recent=recent):
                 compacted_any = True
                 messages = self.model_messages(base_system, turn_messages)
             self._auto_compacted_at["turn"] = len(turn_messages)

@@ -39,7 +39,7 @@ class SequenceModel:
         self.outcomes = iter(outcomes)
         self.requests = []
 
-    async def request_async(self, messages, tools=None):
+    async def request(self, messages, tools=None):
         self.requests.append(messages)
         outcome = next(self.outcomes)
         if isinstance(outcome, Exception):
@@ -58,7 +58,7 @@ def test_attachment_always_goes_to_main_model_and_never_calls_vision(tmp_path, v
     agent = Agent(s, output_fn=lambda _text: None)
     agent.model = model
 
-    assert agent.run(s.images.recognize("inspect shot.png")) == "done"
+    assert agent.run_sync(s.images.recognize("inspect shot.png")) == "done"
 
     sent = [message for message in model.requests[0] if ImageInputs.input_refs(message)]
     assert len(sent) == 1
@@ -103,7 +103,7 @@ def test_failed_image_turn_is_replay_safe_and_next_text_turn_succeeds(tmp_path):
     agent.model = model
 
     with pytest.raises(ModelError) as caught:
-        agent.run(s.images.recognize("inspect shot.png"))
+        agent.run_sync(s.images.recognize("inspect shot.png"))
     assert caught.value is rejected
     assert len(model.requests) == 1
 
@@ -118,7 +118,7 @@ def test_failed_image_turn_is_replay_safe_and_next_text_turn_succeeds(tmp_path):
     assert failed["content"].count(s.images.asset_path(image)) == 1
 
     source.unlink()
-    assert agent.run("continue without replaying pixels") == "recovered"
+    assert agent.run_sync("continue without replaying pixels") == "recovered"
     assert not any(ImageInputs.input_refs(message) for message in model.requests[1])
 
 
@@ -131,8 +131,8 @@ def test_later_new_image_is_attempted_after_an_earlier_image_failure(tmp_path):
     agent.model = model
 
     with pytest.raises(ModelError):
-        agent.run(s.images.recognize("first.png"))
-    assert agent.run(s.images.recognize("second.png")) == "second worked"
+        agent.run_sync(s.images.recognize("first.png"))
+    assert agent.run_sync(s.images.recognize("second.png")) == "second worked"
 
     second_refs = [image for message in model.requests[1] for image in ImageInputs.input_refs(message)]
     assert [image.name for image in second_refs] == ["second.png"]
@@ -146,7 +146,7 @@ def test_failed_queued_image_is_committed_text_only_instead_of_requeued(tmp_path
         def __init__(self):
             self.requests = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
                 s.enqueue_user_input(s.images.recognize("look queued.png"))
@@ -161,7 +161,7 @@ def test_failed_queued_image_is_committed_text_only_instead_of_requeued(tmp_path
     agent.model = model
 
     with pytest.raises(ModelError, match="queued image rejected"):
-        agent.run("start")
+        agent.run_sync("start")
 
     assert s.pending_user_inputs == []
     settled = [message for message in s.messages if ImageInputs.refs(message)]
@@ -178,7 +178,7 @@ def test_multiple_failed_images_survive_snapshot_as_text_only_assets(tmp_path):
     agent.model = SequenceModel([ModelError("no images")])
 
     with pytest.raises(ModelError):
-        agent.run(s.images.recognize("compare one.png two.png"))
+        agent.run_sync(s.images.recognize("compare one.png two.png"))
     s.save_snapshot()
     resumed = Session.load_snapshot(s.uid, config=s.config)
 

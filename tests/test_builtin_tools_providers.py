@@ -26,7 +26,7 @@ def test_aliyun_chat_keeps_responses_builtin_tools_inactive(tmp_path, monkeypatc
     factory = _MockClientFactory([(200, _chat_body("glm-5.2"))])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     assert json.loads(factory.calls[0].content)["tools"] == [FUNCTION_TOOL]
     assert s.config.provider.builtin_tools == ({"type": "web_search"}, {"type": "web_extractor"})
@@ -45,7 +45,7 @@ def test_qwen_responses_keeps_builtin_tools_unchanged(tmp_path, monkeypatch):
     factory = _MockClientFactory([(200, _responses_body())])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     body = json.loads(factory.calls[0].content)
     tools = body["tools"]
@@ -61,7 +61,7 @@ def test_unknown_provider_keeps_generic_builtin_tools_pass_through(tmp_path, mon
     factory = _MockClientFactory([(200, _chat_body("made-up-model"))])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     assert json.loads(factory.calls[0].content)["tools"] == [FUNCTION_TOOL, entry]
 
@@ -74,7 +74,7 @@ def test_zai_and_bigmodel_chat_accept_their_documented_builtin_tool(tmp_path, mo
     factory = _MockClientFactory([(200, _chat_body("glm-5"))])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     assert json.loads(factory.calls[0].content)["tools"] == [FUNCTION_TOOL, zai_search]
 
@@ -86,7 +86,7 @@ def test_kimi_chat_accepts_builtin_function_unchanged(tmp_path, monkeypatch):
     factory = _MockClientFactory([(200, _chat_body("kimi-k3"))])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     assert json.loads(factory.calls[0].content)["tools"] == [FUNCTION_TOOL, kimi_search]
 
@@ -113,14 +113,14 @@ def test_anthropic_builtin_tools_are_protocol_scoped(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
     assert [tool["name"] for tool in json.loads(factory.calls[0].content)["tools"]] == ["Bash", "web_search"]
 
     # The same known-provider configuration forced onto Chat is retained but not projected.
     s.config.provider.api = "chat"
     chat_factory = _MockClientFactory([(200, _chat_body("claude-3"))])
     monkeypatch.setattr(model, "client", chat_factory)
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
     assert json.loads(chat_factory.calls[0].content)["tools"] == [FUNCTION_TOOL]
     assert s.config.provider.builtin_tools == (search,)
 
@@ -138,7 +138,7 @@ def test_openrouter_sends_supported_server_tools_unchanged_on_both_wires(tmp_pat
     factory = _MockClientFactory([(200, response)])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     body = json.loads(factory.calls[0].content)
     expected_local = FUNCTION_TOOL if api == "chat" else responses.responses_tool_schemas([FUNCTION_TOOL])[0]
@@ -228,7 +228,7 @@ def test_estimation_and_send_share_the_builtin_tools_policy(tmp_path, monkeypatc
     s.config.provider.builtin_tools = (WEB_SEARCH,)
     chat_factory = _MockClientFactory([(200, _chat_body())])
     monkeypatch.setattr(model, "client", chat_factory)
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
     assert json.loads(chat_factory.calls[0].content)["tools"] == [FUNCTION_TOOL]
 
     # On the valid wire, the estimator consumes the same builtin entry the request sends.
@@ -240,5 +240,5 @@ def test_estimation_and_send_share_the_builtin_tools_policy(tmp_path, monkeypatc
     without_builtin = model.estimated_request_tokens([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
     assert with_builtin > without_builtin
     s.config.provider.builtin_tools = (WEB_SEARCH,)
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
     assert json.loads(factory.calls[0].content)["tools"][-1] == WEB_SEARCH

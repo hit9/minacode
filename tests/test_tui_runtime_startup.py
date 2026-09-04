@@ -150,15 +150,15 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
 
         ready = threading.Event()
 
-        async def run_async(self, style=None):
+        async def run(self, style=None):
             del style
-            self.ready.set()
+            self.on_ready()
             await done.wait()
 
         def exit(self):
             done.set()
 
-        def write_to_scrollback_async(self, callback):
+        def write_to_scrollback(self, callback):
             raise AssertionError("this scenario writes nothing")
 
     fake_tui = FakeTui()
@@ -169,7 +169,7 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
     monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: warmed.append(callback))
 
-    assert runtime.run() == 0
+    assert runtime.run_sync() == 0
     assert warmed == [None]
 
 def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
@@ -191,13 +191,14 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
         def __init__(self):
             self.ready.set()
 
-        async def run_async(self, style=None):
+        async def run(self, style=None):
             del style
+            self.on_ready()
 
         def exit(self):
             pass
 
-        def write_to_scrollback_async(self, callback):
+        def write_to_scrollback(self, callback):
             raise AssertionError("this scenario writes nothing")
 
         def set_running(self, label):
@@ -214,7 +215,7 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
     monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: None)
 
-    assert runtime.run() == 0
+    assert runtime.run_sync() == 0
     assert calls == [("running", RESUME_STATUS_LABEL), ("start_session",), ("idle",)]
 
 async def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):

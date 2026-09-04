@@ -54,7 +54,7 @@ class FallbackModel:
         self.requests = []
         self.vision_calls = []
 
-    async def request_async(self, messages, tools=None):
+    async def request(self, messages, tools=None):
         self.requests.append(messages)
         outcome = next(self.outcomes)
         if isinstance(outcome, BaseException):
@@ -63,7 +63,7 @@ class FallbackModel:
         return {"role": "assistant", "content": content}, calls, content
 
     async def vision_observe(self, images, question=""):
-        # Mirrors VisionObserver.observe_async: an empty attachment question falls back to the
+        # Mirrors VisionObserver.observe: an empty attachment question falls back to the
         # bounded default perception question; only ViewImage carries its own.
         self.vision_calls.append((tuple(image.name for image in images), question.strip() or VISION_OBSERVE_DEFAULT_QUESTION))
         return VISION_TEXT
@@ -153,7 +153,7 @@ def test_eligible_400_attachment_falls_back_through_vision_once(tmp_path):
     model = FallbackModel([ModelError("Error code: 400 - image input not supported"), ("described", [])])
     agent, notices = run_with(s, model)
 
-    assert agent.run(s.images.recognize("inspect shot.png")) == "described"
+    assert agent.run_sync(s.images.recognize("inspect shot.png")) == "described"
 
     assert len(model.requests) == 2
     # the first request carries the raw image block on the main model
@@ -182,7 +182,7 @@ def test_static_text_only_attachment_goes_directly_to_vision(tmp_path):
     model = FallbackModel([("done", [])])
     agent, notices = run_with(s, model)
 
-    assert agent.run(s.images.recognize("inspect shot.png")) == "done"
+    assert agent.run_sync(s.images.recognize("inspect shot.png")) == "done"
 
     assert len(model.requests) == 1
     assert not any(ImageInputs.input_refs(message) for message in model.requests[0])
@@ -199,7 +199,7 @@ def test_static_text_only_without_vision_keeps_raw_attempt_and_original_error(tm
     agent, _ = run_with(s, model)
 
     with pytest.raises(ModelError, match="no vision configured"):
-        agent.run(s.images.recognize("inspect shot.png"))
+        agent.run_sync(s.images.recognize("inspect shot.png"))
 
     assert len(model.requests) == 1
     assert any(ImageInputs.input_refs(message) for message in model.requests[0])
@@ -215,7 +215,7 @@ def test_400_without_vision_keeps_original_error_and_notices(tmp_path):
     agent, notices = run_with(s, model)
 
     with pytest.raises(ModelError, match="image input not supported"):
-        agent.run(s.images.recognize("inspect shot.png"))
+        agent.run_sync(s.images.recognize("inspect shot.png"))
 
     assert model.vision_calls == []
     assert notices == [ImageRouteNotice("main model rejected image input (400); no vision provider configured", images=("shot.png",))]
@@ -231,7 +231,7 @@ def test_multi_image_attachment_is_observed_once_with_both_images(tmp_path):
     model = FallbackModel([ModelError("Error code: 400 - boom"), ("ok", [])])
     agent, _ = run_with(s, model)
 
-    assert agent.run(s.images.recognize("compare one.png two.png")) == "ok"
+    assert agent.run_sync(s.images.recognize("compare one.png two.png")) == "ok"
 
     assert model.vision_calls == [(("one.png", "two.png"), VISION_OBSERVE_DEFAULT_QUESTION)]
     assert s.image_route.state() == "text_only_learned"
@@ -249,7 +249,7 @@ def test_view_image_observation_400_falls_back_with_the_tool_question(tmp_path):
     )
     agent, _ = run_with(s, model)
 
-    assert agent.run(s.images.recognize("debug the screenshot")) == "resolved"
+    assert agent.run_sync(s.images.recognize("debug the screenshot")) == "resolved"
 
     # raw ViewImage observation first, rejected with 400, then one vision observation with its question
     assert any(ImageInputs.input_refs(message) for message in model.requests[1])
@@ -269,8 +269,8 @@ def test_old_image_and_new_attachment_observe_only_the_new_one(tmp_path):
     model = FallbackModel([("first ok", []), ModelError("Error code: 400 - boom"), ("second ok", [])])
     agent, _ = run_with(s, model)
 
-    assert agent.run(s.images.recognize("look at first.png")) == "first ok"
-    assert agent.run(s.images.recognize("now second.png")) == "second ok"
+    assert agent.run_sync(s.images.recognize("look at first.png")) == "first ok"
+    assert agent.run_sync(s.images.recognize("now second.png")) == "second ok"
 
     assert model.vision_calls == [(("second.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     assert s.image_route.state() == "text_only_learned"
@@ -285,9 +285,9 @@ def test_400_with_only_historical_images_does_not_learn(tmp_path):
     model = FallbackModel([("first ok", []), ModelError("Error code: 400 - boom")])
     agent, notices = run_with(s, model)
 
-    assert agent.run(s.images.recognize("inspect shot.png")) == "first ok"
+    assert agent.run_sync(s.images.recognize("inspect shot.png")) == "first ok"
     with pytest.raises(ModelError, match="boom"):
-        agent.run("continue without new images")
+        agent.run_sync("continue without new images")
 
     # the historical image is still resent raw (unknown route), but no current occurrence -> no fallback
     assert any(ImageInputs.input_refs(message) for message in model.requests[1])
@@ -306,7 +306,7 @@ def test_queued_attachment_400_commits_once_after_fallback(tmp_path):
             self.vision_calls = []
             self.step = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             self.step += 1
             if self.step == 1:
@@ -320,7 +320,7 @@ def test_queued_attachment_400_commits_once_after_fallback(tmp_path):
             pass
 
     agent, _ = run_with(s, QueueingModel())
-    assert agent.run("start") == "queued ok"
+    assert agent.run_sync("start") == "queued ok"
 
     assert s.pending_user_inputs == []
     assert agent.model.vision_calls == [(("queued.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
@@ -350,7 +350,7 @@ def test_ineligible_failures_never_learn_or_call_vision(tmp_path, error):
     agent, notices = run_with(s, model)
 
     with pytest.raises(ModelError, match=error.split(" - ")[-1] if " - " in error else error.split()[0]):
-        agent.run(s.images.recognize("inspect shot.png"))
+        agent.run_sync(s.images.recognize("inspect shot.png"))
 
     assert s.image_route.state() == "unknown"
     assert not s.learned_text_only_routes
@@ -365,7 +365,7 @@ def test_cancelled_request_does_not_learn(tmp_path):
     agent, _ = run_with(s, model)
 
     with pytest.raises(KeyboardInterrupt):
-        agent.run(s.images.recognize("inspect shot.png"))
+        agent.run_sync(s.images.recognize("inspect shot.png"))
 
     assert s.image_route.state() == "unknown"
     assert model.vision_calls == []
@@ -384,7 +384,7 @@ def test_vision_failure_propagates_without_retry_loop(tmp_path):
     agent, notices = run_with(s, model)
 
     with pytest.raises(ModelError, match="vision provider unreachable"):
-        agent.run(s.images.recognize("inspect shot.png"))
+        agent.run_sync(s.images.recognize("inspect shot.png"))
 
     assert len(model.requests) == 1  # one raw attempt; no loop
     assert s.image_route.state() == "text_only_learned"
@@ -404,7 +404,7 @@ def test_learned_evidence_not_serialized_and_observation_survives_resume(tmp_pat
     model = FallbackModel([ModelError("Error code: 400 - image input unsupported"), ("recovered", [])])
     agent, _ = run_with(s, model)
 
-    assert agent.run(s.images.recognize("inspect shot.png")) == "recovered"
+    assert agent.run_sync(s.images.recognize("inspect shot.png")) == "recovered"
     assert s.image_route.state() == "text_only_learned"
     s.save_snapshot()
 
@@ -434,7 +434,7 @@ def test_static_vision_failure_emits_no_notice(tmp_path):
     agent, notices = run_with(s, model)
 
     with pytest.raises(ModelError, match="vision provider unreachable"):
-        agent.run(s.images.recognize("inspect shot.png"))
+        agent.run_sync(s.images.recognize("inspect shot.png"))
 
     # the static-route notice would claim a described-by success; a failed observation must not
     assert notices == []
@@ -448,8 +448,8 @@ def test_learned_route_observes_follow_up_attachment_directly(tmp_path):
     model = FallbackModel([ModelError("Error code: 400 - boom"), ("learned ok", []), ("direct ok", [])])
     agent, notices = run_with(s, model)
 
-    assert agent.run(s.images.recognize("look at first.png")) == "learned ok"
-    assert agent.run(s.images.recognize("now second.png")) == "direct ok"
+    assert agent.run_sync(s.images.recognize("look at first.png")) == "learned ok"
+    assert agent.run_sync(s.images.recognize("now second.png")) == "direct ok"
 
     assert s.image_route.state() == "text_only_learned"
     # the follow-up attachment is observed directly through [vision], never re-sent raw
@@ -489,7 +489,7 @@ def test_queued_image_400_fallback_cancelled_keeps_pending_and_no_history_duplic
             self.vision_calls = []
             self.step = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             self.step += 1
             if self.step == 1:
@@ -504,7 +504,7 @@ def test_queued_image_400_fallback_cancelled_keeps_pending_and_no_history_duplic
 
     agent, _ = run_with(s, CancelDuringFallback())
     with pytest.raises(KeyboardInterrupt):
-        agent.run("start")
+        agent.run_sync("start")
 
     # the paid observation stays out of history on cancel: the queued image is released back to
     # the queue instead of appearing in both history and the queue (a next-turn duplicate)
@@ -515,7 +515,7 @@ def test_queued_image_400_fallback_cancelled_keeps_pending_and_no_history_duplic
     # a fresh turn re-submits the still-queued image, observes it once, and commits it once
     second = FallbackModel([("replayed ok", [])])
     agent2, _ = run_with(s, second)
-    assert agent2.run("start") == "replayed ok"
+    assert agent2.run_sync("start") == "replayed ok"
     assert second.vision_calls == [(("queued.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     observations = [m for m in s.messages if ImageInputs.refs(m) and "queued.png" in json.dumps(m)]
     assert len(observations) == 1
@@ -532,7 +532,7 @@ def test_queued_image_400_fallback_manual_retry_observes_once(tmp_path):
             self.vision_calls = []
             self.step = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             self.step += 1
             if self.step == 1:
@@ -548,7 +548,7 @@ def test_queued_image_400_fallback_manual_retry_observes_once(tmp_path):
             pass
 
     agent, _ = run_with(s, RetryDuringFallback())
-    assert agent.run("start") == "queued ok"
+    assert agent.run_sync("start") == "queued ok"
 
     # the manual retry re-sends the converted observation: the queued image is observed exactly
     # once and committed once, never duplicated between the request and history
@@ -570,7 +570,7 @@ def test_view_image_400_fallback_cancel_keeps_paid_observation(tmp_path):
             self.vision_calls = []
             self.step = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             self.step += 1
             if self.step == 1:
@@ -584,7 +584,7 @@ def test_view_image_400_fallback_cancel_keeps_paid_observation(tmp_path):
 
     agent, _ = run_with(s, CancelAfterViewImage())
     with pytest.raises(KeyboardInterrupt):
-        agent.run("inspect")
+        agent.run_sync("inspect")
 
     observations = [message for message in s.messages if message.get(TOOL_IMAGE_OBSERVATION_KEY)]
     assert len(observations) == 1
@@ -603,7 +603,7 @@ def test_queued_image_400_manual_retry_then_cancel_releases_pending(tmp_path):
             self.vision_calls = []
             self.step = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             self.step += 1
             if self.step == 1:
@@ -620,7 +620,7 @@ def test_queued_image_400_manual_retry_then_cancel_releases_pending(tmp_path):
 
     agent, _ = run_with(s, RetryThenCancel())
     with pytest.raises(KeyboardInterrupt):
-        agent.run("start")
+        agent.run_sync("start")
 
     assert s.pending_user_inputs and "queued.png" in s.pending_user_inputs[0].text
     assert "queued.png" not in json.dumps(s.messages)
@@ -637,7 +637,7 @@ def test_queued_image_400_fallback_failure_keeps_paid_observation(tmp_path):
             self.vision_calls = []
             self.step = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             self.step += 1
             if self.step == 1:
@@ -652,7 +652,7 @@ def test_queued_image_400_fallback_failure_keeps_paid_observation(tmp_path):
 
     agent, _ = run_with(s, FailingDuringFallback())
     with pytest.raises(ModelError, match="fallback main request failed"):
-        agent.run("start")
+        agent.run_sync("start")
 
     # the fallback failed, but the vision observation was already paid for: it is committed as
     # durable text (with its queued input acknowledged) instead of being overwritten by the raw
@@ -678,7 +678,7 @@ def test_two_view_image_questions_keep_order_and_cardinality(tmp_path):
     )
     agent, _ = run_with(s, model)
 
-    assert agent.run(s.images.recognize("compare the two")) == "both described"
+    assert agent.run_sync(s.images.recognize("compare the two")) == "both described"
 
     # two ViewImage calls keep their individual questions and their replay ordering
     assert model.vision_calls == [(("a.png",), "what is in a?"), (("b.png",), "what is in b?")]

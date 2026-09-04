@@ -30,7 +30,7 @@ def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert ("Web Search", "") in streamed
 
@@ -61,7 +61,7 @@ def test_responses_stream_reports_a_search_the_terminal_output_drops(tmp_path, m
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "qwen release date")]
     # Qwen omits response.output_text.done, so response.completed is the terminal fallback that
@@ -90,7 +90,7 @@ def test_responses_stream_reports_a_search_once_when_the_terminal_output_keeps_i
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "httpx timeout")]
 
@@ -116,7 +116,7 @@ def test_responses_stream_does_not_double_an_id_less_call_the_terminal_output_ke
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "missing id")]
 
@@ -149,7 +149,7 @@ def test_anthropic_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(model, "anthropic_client", _AnthropicStreamClientFactory(events))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert ("Web Search", "") in streamed
 
@@ -192,7 +192,7 @@ def test_anthropic_stream_reports_a_search_live_before_the_stream_ends(tmp_path,
     ]
     monkeypatch.setattr(model, "anthropic_client", _AnthropicStreamClientFactory(events))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     report = ("builtin", "Web Search", "shannon birth date")
     assert report in timeline
@@ -238,7 +238,7 @@ def test_anthropic_stream_reads_the_query_carried_on_the_start_block(tmp_path, m
     ]
     monkeypatch.setattr(model, "anthropic_client", _AnthropicStreamClientFactory(events))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "already present")]
 
@@ -255,7 +255,7 @@ def test_responses_result_reports_each_search_for_the_transcript(tmp_path, monke
     ]
     monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     # The local function call has its own tool line already; only the provider-side call is reported.
     assert reported == [("Web Search", "httpx timeout configuration")]
@@ -288,7 +288,7 @@ def test_anthropic_result_reports_each_search_for_the_transcript(tmp_path, monke
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "shannon birth date")]
 
@@ -302,7 +302,7 @@ def test_searches_are_reported_with_streaming_disabled(tmp_path, monkeypatch):
     output = [{"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "q"}}]
     monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "q")]
 
@@ -315,7 +315,7 @@ def test_a_search_without_a_query_still_reports(tmp_path, monkeypatch):
     output = [{"id": "ws_1", "type": "web_search_call", "status": "completed"}]
     monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "")]
 

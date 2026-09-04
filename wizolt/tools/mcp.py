@@ -66,19 +66,7 @@ class MCPTool(Tool):
         rendered = ", ".join(f"{key}={Tool.compact(value, 60)}" for key, value in arguments.items())
         return "(" + rendered + ")"
 
-    def call(self) -> str:
-        """An MCP call is network work over someone else's process, so it is a coroutine; see call_async.
-
-        Reached only if something outside the runner invokes it as an ordinary tool. What this tool
-        can answer on its own -- a malformed payload, an unconfigured MCP -- it still answers, and
-        then it says what it needs."""
-
-        self.payload()
-        if self.session.mcp is None:
-            raise ToolError("MCP not configured")
-        raise ToolError(f"{self.NAME} requires a tool runner to reach the server")
-
-    async def call_async(self) -> str:
+    async def call(self) -> str:
         payload = self.payload()
         action = self.resolved_action(payload)
         server = payload.get("server", "")
@@ -97,18 +85,18 @@ class MCPTool(Tool):
             if payload.get("format") == "json":
                 # Structured path for ToolScript's nested calls; hidden from the model's own MCP
                 # schema (params_schema has no `format`), so only scripts can reach it.
-                data = await mcp.call_tool_structured_async(server, tool_name, arguments)
+                data = await mcp.call_tool_structured(server, tool_name, arguments)
                 return json.dumps(data, ensure_ascii=False, indent=2)
-            prefix = await mcp.auto_read_prefix_async(server, tool_name)
+            prefix = await mcp.auto_read_prefix(server, tool_name)
             try:
-                output = await mcp.call_tool_async(server, tool_name, arguments)
+                output = await mcp.call_tool(server, tool_name, arguments)
             except ToolError as error:
                 raise ToolError(f"{error}\n\n{prefix}" if prefix else str(error)) from error
             return prefix + output if prefix else output
         if action == "list_resources":
             return mcp.list_resources(server)
         if action == "read_resource":
-            return await mcp.read_resource_async(server, str(payload.get("uri") or ""))
+            return await mcp.read_resource(server, str(payload.get("uri") or ""))
         raise ToolError(
             f"unknown MCP action {action!r}. Valid actions: {', '.join(self.ACTIONS)}. "
             f'To invoke a remote tool named {action!r}, use action="call", tool={action!r}.'

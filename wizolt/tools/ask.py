@@ -53,16 +53,7 @@ class AskTool(Tool):
         }, ["questions"])
         # fmt: on
 
-    def call(self) -> str:
-        """Ask waits on the user, so its work is a coroutine; see call_async.
-
-        Reached only if something outside the runner invokes it as an ordinary tool. Validation
-        still runs -- it is the tool's own -- and then it says what it needs."""
-
-        self._prepared()
-        raise ToolError(f"{self.NAME} requires a tool runner to reach the user")
-
-    async def call_async(self) -> str:
+    async def call(self) -> str:
         prepared = self._prepared()
         # Ask for the whole batch at once (the modal pages through it); fall back to the question
         # texts when no interactive question function is wired.

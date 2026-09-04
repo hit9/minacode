@@ -459,7 +459,7 @@ def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, mon
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    messages = runner.run(
+    messages = runner.run_sync(
         [
             ToolCall(
                 "wash",
@@ -489,7 +489,7 @@ def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
     path.write_text("HEAD\nx\na\ntarget\nc\nd\n", encoding="utf-8")  # every line shifts down one
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run(
+    runner.run_sync(
         [
             ToolCall(
                 "batch",

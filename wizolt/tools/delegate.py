@@ -242,24 +242,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             ("api", config.worker_api or f"(inherit) {entry.api}"),
         ]
 
-    def call(self) -> str:
-        """A send drives a whole worker turn, so Delegate's work is a coroutine; see call_async.
-
-        Reached only if something outside the runner invokes it as an ordinary tool. The two local
-        actions still answer; a send says what it needs rather than starting a worker nobody owns."""
-
-        payload = self.single_dict_arg("Delegate requires named fields")
-        action = str(payload.get("action") or "").strip()
-        if action == "send":
-            self._send_args(payload)  # the arguments are still the tool's own to check
-            raise ToolError("Delegate requires a tool runner")
-        if action == "reset":
-            return self._reset()
-        if action == "status":
-            return self._status()
-        raise ToolError(f"unknown action: {action!r}")
-
-    async def call_async(self) -> str:
+    async def call(self) -> str:
         payload = self.single_dict_arg("Delegate requires named fields")
         action = str(payload.get("action") or "").strip()
         if action == "send":
@@ -383,7 +366,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                 # no second cancellation channel, and no bridge back to the parent's loop.
                 # The engine publishes the final answer through the agent's output_fn, so a
                 # worker's report lands in the parent scrollback like its interim messages.
-                answer = await agent.run_async(order)
+                answer = await agent.run(order)
         except Exception as error:  # noqa: BLE001 - the worker's failure becomes a ToolError envelope below, after the finally block merged its diffs
             failure = error
         finally:

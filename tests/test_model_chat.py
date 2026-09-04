@@ -37,7 +37,7 @@ def test_chat_output_cap_reached_with_nothing_generated_names_the_cap(tmp_path, 
     monkeypatch.setattr(model, "client", factory)
 
     with pytest.raises(ModelOutputTruncated) as error:
-        model.request([{"role": "user", "content": "hi"}], None)
+        model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert "provider.max_tokens" in str(error.value)
     assert "16384" in str(error.value)
@@ -57,7 +57,7 @@ def test_chat_length_with_output_below_the_cap_names_both_settings(tmp_path, mon
     monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("", "length", completion_tokens=4_096)]))
 
     with pytest.raises(ModelError) as error:
-        model.request([{"role": "user", "content": "hi"}], None)
+        model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert "provider.max_tokens" in str(error.value)
     assert "runtime.max_context_tokens" in str(error.value)
@@ -74,7 +74,7 @@ def test_chat_length_without_a_configured_cap_names_both_settings(tmp_path, monk
     monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("", "length", completion_tokens=16_384)]))
 
     with pytest.raises(ModelError, match="context window"):
-        model.request([{"role": "user", "content": "hi"}], None)
+        model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert s.usage.completion_tokens == 16_384
 
@@ -84,7 +84,7 @@ def test_chat_output_cap_reached_after_text_keeps_the_partial_answer(tmp_path, m
     model = ModelClient(_session(tmp_path, stream=False))
     monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("half a sen", "length")]))
 
-    _, calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, calls, content = model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert content == "half a sen"
     assert calls == []
@@ -102,7 +102,7 @@ def test_chat_stream_reports_the_cap_when_the_stream_produced_nothing(tmp_path, 
     monkeypatch.setattr(model, "client", _StreamClientFactory(chunks))
 
     with pytest.raises(ModelOutputTruncated, match="provider.max_tokens"):
-        model.request([{"role": "user", "content": "hi"}], None)
+        model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert s.usage.completion_tokens == 16384
 
@@ -129,7 +129,7 @@ def test_chat_request_success(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert content == "hello"
     assert assistant == {"role": "assistant", "content": "hello"}
@@ -165,7 +165,7 @@ def test_chat_request_strips_session_event_metadata(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "<session_event />", SESSION_EVENT_KEY: "resumed"}])
+    model.request_sync([{"role": "user", "content": "<session_event />", SESSION_EVENT_KEY: "resumed"}])
 
     assert json.loads(factory.calls[0].content)["messages"] == [{"role": "user", "content": "<session_event />"}]
 
@@ -206,7 +206,7 @@ def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "run"}], [])
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "run"}], [])
 
     assert content == ""
     assert assistant["role"] == "assistant"
@@ -262,7 +262,7 @@ def test_chat_appends_declared_builtin_function_to_the_local_tools(tmp_path, mon
     monkeypatch.setattr(model, "client", factory)
 
     local = {"type": "function", "function": {"name": "Bash", "parameters": {}}}
-    assistant, calls, content = model.request([{"role": "user", "content": "search"}], [local])
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "search"}], [local])
 
     assert content == ""
     assert calls == [ToolCall("call_1", "$web_search", [{"search_query": "wizolt"}]), ToolCall("call_2", "Bash", ["ls"])]
@@ -329,7 +329,7 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "run"}], [])
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "run"}], [])
 
     body = json.loads(factory.calls[0].content)
     assert factory.calls[0].url.path.endswith("/chat/completions")
@@ -427,7 +427,7 @@ def test_chat_stream_preserves_openrouter_reasoning_alias_and_details(tmp_path, 
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "go"}], None)
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "go"}], None)
 
     assert calls == []
     assert content == "done"
@@ -588,7 +588,7 @@ def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_pa
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, _ = model.request([{"role": "user", "content": "read"}], [])
+    assistant, calls, _ = model.request_sync([{"role": "user", "content": "read"}], [])
 
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_1", "call_2"]
     assert [call.id for call in calls] == ["call_1", "call_2"]
@@ -638,7 +638,7 @@ def test_chat_stream_rejects_ambiguous_tool_fragments_without_indexes_or_ids(tmp
     monkeypatch.setattr(model, "client", factory)
 
     with pytest.raises(ModelError, match="cannot associate it safely"):
-        model.request([{"role": "user", "content": "run"}], [])
+        model.request_sync([{"role": "user", "content": "run"}], [])
 
 
 def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
@@ -669,7 +669,7 @@ def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     record_backoff(monkeypatch)
 
-    _, _, content = model.request([{"role": "user", "content": "hi"}], [])
+    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert content == "ok"
     assert len(factory.calls) == 2
@@ -697,7 +697,7 @@ def test_chat_request_drops_responses_only_metadata(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.request(
+    model.request_sync(
         [{"role": "assistant", "content": "old", "_responses_output": [{"type": "reasoning", "id": "rs_1", "summary": []}]}],
         None,
     )

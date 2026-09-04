@@ -251,7 +251,7 @@ def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, monkeypat
         async def interrupted(_input):
             raise KeyboardInterrupt
 
-        agent.run_async = interrupted
+        agent.run = interrupted
     command_loop = CommandLoop(agent, input_fn=read_input, output_fn=output.append)
     monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _checker: None)
     monkeypatch.setattr(CodeIndex, "status", lambda _index: False)
@@ -277,13 +277,13 @@ def test_simple_repl_publishes_the_final_answer_exactly_once(tmp_path, monkeypat
 
     agent = Agent(session(tmp_path), output_fn=output.append)
 
-    async def run_async(_user_input):
+    async def run(_user_input):
         if raised:
             raise WizoltError("provider is down")
         agent.output_fn("The answer.")  # what a turn does before it returns
         return "The answer."
 
-    agent.run_async = run_async
+    agent.run = run
     command_loop = CommandLoop(agent, input_fn=read_input, output_fn=output.append)
     monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _checker: None)
     monkeypatch.setattr(CodeIndex, "status", lambda _index: False)

@@ -32,7 +32,7 @@ class VisionObserver:
     def __init__(self, model: ModelClient):
         self.model = model
 
-    async def observe_async(self, images: tuple[ImageRef, ...], question: str = "") -> str:
+    async def observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
         entry_name = self.model.session.config.vision_provider
         provider = self.model.session.config.providers[entry_name]
         if missing := provider.missing_fields():

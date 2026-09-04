@@ -76,10 +76,10 @@ async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monke
         started.set()
         await allow_finish.wait()
 
-    monkeypatch.setattr(s.mcp, "discover_auto_async", blocking_discover)
+    monkeypatch.setattr(s.mcp, "discover_auto", blocking_discover)
 
     command_loop.start_session()  # startup itself never touches MCP
-    discovery = asyncio.ensure_future(command_loop.discover_mcp_async())
+    discovery = asyncio.ensure_future(command_loop.discover_mcp())
     try:
         await asyncio.wait_for(started.wait(), 2)
         # Still blocked in discovery, and the caller is free: this is a task, not a wait.

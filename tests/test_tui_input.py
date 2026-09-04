@@ -76,7 +76,7 @@ def ctrl_c_queue_scenario(cwd, results):
     driver_errors = []
 
     class RecordingModel:
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             requests.append([message.get("content") for message in messages if message.get("role") == "user"])
             if len(requests) > 1:
                 return {"role": "assistant", "content": "next request complete"}, [], "next request complete"

@@ -50,7 +50,7 @@ def test_responses_request_appends_builtin_tools_after_function_schemas(tmp_path
     factory = _MockClientFactory([(200, _responses_body())])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     body = json.loads(factory.calls[0].content)
     assert [tool.get("name") or tool["type"] for tool in body["tools"]] == ["Bash", "web_search"]
@@ -77,7 +77,7 @@ def test_chat_request_appends_builtin_tools(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     body = json.loads(factory.calls[0].content)
     assert body["tools"] == [FUNCTION_TOOL, zai_search]
@@ -104,7 +104,7 @@ def test_anthropic_request_appends_builtin_tools(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     body = json.loads(factory.calls[0].content)
     assert [tool["name"] for tool in body["tools"]] == ["Bash", "web_search"]
@@ -117,7 +117,7 @@ def test_builtin_tools_are_sent_without_any_function_tools(tmp_path, monkeypatch
     factory = _MockClientFactory([(200, _responses_body())])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert json.loads(factory.calls[0].content)["tools"] == [{"type": "web_search"}]
 
@@ -175,7 +175,7 @@ def test_responses_result_collects_openai_citations_and_qwen_sources(tmp_path, m
     factory = _MockClientFactory([(200, _responses_body(output=output))])
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, _, content = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, _, content = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert content == "sunny"
     assert assistant[SEARCH_SOURCES_KEY] == [
@@ -217,7 +217,7 @@ def test_anthropic_result_collects_cited_and_raw_search_results(tmp_path, monkey
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, _, _ = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     # The same URL is both a raw result and a citation; it is reported once.
     assert assistant[SEARCH_SOURCES_KEY] == [{"url": "https://wiki.example/s", "title": "Shannon"}]
@@ -248,7 +248,7 @@ def test_anthropic_search_error_reports_no_sources(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, _, _ = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert SEARCH_SOURCES_KEY not in assistant
 
@@ -283,7 +283,7 @@ def test_chat_result_collects_message_annotations(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, _, _ = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert assistant[SEARCH_SOURCES_KEY] == [{"url": "https://router.example/c", "title": "C"}]
 
@@ -308,7 +308,7 @@ def test_stored_sources_never_replay_to_the_provider(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.request(history, [])
+    model.request_sync(history, [])
 
     sent = json.loads(factory.calls[0].content)["messages"]
     assert sent == [{"role": "assistant", "content": "hi"}]

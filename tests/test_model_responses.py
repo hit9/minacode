@@ -62,7 +62,7 @@ def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_p
         }
     ]
 
-    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], tools)
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "hi"}], tools)
 
     assert content == "hello"
     assert calls == []
@@ -164,7 +164,7 @@ def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, mo
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert json.loads(factory.calls[0].content)["stream"] is True
     assert factory.calls[0].url.path.endswith("/responses")
@@ -250,7 +250,7 @@ def test_responses_stream_without_terminal_event_retries_then_succeeds(tmp_path,
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert len(factory.calls) == 2
     assert streamed == [("output", "hel"), ("", ""), ("output", "hel"), ("", "")]
@@ -277,7 +277,7 @@ def test_responses_stream_previews_reasoning_in_either_spelling(tmp_path, monkey
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request([{"role": "user", "content": "hi"}], [])
+    model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert streamed == [("reasoning", "weigh"), ("reasoning", "ing"), ("output", "done"), ("", "")]
 
@@ -317,7 +317,7 @@ def test_responses_stream_promotes_completed_text_before_tool_arguments_finish(t
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    _, calls, content = model.request([{"role": "user", "content": "make the change"}], None)
+    _, calls, content = model.request_sync([{"role": "user", "content": "make the change"}], None)
 
     promoted = ("output_done", "I am editing the files.")
     assert timeline.index(promoted) < timeline.index(("wire", "tool arguments"))
@@ -359,7 +359,7 @@ def test_responses_stream_promotes_completed_text_across_provider_call(tmp_path,
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
     model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
 
-    _, calls, content = model.request([{"role": "user", "content": "weather?"}], None)
+    _, calls, content = model.request_sync([{"role": "user", "content": "weather?"}], None)
 
     promoted = ("output_done", "The answer is sunny.")
     clear = ("", "")
@@ -400,7 +400,7 @@ def test_responses_stream_promotes_when_output_item_added_is_missing(tmp_path, m
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    _, calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, calls, content = model.request_sync([{"role": "user", "content": "hi"}], None)
 
     promoted = ("output_done", "searched")
     assert timeline.count(promoted) == 1
@@ -453,7 +453,7 @@ def test_responses_stream_returns_incomplete_terminal_response_and_clears_previe
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert streamed == [("output", "partial"), ("", "")]
     assert content == "partial"
@@ -526,7 +526,7 @@ def test_responses_failed_mock_servers_match_across_stream_modes(tmp_path, monke
     monkeypatch.setattr(streaming, "client", stream_factory)
 
     with pytest.raises(ModelError, match="Responses request failed"):
-        streaming.request([{"role": "user", "content": "hi"}], [])
+        streaming.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert stream_factory.calls[0].url.path.endswith("/responses")
     assert json.loads(stream_factory.calls[0].content)["stream"] is True
@@ -538,7 +538,7 @@ def test_responses_failed_mock_servers_match_across_stream_modes(tmp_path, monke
     monkeypatch.setattr(non_streaming, "client", plain_factory)
 
     with pytest.raises(ModelError, match="Responses request failed"):
-        non_streaming.request([{"role": "user", "content": "hi"}], [])
+        non_streaming.request_sync([{"role": "user", "content": "hi"}], [])
 
     assert plain_factory.calls[0].url.path.endswith("/responses")
     assert json.loads(plain_factory.calls[0].content)["stream"] is False
@@ -657,11 +657,11 @@ def test_responses_function_call_round_trip_over_sdk_transport(tmp_path, monkeyp
     monkeypatch.setattr(model, "client", factory)
     tools = [BashTool.schema(False)]
 
-    assistant, calls, content = model.request([{"role": "user", "content": "run it"}], tools)
+    assistant, calls, content = model.request_sync([{"role": "user", "content": "run it"}], tools)
     assert content == ""
     assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
 
-    final, final_calls, final_content = model.request(
+    final, final_calls, final_content = model.request_sync(
         [
             {"role": "user", "content": "run it"},
             assistant,
@@ -697,7 +697,7 @@ def test_responses_request_folds_effort_and_drops_rejected_temperature(tmp_path,
     factory = _MockClientFactory([(200, empty), (200, empty)])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
     body = json.loads(factory.calls[0].content)
     assert body["reasoning"] == {"effort": "high"}
     assert "temperature" not in body
@@ -707,7 +707,7 @@ def test_responses_request_folds_effort_and_drops_rejected_temperature(tmp_path,
     s.config.provider.url = "https://api.kimi.com/coding/v1"
     s.config.provider.model = "k3"
     s.config.provider.reasoning = "off"
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
     body = json.loads(factory.calls[1].content)
     assert body["reasoning"] == {"effort": "none"}
     assert body["temperature"] == 0.7
@@ -722,7 +722,7 @@ def test_openai_responses_reasoning_off_is_not_silently_replaced_by_the_model_de
     factory = _MockClientFactory([(200, empty)])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert json.loads(factory.calls[0].content)["reasoning"] == {"effort": "none"}
 
@@ -746,7 +746,7 @@ def test_responses_sends_the_resolved_reasoning_effort(tmp_path, monkeypatch, ur
     factory = _MockClientFactory([(200, empty)])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert json.loads(factory.calls[0].content)["reasoning"] == {"effort": expected}
 
@@ -763,7 +763,7 @@ def test_openai_responses_non_reasoning_model_omits_reasoning(tmp_path, monkeypa
     factory = _MockClientFactory([(200, empty)])
     monkeypatch.setattr(model, "client", factory)
 
-    model.request([{"role": "user", "content": "hi"}], None)
+    model.request_sync([{"role": "user", "content": "hi"}], None)
 
     assert "reasoning" not in json.loads(factory.calls[0].content)
 
@@ -939,7 +939,7 @@ def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkey
     tools = [BashTool.schema(False)]
 
     # First request: non-empty tools, provider returns a valid call
-    assistant, calls, _ = model.request([{"role": "user", "content": "run it"}], tools)
+    assistant, calls, _ = model.request_sync([{"role": "user", "content": "run it"}], tools)
     assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
     assert assistant["tool_calls"][0]["id"] == "call_1"
     assert any(item.get("type") == "function_call" for item in assistant["_responses_output"])
@@ -950,7 +950,7 @@ def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkey
         assistant,
         {"role": "tool", "tool_call_id": "call_1", "content": "hi"},
     ]
-    _, final_calls, final_content = model.request(history, tools)
+    _, final_calls, final_content = model.request_sync(history, tools)
     assert final_content == "done"
     assert final_calls == []
 

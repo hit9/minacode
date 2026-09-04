@@ -204,15 +204,16 @@ provider-specific machinery without a demonstrated use case.
 
 ## One loop owns the session
 
-`TuiRuntime.run()` calls `asyncio.run()` once, and that loop owns everything the interactive
+`TuiRuntime.run_sync()` calls `asyncio.run()` once, and that loop owns everything the interactive
 session does: the prompt-toolkit application, the active turn, the model requests, MCP, compaction,
 vision, the ordered scrollback writer, and every background task the runtime starts. The non-TTY
-frontend gets the same shape from `CommandLoop.run_simple_async()`. A model request, a tool batch,
+frontend gets the same shape from `CommandLoop.run_simple()`. A model request, a tool batch,
 an MCP call, and a keystroke are tasks that take turns, which is what lets the prompt keep drawing
 while a request is in flight and lets one cancellation reach all of it.
 
-- No private or nested loop, and no generic sync-to-async bridge. `Agent.run()`, `ToolRunner.run()`,
-  `TuiApp.run()`, `CommandLoop.run()`, `TuiRuntime.run()`, and `ModelClient.request()` are the only
+- No private or nested loop, and no generic sync-to-async bridge. `Agent.run_sync()`,
+  `ToolRunner.run_sync()`, `TuiApp.run_sync()`, `CommandLoop.run()`, `TuiRuntime.run_sync()`, and
+  `ModelClient.request_sync()` are the only
   synchronous entry points; each is `fail_if_running_loop(...)` then `asyncio.run()` over its async
   implementation, for direct and headless callers. Production code awaits the async method.
 - Loop-bound primitives (queues, locks, events, futures) belong to one invocation or to the runtime.

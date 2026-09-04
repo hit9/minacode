@@ -45,7 +45,7 @@ async def test_cancelling_a_turn_ends_the_in_flight_attempt_and_closes_its_clien
     agent = Agent(s, output_fn=lambda _text: None)
     agent.model.client = Client
 
-    turn = asyncio.ensure_future(agent.run_async("hello"))
+    turn = asyncio.ensure_future(agent.run("hello"))
     await asyncio.wait_for(started.wait(), 2)
     agent.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -62,15 +62,15 @@ async def test_a_late_cancel_cannot_reach_the_next_turn(tmp_path):
     agent = Agent(s, output_fn=lambda _text: None)
 
     class Model:
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = Model()
-    assert await agent.run_async("first") == "done"
+    assert await agent.run("first") == "done"
 
     agent.cancel()  # late: the turn is over and there is nothing to cancel
 
-    assert await agent.run_async("second") == "done"
+    assert await agent.run("second") == "done"
 
 
 def test_agent_injects_pending_user_input_once(tmp_path):
@@ -83,7 +83,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
         def __init__(self):
             self.messages = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 s.enqueue_user_input("second instruction")
@@ -91,7 +91,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run("initial request") == "done"
+    assert agent.run_sync("initial request") == "done"
 
     first = "\n\n".join(message.get("content") or "" for message in agent.model.messages[0])
     second = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
@@ -129,13 +129,13 @@ def test_agent_expands_file_mentions_in_queued_input_before_sending(tmp_path):
         def __init__(self):
             self.messages = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             del tools
             self.messages.append(messages)
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run("initial request") == "done"
+    assert agent.run_sync("initial request") == "done"
 
     sent = agent.model.messages[0]
     assert any(message.get("content") == LIVE_FOLLOWUP_PREFIX + "inspect @file:queued.txt" for message in sent)
@@ -156,7 +156,7 @@ def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
         def __init__(self):
             self.requests = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
                 return {}, [call("Bash", ["echo hi"])], ""
@@ -164,7 +164,7 @@ def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run("initial request") == "done"
+    assert agent.run_sync("initial request") == "done"
     assert len(agent.model.requests) == 2  # one request per step, none inserted for the follow-ups
     assert all(tools for _, tools in agent.model.requests)
     assert agent.model.requests[0][1] == agent.model.requests[1][1]
@@ -189,7 +189,7 @@ def test_agent_never_rewrites_a_sent_followup_message(tmp_path):
         def __init__(self):
             self.requests = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append([dict(message) for message in messages])
             if len(self.requests) == 1:
                 return {}, [read], "on it"
@@ -197,7 +197,7 @@ def test_agent_never_rewrites_a_sent_followup_message(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run("initial request") == "done"
+    assert agent.run_sync("initial request") == "done"
     sent = next(message for message in agent.model.requests[0] if "an early follow-up" in str(message.get("content") or ""))
     assert sent["content"] == LIVE_FOLLOWUP_PREFIX + "an early follow-up"
     replayed = [message for message in agent.model.requests[1] if "an early follow-up" in str(message.get("content") or "")]
@@ -219,7 +219,7 @@ def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
             self.requests = []
             self.on_stream = None
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
                 s.enqueue_user_input("a later follow-up")
@@ -232,7 +232,7 @@ def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run("initial request") == "done"
+    assert agent.run_sync("initial request") == "done"
     assert len(agent.model.requests) == 4
     tool_blocks = [tools for _, tools in agent.model.requests]
     assert all(tools and tools == tool_blocks[0] for tools in tool_blocks)
@@ -262,7 +262,7 @@ def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
             self.requests = []
             self.on_stream = None
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(([dict(message) for message in messages], tools))
             if len(self.requests) == 1:
                 return {"role": "assistant", "content": pseudo}, [], pseudo
@@ -272,7 +272,7 @@ def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run("initial request") == "done"
+    assert agent.run_sync("initial request") == "done"
     assert len(agent.model.requests) == 3
     assert all(tools == agent.model.requests[0][1] for _, tools in agent.model.requests)
     retry_messages = agent.model.requests[1][0]
@@ -298,7 +298,7 @@ def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
             self.requests = []
             self.on_stream = None
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append((messages, tools))
             return {"role": "assistant", "content": pseudo}, [], pseudo
 
@@ -308,7 +308,7 @@ def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
         MalformedToolCallError,
         match=r"Model emitted Bash as text 6 times; none of the textual calls were executed\.",
     ):
-        agent.run("initial request")
+        agent.run_sync("initial request")
 
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     assert all(tools == agent.model.requests[0][1] and tools for _, tools in agent.model.requests)
@@ -332,14 +332,14 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     class FakeModel:
         received_tools = None
 
-        async def request_async(self, messages, request_tools=None):
+        async def request(self, messages, request_tools=None):
             self.received_tools = request_tools
             return {"role": "assistant", "content": "done"}, [], "done"
 
     monkeypatch.setattr(Tool, "resolved_schemas", staticmethod(resolve))
     agent.model = FakeModel()
 
-    assert agent.run("hello") == "done"
+    assert agent.run_sync("hello") == "done"
     assert resolved == [s]
     assert agent.model.received_tools is tools
 
@@ -353,14 +353,14 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
         def __init__(self):
             self.messages = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], "I'll inspect that first."
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = TalkingModel()
-    assert agent.run("read file") == "done"
+    assert agent.run_sync("read file") == "done"
     assert output[0] == "I'll inspect that first."
     assert any(isinstance(line, LogBlock) and str(line).startswith("  Read  ") for line in output)
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "assistant"]

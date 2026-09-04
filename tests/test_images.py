@@ -245,11 +245,11 @@ def test_simple_cli_preserves_images_when_combining_pending_inputs(tmp_path, mon
     s.enqueue_user_input(s.images.prepare(s.images.recognize(path.name)))
     agent = Agent(s, output_fn=lambda _text: None)
     received = []
-    async def run_async(value):
+    async def run(value):
         received.append(value)
         return "done"
 
-    monkeypatch.setattr(agent, "run_async", run_async)
+    monkeypatch.setattr(agent, "run", run)
     monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _self: None)
     monkeypatch.setattr(loop_module.CodeIndex, "refresh_existing_async", lambda _self: False)
 
@@ -311,12 +311,12 @@ def test_protocol_payloads_use_each_standard_image_shape(tmp_path):
     assert model.wire(ProviderConfig(api="anthropic", model="claude")).messages([message]) == [{"role": "user", "content": s.images.anthropic_content(message)}]
 
 
-def test_view_image_tool_validates_stores_and_builds_model_observation(tmp_path):
+async def test_view_image_tool_validates_stores_and_builds_model_observation(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "screen shot.png", size=(640, 480))
     tool = ViewImageTool(s, [path.name, "read the error"])
 
-    output = tool.call()
+    output = await tool.call()
     observation = tool.model_observation()
 
     assert tool.needs_confirmation() is False
@@ -333,12 +333,12 @@ def test_view_image_tool_validates_stores_and_builds_model_observation(tmp_path)
     assert ContextManager(s).estimated_tokens([observation]) == ContextManager(s).estimated_tokens([without_marker])
 
 
-def test_view_image_tool_rejects_invalid_input(tmp_path):
+async def test_view_image_tool_rejects_invalid_input(tmp_path):
     s = session(tmp_path)
     (tmp_path / "not-image.png").write_text("not pixels", encoding="utf-8")
 
     with pytest.raises(ToolError, match="Cannot read image"):
-        ViewImageTool(s, ["not-image.png"]).call()
+        await ViewImageTool(s, ["not-image.png"]).call()
 
 
 def test_view_image_tool_requires_confirmation_outside_workspace(tmp_path):
@@ -350,7 +350,7 @@ def test_view_image_tool_requires_confirmation_outside_workspace(tmp_path):
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "no", output_fn=lambda _text: None)
 
     assert tool.needs_confirmation() is True
-    messages = runner.run([ToolCall("outside", "ViewImage", [str(outside)])])
+    messages = runner.run_sync([ToolCall("outside", "ViewImage", [str(outside)])])
     assert [message["role"] for message in messages] == ["tool"]
     assert "refused" in messages[0]["content"]
     assert s.tool_records == []
@@ -366,7 +366,7 @@ def test_view_image_batch_returns_all_tool_results_before_observation(tmp_path):
         ToolCall("read", "Read", [{"path": "notes.txt", "ranges": [[0, 1]]}]),
     ]
 
-    messages = runner.run(calls)
+    messages = runner.run_sync(calls)
 
     assert [message["role"] for message in messages] == ["tool", "tool", "user"]
     assert [message["tool_call_id"] for message in messages[:2]] == ["image", "read"]
@@ -380,7 +380,7 @@ def test_view_image_observation_round_trips_all_provider_protocols(tmp_path):
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda _text: None)
     call = ToolCall("image", "ViewImage", ["screen.png"])
     assistant = Agent.assistant_turn_message({}, [call], "")
-    active = [assistant, *runner.run([call])]
+    active = [assistant, *runner.run_sync([call])]
     model = ModelClient(s)
 
     chat = model.wire(model.session.config.provider).messages(active)
@@ -406,7 +406,7 @@ def test_agent_persists_view_image_observation_without_replaying_it_as_user_inpu
         def __init__(self):
             self.requests = []
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
                 return {}, [ToolCall("image", "ViewImage", ["screen.png"])], ""
@@ -414,7 +414,7 @@ def test_agent_persists_view_image_observation_without_replaying_it_as_user_inpu
 
     agent.model = Model()
 
-    assert agent.run("inspect the screenshot") == "done"
+    assert agent.run_sync("inspect the screenshot") == "done"
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user", "assistant"]
     observation = s.messages[-2]
     assert ImageInputs.is_tool_observation(observation)
@@ -478,7 +478,7 @@ def test_chat_request_does_not_leak_internal_image_metadata(tmp_path, monkeypatc
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=async_create(create))), close=_no_close)
     monkeypatch.setattr(ModelClient, "client", lambda _self, **kwargs: client)
 
-    ModelClient(s).request([message], None)
+    ModelClient(s).request_sync([message], None)
 
     assert IMAGE_REFS_KEY not in json.dumps(captured)
     assert captured["messages"][0]["content"] == s.images.chat_content(message)

@@ -22,21 +22,21 @@ from wizolt.tui import ASK_DONE, ASK_FREE_TEXT
 
 
 def _answers(answer):
-    """A stand-in for TuiApp.request_input_async: the question is put on the loop and awaited."""
+    """A stand-in for TuiApp.request_input: the question is put on the loop and awaited."""
 
-    async def request_input_async(prompt):
+    async def request_input(prompt):
         return answer(prompt) if callable(answer) else answer
 
-    return request_input_async
+    return request_input
 
 
 def _modals(results):
-    """A stand-in for TuiApp.show_modal_async, handing back one scripted result per call."""
+    """A stand-in for TuiApp.show_modal, handing back one scripted result per call."""
 
-    async def show_modal_async(fragments_fn, key_fn, **_kwargs):
+    async def show_modal(fragments_fn, key_fn, **_kwargs):
         return next(results) if hasattr(results, "__next__") else results(fragments_fn, key_fn)
 
-    return show_modal_async
+    return show_modal
 
 
 def test_choice_application_expands_escaped_preview_newlines(tmp_path):
@@ -46,7 +46,7 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     rendered = []
 
     class Modal:
-        def show_modal(self, fragments_fn, key_fn, exclusive=False):
+        def show_modal_sync(self, fragments_fn, key_fn, exclusive=False):
             rendered.extend(fragments_fn())
             return key_fn("enter", "")
 
@@ -76,8 +76,8 @@ async def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     prompts = []
     results = iter([(ASK_FREE_TEXT, 0), ASK_DONE])
     loop.tui = SimpleNamespace(
-        request_input_async=_answers(lambda prompt: prompts.append(prompt) or "typed answer"),
-        show_modal_async=_modals(results),
+        request_input=_answers(lambda prompt: prompts.append(prompt) or "typed answer"),
+        show_modal=_modals(results),
     )
 
     assert await question_interaction(loop, [AskSpec("Pick?", choices=["A"], previews=["preview"])]) == ["typed answer"]
@@ -91,8 +91,8 @@ async def test_ask_free_text_empty_answer_is_kept(tmp_path):
     loop.interactive_input = True
     results = iter([(ASK_FREE_TEXT, 0), ASK_DONE])
     loop.tui = SimpleNamespace(
-        request_input_async=_answers(""),
-        show_modal_async=_modals(results),
+        request_input=_answers(""),
+        show_modal=_modals(results),
     )
 
     assert await question_interaction(loop, [AskSpec("Pick?")]) == [""]
@@ -110,7 +110,7 @@ async def test_ask_free_text_on_last_question_submits_without_reentering_modal(t
         key_fn("2")  # page 2: move onto "Type freely..." (digits only move the cursor)
         return key_fn("enter")  # ...and select it -> drops to the shared input row
 
-    loop.tui = SimpleNamespace(request_input_async=_answers("typed"), show_modal_async=_modals(show_modal))
+    loop.tui = SimpleNamespace(request_input=_answers("typed"), show_modal=_modals(show_modal))
 
     assert await question_interaction(loop, [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"])]) == ["A", "typed"]
     assert len(calls) == 1
@@ -122,8 +122,8 @@ async def test_ask_without_choices_uses_shared_tui_input(tmp_path):
     prompts = []
     results = iter([(ASK_FREE_TEXT, 0), ASK_DONE])
     loop.tui = SimpleNamespace(
-        request_input_async=_answers(lambda prompt: prompts.append(prompt) or "typed answer"),
-        show_modal_async=_modals(results),
+        request_input=_answers(lambda prompt: prompts.append(prompt) or "typed answer"),
+        show_modal=_modals(results),
     )
 
     assert await question_interaction(loop, [AskSpec("Explain the issue")]) == ["typed answer"]
@@ -133,7 +133,7 @@ async def test_ask_headless_keeps_plain_per_question_prompts(tmp_path):
     """Without a TUI the batch falls back to one read_input per question, in order."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
     prompts = []
-    loop.read_input = lambda prompt: prompts.append(prompt) or "answer"
+    loop.read_input_sync = lambda prompt: prompts.append(prompt) or "answer"
 
     assert await question_interaction(loop, [AskSpec("One?"), AskSpec("Two?", choices=["A"])]) == ["answer", "answer"]
     assert prompts == ["\nOne?", "\nTwo?"]
@@ -162,7 +162,7 @@ async def test_ask_notes_flow_into_the_answer(tmp_path):
         key_fn("enter")  # save the note
         return key_fn("enter")  # pick the recommended "A" and submit the batch
 
-    loop.tui = SimpleNamespace(show_modal_async=_modals(show_modal))
+    loop.tui = SimpleNamespace(show_modal=_modals(show_modal))
 
     assert await question_interaction(loop, [AskSpec("Q?", choices=["A"], recommended=0)]) == ["A\n\nUser notes: keep the header"]
 
@@ -170,7 +170,7 @@ async def test_ask_escape_cancels_the_whole_batch(tmp_path):
     """Esc on any page cancels every question with the DISMISSED marker."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
     loop.interactive_input = True
-    loop.tui = SimpleNamespace(show_modal_async=_modals(lambda fragments_fn, key_fn: SELECTION_BACK))
+    loop.tui = SimpleNamespace(show_modal=_modals(lambda fragments_fn, key_fn: SELECTION_BACK))
 
     result = await question_interaction(loop, [AskSpec("One?"), AskSpec("Two?")])
     assert result == [DISMISSED, DISMISSED]
@@ -429,7 +429,7 @@ def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        async def request_async(self, messages, tools=None):
+        async def request(self, messages, tools=None):
             self.calls += 1
             if self.calls == 1:
                 return {}, [ToolCall("c1", "Bash", ["printf nar1"])], "先看入口。"
@@ -445,7 +445,7 @@ def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
     loop.agent.model = FakeModel()
 
     loop.user_turn_rule()  # the turn's opening rule, drawn under the user's message
-    assert loop.agent.run("x") == "改完了。"
+    assert loop.agent.run_sync("x") == "改完了。"
 
     assert len(rules) == 3  # user rule, the second narration's rule, the silent run's rule
     assert rules[0] == 0  # the user's rule always draws; the first narration lands too close to it and is skipped

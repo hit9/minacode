@@ -265,7 +265,7 @@ async def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monk
     monkeypatch.setattr(model, "api_request", explode)
 
     with pytest.raises(ModelError):
-        await compaction.Compactor(ContextManager(s), model).compact_async("context")
+        await compaction.Compactor(ContextManager(s), model).compact("context")
     assert s.state.compaction_entry == ""
 
 
@@ -288,7 +288,7 @@ async def test_compaction_refuses_an_incomplete_entry_by_name(tmp_path):
 
     assert s.missing_config() == []  # the active entry is complete; only the compaction one is not
     with pytest.raises(ModelError, match=r"compaction provider `cheap` is missing key, model"):
-        await compaction.Compactor(ContextManager(s), ModelClient(s)).compact_async("context")
+        await compaction.Compactor(ContextManager(s), ModelClient(s)).compact("context")
     assert s.state.compaction_entry == ""  # refused before the request, so no stale status row
 
 
@@ -338,7 +338,7 @@ async def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, 
         ),
     )
 
-    await compaction.Compactor(ContextManager(s), model).compact_async("long context")
+    await compaction.Compactor(ContextManager(s), model).compact("long context")
 
     assert (s.usage.calls, s.usage.total_tokens) == (1, 120_900)  # the conversation's row is untouched
     assert (s.compaction_usage.calls, s.compaction_usage.total_tokens) == (1, 95_700)

@@ -192,7 +192,7 @@ def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch)
 
 def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
     s = session(tmp_path)
-    ToolRunner(s, ContextManager(s), output_fn=lambda text: None).run([ToolCall("x", "MissingTool", [])])
+    ToolRunner(s, ContextManager(s), output_fn=lambda text: None).run_sync([ToolCall("x", "MissingTool", [])])
     assert s.tool_records == []
     assert s.tool_results == {}
     assert len(s.tool_errors) == 1
@@ -202,7 +202,7 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     s.settings.yolo = True
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run([ToolCall("bad", "Bash", []), ToolCall("create", "Edit", ["ok.txt", "", [{"op": "create", "content": "ok\n"}]])])
+    runner.run_sync([ToolCall("bad", "Bash", []), ToolCall("create", "Edit", ["ok.txt", "", [{"op": "create", "content": "ok\n"}]])])
 
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1
