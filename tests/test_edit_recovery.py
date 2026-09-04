@@ -9,7 +9,7 @@ from wizolt.base import ToolCall, ToolError
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
 from wizolt.source import ToolOutput
-from wizolt.tools import CodeIndex, EditTool
+from wizolt.tools import CodeIndex, EditTool, ReadTool
 
 
 async def ignore_index_update(_index, _paths):
@@ -312,3 +312,27 @@ def test_expired_view_recovery_never_opens_a_file_it_may_not_show(tmp_path, outs
     assert "Read or Search again to obtain a current view" in str(error.value)
     assert error.value.recovery is None
     assert "secret" not in str(error.value)
+
+
+async def test_unseen_edit_range_returns_a_view_that_can_be_retried_directly(tmp_path, monkeypatch):
+    """A bad range costs one rejected Edit, not a rejected Edit plus a separate Read."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
+    path = tmp_path / "image.py"
+    path.write_text("".join(f"line {number}\n" for number in range(1, 221)), encoding="utf-8")
+    rendered(ReadTool(s, [{"path": "image.py", "ranges": [[1, 20]]}]).call(), s)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda _text: None)
+    edits = [{"op": "replace", "start": 207, "end": 208, "content": "changed\n"}]
+
+    await runner.run([ToolCall("unseen", "Edit", ["image.py", "view.1", edits])])
+
+    assert "source range unseen lines 207:208" in s.tool_errors[0].error
+    assert "207 | line 207" in s.tool_errors[0].error
+    fresh = s.get_source_view("view.2")
+    assert fresh is not None and fresh.range_lines(207, 208) == ("line 207\n", "line 208\n")
+
+    await runner.run([ToolCall("retry", "Edit", ["image.py", "view.2", edits])])
+
+    assert path.read_text(encoding="utf-8").splitlines()[206] == "changed"
+    assert len(s.tool_errors) == 1

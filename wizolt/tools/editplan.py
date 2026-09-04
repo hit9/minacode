@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from wizolt.base import ToolCall, ToolError
+from wizolt.base import ToolCall, ToolError, run_blocking, split_lines
 from wizolt.source import SOURCE_TARGET_CONSUMED, SourceView, ToolOutput, source_error
 from wizolt.tools.files import Edit, EditTool
 
@@ -62,6 +62,16 @@ class EditBatchPlan:
         consumed: set[tuple[str, int]] = field(default_factory=set)
         seam_duplicates: list[str] = field(default_factory=list)
 
+    @dataclass(frozen=True)
+    class FileSnapshot:
+        """Immutable disk state used to build the virtual edit model on the loop."""
+
+        exists: bool
+        is_directory: bool
+        content: str
+        parent_exists: bool
+        parent_is_directory: bool
+
     @dataclass
     class PlannedEdit:
         path: str
@@ -73,10 +83,10 @@ class EditBatchPlan:
         relocations: list[str] = field(default_factory=list)
 
         def preview(self, tool: EditTool) -> str:
-            return tool.diff(self.path, self.before, self.after) or f"Edit({self.path})"
+            return tool.diff(self.path, self.before, self.after, created=self.created) or f"Edit({self.path})"
 
-        def call(self, tool: EditTool) -> ToolOutput:
-            """Check-before-write, then write and render the Edit envelope with a fresh view."""
+        def transact(self) -> EditBatchPlan.PlannedEdit:
+            """Check-before-write and write on a blocking worker, returning its receipt."""
             if os.path.isdir(self.path):
                 raise ToolError("planned edit is stale; path is a directory")
             if os.path.exists(self.path):
@@ -90,7 +100,29 @@ class EditBatchPlan:
                 raise ToolError("planned edit is stale; file changed")
             if self.created:
                 os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            return tool.write_result(self.path, self.before, self.after, self.changes, self.warnings, self.relocations)
+            with open(self.path, "w", encoding="utf-8") as file:
+                file.write(self.after)
+            return self
+
+        async def apply(self, tool: EditTool) -> ToolOutput:
+            """Apply the transaction off-loop, then publish its result on the owning loop."""
+            output: list[ToolOutput] = []
+
+            def commit(receipt: EditBatchPlan.PlannedEdit) -> None:
+                output.append(
+                    tool.result(
+                        receipt.path,
+                        receipt.before,
+                        receipt.after,
+                        receipt.changes,
+                        receipt.warnings,
+                        receipt.relocations,
+                        created=receipt.created,
+                    )
+                )
+
+            await run_blocking(self.transact, commit=commit)
+            return output[0]
 
     def __init__(self, session: Session):
         self.session = session
@@ -98,21 +130,56 @@ class EditBatchPlan:
         self.planned: dict[str, EditBatchPlan.PlannedEdit] = {}
         self.errors: dict[str, tuple[str, object | None]] = {}
 
-    def build(self, calls: list[ToolCall]) -> EditBatchPlan:
+    async def build(self, calls: list[ToolCall]) -> EditBatchPlan:
+        prepared: list[tuple[ToolCall, EditTool, str, bool, SourceView | None, list[Edit]]] = []
+        missing: list[tuple[ToolCall, EditTool, str, str, list[Edit]]] = []
         for call in calls:
             if call.name != "Edit":
                 continue
             try:
-                self.plan_call(call, EditTool(self.session, call.args))
+                tool = EditTool(self.session, call.args)
+                path, source_name, edits = tool.parse()
+                creating = edits[0].op == "create"
+                try:
+                    view = tool.resolve_view(path, source_name, creating, edits, recover_missing=False)
+                except ToolError as error:
+                    if str(error).startswith("source missing"):
+                        missing.append((call, tool, path, source_name, edits))
+                        continue
+                    raise
+                prepared.append((call, tool, path, creating, view, edits))
+            except ToolError as error:
+                self.errors[call.id] = (str(error), error.recovery)
+        recoverable_missing_paths = (path for _, _, path, _, _ in missing if self.session.in_cwd(path) or self.session.owns_asset(path))
+        paths = tuple(dict.fromkeys([*(path for _, _, path, _, _, _ in prepared), *recoverable_missing_paths]))
+        snapshots = await run_blocking(lambda: {path: self.snapshot(path) for path in paths}) if paths else {}
+        for call, tool, path, source_name, edits in missing:
+            snapshot = snapshots.get(path)
+            recovery = (
+                tool.current_view_recovery_from_lines(path, edits, split_lines(snapshot.content))
+                if snapshot is not None and snapshot.exists and not snapshot.is_directory
+                else None
+            )
+            hint = "use the fresh view below" if recovery else "Read or Search again to obtain a current view"
+            self.errors[call.id] = (f"source missing {source_name} is unknown or expired; {hint}", recovery)
+        for call, tool, path, creating, view, edits in prepared:
+            try:
+                self.plan_call(call, tool, path, creating, view, edits, snapshots[path])
             except ToolError as error:
                 self.errors[call.id] = (str(error), error.recovery)
         return self
 
-    def plan_call(self, call: ToolCall, tool: EditTool) -> None:
-        path, source_name, edits = tool.parse()
-        creating = edits[0].op == "create"
-        view = tool.resolve_view(path, source_name, creating, edits)
-        state = self.file_state(tool, path, creating, view)
+    def plan_call(
+        self,
+        call: ToolCall,
+        tool: EditTool,
+        path: str,
+        creating: bool,
+        view: SourceView | None,
+        edits: list[Edit],
+        snapshot: FileSnapshot,
+    ) -> None:
+        state = self.file_state(path, creating, view, snapshot)
         before, created = state.text(), not state.exists
         before_lines = [line.text for line in state.lines]
         result = self.apply(tool, state, edits, view)
@@ -128,7 +195,7 @@ class EditBatchPlan:
         state.lines, state.exists, state.edited = result.lines, True, True
         state.consumed |= result.consumed
 
-    def file_state(self, tool: EditTool, path: str, creating: bool, view: SourceView | None) -> FileState:
+    def file_state(self, path: str, creating: bool, view: SourceView | None, snapshot: FileSnapshot) -> FileState:
         if path in self.files:
             state = self.files[path]
             if not state.exists and not creating:
@@ -136,9 +203,16 @@ class EditBatchPlan:
             if state.exists and creating and state.lines:
                 raise ToolError("file already exists")
             return state
-        if tool._validate_target(path, creating):
-            with open(path, encoding="utf-8") as file:
-                original = file.readlines()
+        if snapshot.exists:
+            if creating:
+                if not snapshot.is_directory and not snapshot.content:
+                    state = self.FileState(path, [], [], False)
+                    self.files[path] = state
+                    return state
+                raise ToolError("file already exists")
+            if snapshot.is_directory:
+                raise ToolError("path is a directory")
+            original = split_lines(snapshot.content)
             key = view.key if view is not None else ""
             state = self.FileState(
                 path,
@@ -147,10 +221,28 @@ class EditBatchPlan:
                 True,
                 base_key=key or None,
             )
+        elif not creating:
+            raise ToolError("file does not exist; use op=create to create it")
         else:
+            parent = os.path.dirname(path) or "."
+            if snapshot.parent_exists and not snapshot.parent_is_directory:
+                raise ToolError("parent path is not a directory")
+            if not snapshot.parent_exists and not self.session.in_cwd(parent):
+                raise ToolError("parent directory outside workspace does not exist; create it with an approved Bash mkdir, then retry Edit")
             state = self.FileState(path, [], [], False)
         self.files[path] = state
         return state
+
+    @staticmethod
+    def snapshot(path: str) -> FileSnapshot:
+        """Read one edit target and the metadata needed to validate creation."""
+        if os.path.exists(path):
+            if os.path.isdir(path):
+                return EditBatchPlan.FileSnapshot(True, True, "", True, True)
+            with open(path, encoding="utf-8") as file:
+                return EditBatchPlan.FileSnapshot(True, False, file.read(), True, True)
+        parent = os.path.dirname(path) or "."
+        return EditBatchPlan.FileSnapshot(False, False, "", os.path.exists(parent), os.path.isdir(parent))
 
     def apply(self, tool: EditTool, state: FileState, edits: list[Edit], view: SourceView | None) -> ApplyResult:
         """Apply one call to the planned file, then rebuild the planned lines with their origins.

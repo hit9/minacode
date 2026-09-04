@@ -1,5 +1,8 @@
 """source-view editing (split from tests/test_edit_tool.py)."""
 
+import asyncio
+import threading
+
 import pytest
 from test_edit_tool import session, view
 
@@ -335,7 +338,7 @@ def test_edit_does_not_guess_unsafe_relocation(tmp_path, current):
     ],
     ids=("rewritten", "deleted", "replaced-by-a-directory"),
 )
-def test_planned_edit_refuses_to_overwrite_what_changed_after_planning(tmp_path, disturb, leftover):
+async def test_planned_edit_refuses_to_overwrite_what_changed_after_planning(tmp_path, disturb, leftover):
     """Planning is side-effect free, so the file it computed against can change before the write.
     The last thing a planned edit does is re-read the file and require it to be exactly what it
     planned from -- rewritten, deleted, or turned into a directory, none of them get written."""
@@ -344,11 +347,11 @@ def test_planned_edit_refuses_to_overwrite_what_changed_after_planning(tmp_path,
     path.write_text("a\nb\n", encoding="utf-8")
     key = view(s, "code.txt")
     call = ToolCall("edit", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])
-    plan = EditBatchPlan(s).build([call])
+    plan = await EditBatchPlan(s).build([call])
     disturb(path)
 
     with pytest.raises(ToolError, match="planned edit is stale"):
-        plan.planned[call.id].call(EditTool(s, call.args))
+        await plan.planned[call.id].apply(EditTool(s, call.args))
 
     assert (path.read_text(encoding="utf-8") if leftover else None) == leftover
 
@@ -633,3 +636,60 @@ def test_a_unique_target_resolves_in_place_though_its_neighbours_changed(tmp_pat
 
     assert path.read_text(encoding="utf-8") == "A\nedited\nC\n"
     assert "relocated" not in result.retained_text
+
+
+async def test_edit_planning_reads_files_without_blocking_the_loop(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    call = ToolCall("edit", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])
+    entered, release = threading.Event(), threading.Event()
+    original = EditBatchPlan.snapshot
+
+    def blocked(target):
+        entered.set()
+        release.wait()
+        return original(target)
+
+    monkeypatch.setattr(EditBatchPlan, "snapshot", staticmethod(blocked))
+    task = asyncio.create_task(EditBatchPlan(s).build([call]))
+    while not entered.is_set():
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+
+    assert call.id in (await task).planned
+
+
+async def test_cancelling_an_edit_waits_for_the_write_receipt(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    call = ToolCall("edit", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])
+    planned = (await EditBatchPlan(s).build([call])).planned[call.id]
+    written, release = threading.Event(), threading.Event()
+    original = EditBatchPlan.PlannedEdit.transact
+
+    def blocked(receipt):
+        result = original(receipt)
+        written.set()
+        release.wait()
+        return result
+
+    monkeypatch.setattr(EditBatchPlan.PlannedEdit, "transact", blocked)
+    tool = EditTool(s, call.args)
+    task = asyncio.create_task(planned.apply(tool))
+    while not written.is_set():
+        await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert path.read_text(encoding="utf-8") == "a\nB\n"
+    assert tool.turn_diff() is not None

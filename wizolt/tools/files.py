@@ -383,7 +383,15 @@ class EditTool(Tool):
             raise ToolError(self.no_changes_error(original, result), recovery=self.no_op_recovery(path, view, original, result.replacements))
         if created:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        return self.write_result(path, original, result.content, result.changes, self.warnings_block(edits, result.seam_duplicates), result.relocations)
+        return self.write_result(
+            path,
+            original,
+            result.content,
+            result.changes,
+            self.warnings_block(edits, result.seam_duplicates),
+            result.relocations,
+            created=created,
+        )
 
     def write_result(
         self,
@@ -393,6 +401,8 @@ class EditTool(Tool):
         changes: list[tuple[int, int, int, int]],
         warnings: str,
         relocations: list[str],
+        *,
+        created: bool = False,
     ) -> ToolOutput:
         """Write `after` and render the Edit envelope: diff, warnings, relocations, fresh view.
 
@@ -401,8 +411,22 @@ class EditTool(Tool):
         """
         with open(path, "w", encoding="utf-8") as file:
             file.write(after)
+        return self.result(path, before, after, changes, warnings, relocations, created=created)
+
+    def result(
+        self,
+        path: str,
+        before: str,
+        after: str,
+        changes: list[tuple[int, int, int, int]],
+        warnings: str,
+        relocations: list[str],
+        *,
+        created: bool = False,
+    ) -> ToolOutput:
+        """Render a completed edit receipt and expose its turn diff on the owning loop."""
         self.last_path = self.session.relpath(path)
-        self.last_diff = self.diff(path, before, after)
+        self.last_diff = self.diff(path, before, after, created=created)
         self.last_before = before
         self.last_after = after
         parts: list[str | SourceBlock] = [f"<Edit path={json.dumps(self.last_path)}>", self.last_diff.rstrip()]
@@ -440,27 +464,28 @@ class EditTool(Tool):
         path, source_name, edits = self.parse()
         creating = edits[0].op == "create"
         view = self.resolve_view(path, source_name, creating, edits)
-        if self._validate_target(path, creating):
+        exists = self._validate_target(path, creating)
+        if exists:
             with open(path, encoding="utf-8") as file:
                 original = file.read()
         else:
             original = ""
         result = self.apply(original, edits, view)
-        if result.content == original and os.path.exists(path):
+        if result.content == original and exists:
             raise ToolError(self.no_changes_error(original, result))
-        return self.diff(path, original, result.content) or f"Edit({path})"
+        return self.diff(path, original, result.content, created=not exists) or f"Edit({path})"
 
     def short_args(self) -> list[str]:
         path = self.parse()[0]
         return [self.session.relpath(path)]
 
-    def diff(self, path: str, original: str, new_content: str) -> str:
+    def diff(self, path: str, original: str, new_content: str, *, created: bool = False) -> str:
         relpath = self.session.relpath(path)
         return "".join(
             difflib.unified_diff(
                 split_lines(original),
                 split_lines(new_content),
-                fromfile="/dev/null" if not original and not os.path.exists(path) else relpath,
+                fromfile="/dev/null" if created else relpath,
                 tofile=relpath,
             )
         )
@@ -511,7 +536,15 @@ class EditTool(Tool):
                 edits.append(Edit(op=op, content=self.normalize_text(str(item.get("content") or ""))))
         return path, source_name, edits
 
-    def resolve_view(self, path: str, source_name: str, creating: bool, edits: list[Edit]) -> SourceView | None:
+    def resolve_view(
+        self,
+        path: str,
+        source_name: str,
+        creating: bool,
+        edits: list[Edit],
+        *,
+        recover_missing: bool = True,
+    ) -> SourceView | None:
         """Load and validate the named view for an existing-file call, or None for create.
 
         An expired id is the one failure the model cannot fix by thinking harder: the view left
@@ -528,7 +561,7 @@ class EditTool(Tool):
             raise ToolError("Edit requires source=view.N for an existing file; Read, Search, or InspectCode first")
         view = self.session.get_source_view(source_name)
         if view is None:
-            recovery = self.current_view_recovery(path, edits)
+            recovery = self.current_view_recovery(path, edits) if recover_missing else None
             hint = "use the fresh view below" if recovery else "Read or Search again to obtain a current view"
             raise source_error(SOURCE_MISSING, f"{source_name} is unknown or expired; {hint}", recovery=recovery)
         if view.path != path:
@@ -552,6 +585,10 @@ class EditTool(Tool):
                 lines = file.readlines()
         except (OSError, UnicodeDecodeError):
             return None
+        return self.current_view_recovery_from_lines(path, edits, lines)
+
+    def current_view_recovery_from_lines(self, path: str, edits: list[Edit], lines: list[str]) -> ToolOutput:
+        """Build missing-view recovery from already-read current contents."""
         ranges = [self.recovery_range(edit, len(lines)) for edit in edits]
         spans = SourceSpan.build(lines, ranges)
         if sum(len(span.lines) for span in spans) > self.RECOVERY_MAX_LINES:

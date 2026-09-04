@@ -403,11 +403,14 @@ class ToolRunner:
             # ripgrep is an asyncio subprocess, so cancellation kills and reaps it directly.
             return await tool.call()
         if tool.MUTATES or tool.PRODUCES_MODEL_OBSERVATION or isinstance(tool, NextHintsTool):
-            # Short local mutation stays on the loop: single-writer, and an Edit or a Note can
-            # never outlive the turn that ordered it. Cancellation is observed on both sides.
+            # Session mutation stays serialized on the loop. Edit's material transaction is the
+            # exception inside this branch: PlannedEdit applies it through run_blocking, then
+            # publishes its receipt here before cancellation is observed.
             self._raise_if_cancelled()
             try:
-                return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
+                if planned_edit and isinstance(tool, EditTool):
+                    return await planned_edit.apply(tool)
+                return tool.call()
             finally:
                 self._raise_if_cancelled()
         # Everything else -- reads, searches, MCP calls, Ask -- is bounded synchronous work.
@@ -501,7 +504,7 @@ class ToolRunner:
         top-level single Edit -- source-view planning, stale checks, write-time verification."""
 
         if call.name == "Edit":
-            plan = EditBatchPlan(self.session).build([call])
+            plan = await EditBatchPlan(self.session).build([call])
             return await self.run_one(call, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
         return await self.run_one(call)
 
@@ -576,7 +579,7 @@ class ToolRunner:
 
     async def run_serial(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool], observations: list[Json]) -> list[Json]:
         messages: list[Json] = []
-        plan = EditBatchPlan(self.session).build(segment) if any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
+        plan = await EditBatchPlan(self.session).build(segment) if any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
         for call in segment:
             suffix = batch_suffix if state["first"] else ""
             state["first"] = False
