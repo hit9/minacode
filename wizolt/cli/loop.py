@@ -16,9 +16,9 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import FormattedText
@@ -213,6 +213,12 @@ Full documentation: https://wizolt.readthedocs.io
         self.resume_request = ""
         self.background_output_lock = threading.Lock()
         self.background_output_open = True
+        # Session-scoped background work this loop owns: startup maintenance, mention discovery,
+        # code-index freshness, the interactive picker. Loop-bound state, so it is opened once the
+        # frontend has entered its loop and closed before that invocation returns -- a task must
+        # never outlive the loop that can settle it, and none of it survives into a later run.
+        self._background: set[asyncio.Task] = set()
+        self._background_open = False
         # The runtime's ordered scrollback queue while the TUI is live. Set by TuiRuntime, which
         # also lends its admission lock to the background-output gate above: closing that gate and
         # scheduling a write are the same race, so one lock decides both.
@@ -449,6 +455,7 @@ Full documentation: https://wizolt.readthedocs.io
         model client, and MCP, so everything this session opened is closed before it closes."""
 
         self.session.next_hints_available = False  # the simple REPL has no chip UI; don't offer an invisible terminal tool
+        self.open_background()
         self.start_session()
         discovery = asyncio.ensure_future(self.discover_mcp())
         try:
@@ -457,7 +464,51 @@ Full documentation: https://wizolt.readthedocs.io
             discovery.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await discovery
+            await self.close_background()
             await self.close_resources()
+
+    def open_background(self) -> None:
+        """Start admitting session-scoped background work on the loop that is now running."""
+        self._background = set()
+        self._background_open = True
+
+    def spawn_background(self, coroutine: Coroutine[Any, Any, object], *, name: str) -> asyncio.Task | None:
+        """Admit one background coroutine, and keep it until its outcome has been observed.
+
+        Refusing after close is what makes shutdown mean something: a maintenance sweep scheduled
+        while the loop is unwinding would mutate the session after close returned. A refused
+        coroutine is closed here rather than dropped, so it never surfaces as a never-awaited
+        warning."""
+
+        if not self._background_open:
+            coroutine.close()
+            return None
+        task = asyncio.get_running_loop().create_task(coroutine, name=name)
+        self._background.add(task)
+        task.add_done_callback(self._background_done)
+        return task
+
+    def _background_done(self, task: asyncio.Task) -> None:
+        self._background.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is None:
+            return
+        # Expected maintenance failures are contained by the feature coroutines themselves and
+        # published as their own status. Anything reaching here is an invariant break: make it
+        # visible rather than leaving "Task exception was never retrieved" to the loop's handler.
+        self.emit_background(f"background task {task.get_name()} failed: {error}")
+
+    async def close_background(self) -> None:
+        """Stop admitting background work, then cancel and quiesce what was already accepted."""
+
+        self._background_open = False
+        pending, self._background = self._background, set()
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def close_resources(self) -> None:
         """Close what this session opened, on the loop that opened it.

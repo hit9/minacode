@@ -465,6 +465,7 @@ class TuiRuntime:
         just tasks that take turns -- and a turn's cancellation reaches everything it awaits."""
 
         self.runtime_loop = asyncio.get_running_loop()
+        self.loop.open_background()
         self.shutdown = asyncio.Event()
         self.application_ready = asyncio.Event()
         self.loop.tui = self.build_tui()
@@ -532,6 +533,7 @@ class TuiRuntime:
             task.cancel()
         if owned:
             await asyncio.gather(*owned, return_exceptions=True)
+        await self.loop.close_background()
         await self.loop.close_resources()
         writer, self.scrollback = self.scrollback, None
         if writer is not None:

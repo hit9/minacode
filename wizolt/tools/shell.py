@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 from typing import Any, ClassVar, cast
 
-from wizolt.base import Json, ToolArgs, ToolError, fail_if_running_loop
+from wizolt.base import Json, ToolArgs, ToolError, fail_if_running_loop, run_blocking
 from wizolt.session import BackgroundJob, Session
 from wizolt.tools.base import Tool
 
@@ -612,8 +612,10 @@ class JobTool(Tool):
         job = self._resolve_job(payload)
         # BackgroundJob intentionally owns a Popen handle that can outlive this event loop. Its
         # bounded TERM/wait/KILL sequence therefore uses the process API's synchronous wait on a
-        # worker, while ordinary status/wait operations remain native coroutines.
-        await asyncio.to_thread(job.kill)
+        # worker, while ordinary status/wait operations remain native coroutines. `run_blocking`
+        # rather than `to_thread`: cancelling this call must not return while the escalation is
+        # still mid-sequence, leaving a half-signalled process behind.
+        await run_blocking(job.kill)
         return f"Killed {job.id} (status={job.status}, exit_code={job.exit_code})"
 
     def _resolve_job(self, payload: Json) -> BackgroundJob:

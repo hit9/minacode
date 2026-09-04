@@ -18,6 +18,7 @@ from prompt_toolkit.utils import get_cwidth
 __version__ = "0.37.1"
 
 _ResourceT = TypeVar("_ResourceT")
+_BlockingT = TypeVar("_BlockingT")
 
 Json = dict[str, Any]
 ToolArgs = list[Any]
@@ -72,6 +73,39 @@ def fail_if_running_loop(hint: str) -> None:
     except RuntimeError:
         return
     raise RuntimeError(f"this synchronous entry point cannot be called from a running event loop; {hint}")
+
+
+async def run_blocking(invoke: Callable[[], _BlockingT]) -> _BlockingT:
+    """Await one synchronous callable on the loop's executor, and never abandon it.
+
+    `asyncio.to_thread` returns as soon as the *awaiter* is cancelled, leaving the worker running
+    with whatever files, locks, and half-written state it holds -- which is how a maintenance sweep
+    ends up mutating a session after shutdown said it was done. Cancellation here means: remember
+    it, keep waiting for the worker, observe its outcome, and only then report cancellation upward.
+
+    The same contract as `ToolRunner._run_in_executor`, without tool capacity or `request_stop()`;
+    the two stay separate because their cancellation policies differ. Callers keep session, TUI,
+    and registry mutation on the loop -- the worker computes or performs one atomic file operation
+    and returns."""
+
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(None, invoke)
+    cancel_error: asyncio.CancelledError | None = None
+    while not future.done():
+        try:
+            # `wait` rather than awaiting the future: it never raises the worker's own outcome, so
+            # that outcome is still there to be read off the future below.
+            await asyncio.wait({future})
+        except asyncio.CancelledError as error:
+            cancel_error = cancel_error or error
+    if cancel_error is not None:
+        # The worker's own failure is a cleanup detail once cancellation is under way; it must not
+        # replace the cancellation the caller is unwinding on. Reading the future keeps that
+        # exception observed rather than leaving it to the loop's exception handler.
+        with contextlib.suppress(BaseException):
+            future.result()
+        raise cancel_error
+    return future.result()
 
 
 MAX_TOOL_OUTPUT_TOKENS = 6_000
