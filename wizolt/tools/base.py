@@ -237,7 +237,12 @@ class Tool:
         if isinstance(value, int):
             return value
         if isinstance(value, str) and value.isdecimal() and value.isascii():
-            return int(value)
+            try:
+                return int(value)
+            except ValueError:
+                # Python bounds decimal conversion length. Keep a pathological provider value on
+                # the ordinary argument-error path instead of leaking that implementation error.
+                return None
         return None
 
     @staticmethod

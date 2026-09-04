@@ -82,6 +82,8 @@ def test_base_tool_helpers_validate_shared_argument_contracts(tmp_path):
         Tool.line_range(["318:560", 1])
     with pytest.raises(ToolError, match=r"range must be \[start,end\] integers"):
         Tool.line_range(["-1", 2])
+    with pytest.raises(ToolError, match=r"range must be \[start,end\] integers"):
+        Tool.line_range(["9" * 5000, 2])
     with pytest.raises(ToolError, match="range values must be >= 0"):
         Tool.line_range([-1, 2])
     with pytest.raises(ToolError, match="invalid regex"):
