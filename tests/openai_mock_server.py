@@ -20,7 +20,7 @@ import json
 from typing import Any
 
 import httpx
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 
 class OpenAIMockServer:
@@ -146,11 +146,11 @@ class OpenAIMockServer:
             }
         return httpx.Response(200, json=response)
 
-    def client(self) -> OpenAI:
+    def client(self) -> AsyncOpenAI:
         transport = httpx.MockTransport(self._handle)
-        return OpenAI(
+        return AsyncOpenAI(
             api_key="sk-test",
             base_url="http://test",
-            http_client=httpx.Client(transport=transport),
+            http_client=httpx.AsyncClient(transport=transport),
             max_retries=0,
         )

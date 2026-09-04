@@ -1,5 +1,6 @@
 """Request resilience: retries, response deadlines, and compaction calls staying off the UI."""
 
+import asyncio
 import contextlib
 import email.utils
 import json
@@ -12,7 +13,7 @@ import anthropic
 import httpx
 import openai
 import pytest
-from model_harness import _MockClientFactory, _session
+from model_harness import AsyncCloseable, _MockClientFactory, _session, async_create, record_backoff
 
 from wizolt import compaction
 from wizolt.base import (
@@ -87,7 +88,7 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
         ]
     )
     monkeypatch.setattr(model, "client", factory)
-    _patch_fast_clock(monkeypatch)
+    record_backoff(monkeypatch)
 
     _, _, content = model.request([{"role": "user", "content": "hi"}], None)
 
@@ -101,7 +102,7 @@ def test_request_retry_exhausted(tmp_path, monkeypatch):
     model = ModelClient(s)
     factory = _MockClientFactory([(500, {"error": {"message": "server error", "type": "internal_server_error"}})] * 6)
     monkeypatch.setattr(model, "client", factory)
-    _patch_fast_clock(monkeypatch)
+    record_backoff(monkeypatch)
 
     with pytest.raises(ModelError, match="after 6 attempts"):
         model.request([{"role": "user", "content": "hi"}], None)
@@ -111,40 +112,33 @@ def test_request_retry_exhausted(tmp_path, monkeypatch):
 
 
 def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monkeypatch):
-    class Client:
-        def __init__(self):
-            self.close_count = 0
-
-        def close(self):
-            self.close_count += 1
-
     s = _session(tmp_path, response_timeout=0.01)
     model = ModelClient(s)
-    client = Client()
-    started = threading.Event()
-    release = threading.Event()
+    client = AsyncCloseable()
+    started = []
 
-    def blocked_request():
-        started.set()
-        release.wait()
+    async def blocked_request():
+        started.append(True)
+        await asyncio.sleep(30)
         return "completed after deadline"
 
-    try:
+    async def timed_out():
         with pytest.raises(ModelResponseTimeout, match=r"provider\.response_timeout=0\.01s") as caught:
-            model.call_client(client, blocked_request)
-    finally:
-        release.set()
+            await model.call_client(client, blocked_request)
+        return caught.value
 
-    assert started.is_set()
-    assert client.close_count == 1
-    assert resilience.retryable_error(caught.value) is False
+    expiry = asyncio.run(timed_out())
+
+    assert started == [True]
+    assert client.closed == 1  # the deadline closes the client it opened, on its own loop
+    assert resilience.retryable_error(expiry) is False
 
     calls = 0
 
-    def expired(_messages, _tools):
+    async def expired(_messages, _tools):
         nonlocal calls
         calls += 1
-        raise caught.value
+        raise expiry
 
     monkeypatch.setattr(model, "api_request", expired)
     with pytest.raises(ModelResponseTimeout):
@@ -154,107 +148,105 @@ def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monke
 
 
 def test_timed_out_request_cannot_emit_after_a_new_request_starts(tmp_path):
-    class Client:
-        def close(self):
-            pass  # Deliberately ignore close, like the SDK behavior this boundary must contain.
+    """A request the deadline already gave up on stays silent even if the provider answers later.
+
+    The lease is per attempt, so the expired attempt's stream deltas and builtin reports are
+    dropped by identity -- they cannot land on the request that is on screen now."""
 
     s = _session(tmp_path, response_timeout=0.01)
     model = ModelClient(s)
-    started = threading.Event()
-    release = threading.Event()
-    finished = threading.Event()
+    release = asyncio.Event()
     stream = []
     builtins = []
     model.on_stream = lambda kind, text: stream.append((kind, text))
     model.on_builtin_call = lambda label, detail: builtins.append((label, detail))
+    finished = []
 
-    def stale_request():
-        started.set()
-        release.wait()
-        try:
-            model._emit_stream("output", "stale")
-            model.report_builtin_call("web_search_call", "stale query")
-            model._emit_stream("", "")
-            return "stale"
-        finally:
-            finished.set()
+    async def drive():
+        async def stale_request():
+            try:
+                await release.wait()
+                model._emit_stream("output", "stale")
+                model.report_builtin_call("web_search_call", "stale query")
+                model._emit_stream("", "")
+                return "stale"
+            finally:
+                finished.append(True)
 
-    with pytest.raises(ModelResponseTimeout):
-        model.call_client(Client(), stale_request)
-    assert started.is_set()
+        stale = asyncio.ensure_future(model.call_client(AsyncCloseable(), stale_request))
+        with pytest.raises(ModelResponseTimeout):
+            await stale
 
-    def current_request():
-        model._emit_stream("output", "current")
-        return "current"
+        async def current_request():
+            model._emit_stream("output", "current")
+            return "current"
 
-    assert model.call_client(Client(), current_request, response_timeout=1) == "current"
-    release.set()
-    assert finished.wait(1)
+        assert await model.call_client(AsyncCloseable(), current_request, response_timeout=1) == "current"
+        release.set()
+        await asyncio.sleep(0)
+
+    asyncio.run(drive())
     assert stream == [("output", "current")]
     assert builtins == []
 
 
-def test_cancelled_request_stays_stale_after_next_request_clears_cancel(tmp_path):
-    class Client:
-        def close(self):
-            pass
+def test_cancelled_attempt_cannot_emit_into_the_next_one(tmp_path):
+    """The same rule for cancellation as for a deadline: a cancelled attempt publishes nothing,
+    and there is no process-wide flag the next request has to remember to clear."""
 
     s = _session(tmp_path, response_timeout=1)
     model = ModelClient(s)
-    started = threading.Event()
-    release = threading.Event()
-    caller_finished = threading.Event()
-    worker_finished = threading.Event()
     stream = []
-    errors = []
     model.on_stream = lambda kind, text: stream.append((kind, text))
+    reached = []
 
-    def stale_request():
-        started.set()
-        release.wait()
-        try:
+    async def drive():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        late = []
+
+        async def emit_late():
+            # Created inside the stale attempt, so it carries that attempt's lease -- exactly the
+            # shape of a stream callback that outlives the request it belongs to.
+            await release.wait()
             model._emit_stream("output", "stale")
+            reached.append(True)
+
+        async def stale_request():
+            late.append(asyncio.ensure_future(emit_late()))
+            started.set()
+            await asyncio.sleep(30)
             return "stale"
-        finally:
-            worker_finished.set()
 
-    def call_stale_request():
-        try:
-            model.call_client(Client(), stale_request)
-        except BaseException as error:  # noqa: BLE001 - The cancellation contract is KeyboardInterrupt.
-            errors.append(error)
-        finally:
-            caller_finished.set()
+        stale = asyncio.ensure_future(model.call_client(AsyncCloseable(), stale_request))
+        await started.wait()
+        stale.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stale
 
-    caller = threading.Thread(target=call_stale_request)
-    caller.start()
-    assert started.wait(1)
-    model.cancel()
-    assert caller_finished.wait(1)
-    assert isinstance(errors[0], KeyboardInterrupt)
+        async def current_request():
+            model._emit_stream("output", "current")
+            return "current"
 
-    model.cancel_requested.clear()  # ModelClient.request does this before the next request.
-    assert model.call_client(Client(), lambda: model._emit_stream("output", "current") or "current") == "current"
-    release.set()
-    assert worker_finished.wait(1)
-    caller.join()
-    assert stream == [("output", "current")]
+        assert await model.call_client(AsyncCloseable(), current_request) == "current"
+        release.set()
+        await asyncio.gather(*late)
+
+    asyncio.run(drive())
+    assert reached == [True]  # the late callback ran ...
+    assert stream == [("output", "current")]  # ... and was dropped, leaving only the live request
 
 
 def test_zero_response_timeout_does_not_start_deadline_timer(tmp_path, monkeypatch):
-    class Client:
-        def __init__(self):
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
     s = _session(tmp_path, response_timeout=0)
     model = ModelClient(s)
-    client = Client()
+    client = AsyncCloseable()
 
-    assert model.call_client(client, lambda: "complete") == "complete"
-    assert client.closed is True
+    async def complete():
+        return "complete"
+
+    assert asyncio.run(model.call_client(client, complete)) == "complete"
+    assert client.closed == 1
 
 
 @pytest.mark.parametrize(("configured", "expected"), [(600, 600), (30, 30), (0, 0)])
@@ -266,7 +258,7 @@ def test_compaction_follows_the_configured_response_deadline(tmp_path, monkeypat
     model = ModelClient(s)
     seen = []
 
-    def api_request(_messages, _tools, **kwargs):
+    async def api_request(_messages, _tools, **kwargs):
         seen.append(kwargs)
         return {}, [], '{"summary":"short"}'
 
@@ -295,31 +287,17 @@ def test_compaction_timeout_error_names_the_summary(tmp_path, monkeypatch):
         compaction.Compactor(ContextManager(s), model).compact("long context")
 
 
-def _retry_wait_recorder(monkeypatch, factory):
-    """Replace time.sleep with a recorder that never actually sleeps and never blocks, bucketing
-    each retry's total requested wait by provider-call index (sleeps happen between calls, so all
-    slices of one wait share the same calls count). A fake monotonic clock is advanced by the
-    recorder so the slice loop finishes instantly; call the returned function to read the waits."""
-    buckets: dict[int, float] = {}
-    clock = {"now": 0.0}
-
-    def monotonic():
-        return clock["now"]
-
-    def sleeper(seconds):
-        buckets[len(factory.calls)] = buckets.get(len(factory.calls), 0.0) + seconds
-        clock["now"] += seconds
-
-    monkeypatch.setattr(time, "sleep", sleeper)
-    monkeypatch.setattr(time, "monotonic", monotonic)
-    return lambda: [buckets[k] for k in sorted(buckets)]
+def _retry_wait_recorder(monkeypatch, factory=None):
+    """Record what each retry backoff asked to wait, without waiting any of it (see record_backoff)."""
+    return record_backoff(monkeypatch)
 
 
-def _patch_fast_clock(monkeypatch):
-    """Advance the clock by each requested sleep so backoff waits complete instantly."""
-    clock = {"now": 0.0}
-    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
-    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+async def _wait_for(condition, timeout: float = 2.0) -> None:
+    """Yield to the loop until `condition` holds. The timeout is a deadlock bound, not a pace."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition never became true"
+        await asyncio.sleep(0.001)
 
 
 _OVERLOADED = {"error": {"message": "overloaded", "type": "server_error"}}
@@ -428,25 +406,25 @@ def test_retry_after_absurd_value_does_not_stall(tmp_path, monkeypatch):
     assert RETRY_MAX_DELAY - 0.2 <= waits()[0] <= RETRY_MAX_DELAY + 0.2
 
 
-def test_retry_wait_cancels_promptly(tmp_path, monkeypatch):
-    """Setting cancel during the wait aborts within one sleep slice instead of sleeping the delay out."""
+def test_retry_wait_is_cancellable(tmp_path, monkeypatch):
+    """A backoff is an ordinary cancellable await: cancelling the turn during one ends the request
+    there, instead of sleeping the delay out first."""
     s = _session(tmp_path)
     model = ModelClient(s)
     factory = _MockClientFactory([(503, _OVERLOADED), (503, _OVERLOADED)])
     monkeypatch.setattr(model, "client", factory)
-    slept: list[float] = []
 
-    def sleeper(seconds):
-        slept.append(seconds)
-        model.cancel_requested.set()
+    async def drive():
+        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+        await _wait_for(lambda: s.state.model_retry_until > 0)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
 
-    monkeypatch.setattr(time, "sleep", sleeper)
-
-    with pytest.raises(KeyboardInterrupt):
-        model.request([{"role": "user", "content": "hi"}], None)
-    # The wait must abort within one 0.1s slice, far short of the first full backoff step (>=0.5s).
-    assert sum(slept) < 0.3, f"cancelled wait slept {sum(slept)}s instead of aborting within a slice"
+    asyncio.run(drive())
+    assert len(factory.calls) == 1  # cancelled before the retry could be sent
     assert s.state.model_retry_count == 1
+    assert s.state.model_retry_until == 0.0
 
 
 def test_non_retryable_errors_skip_retry_path(tmp_path, monkeypatch):
@@ -455,7 +433,7 @@ def test_non_retryable_errors_skip_retry_path(tmp_path, monkeypatch):
     model = ModelClient(s)
     calls = {"n": 0}
 
-    def truncated(_messages, _tools):
+    async def truncated(_messages, _tools):
         calls["n"] += 1
         raise ModelOutputTruncated("cut off at the output cap")
 
@@ -506,32 +484,41 @@ def test_retry_wait_phase_hook_resets_on_cancel(tmp_path, monkeypatch):
     phases: list[bool] = []
     model.on_retry_wait = phases.append
 
-    def sleeper(_seconds):
-        model.cancel_requested.set()
+    async def drive():
+        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+        await _wait_for(lambda: s.state.model_retry_until > 0)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
 
-    monkeypatch.setattr(time, "sleep", sleeper)
-
-    with pytest.raises(KeyboardInterrupt):
-        model.request([{"role": "user", "content": "hi"}], None)
+    asyncio.run(drive())
     assert phases == [True, False]
     assert s.state.model_retry_until == 0.0
 
 
-def test_manual_resend_racing_retry_wait_remains_a_retry(tmp_path, monkeypatch):
+def test_resend_during_a_backoff_wait_is_refused(tmp_path, monkeypatch):
+    """`/resend` claims an attempt, and a backoff has none in flight: there is nothing to resend
+    while the client is already on its way back to the provider.
+
+    So the request answers False and changes nothing -- no counter moves, no state is consumed, and
+    the pending retry proceeds on its own schedule. The TUI refuses the key during a backoff for
+    the same reason; this is the boundary that makes that refusal true rather than merely polite."""
     s = _session(tmp_path)
     model = ModelClient(s)
-    factory = _MockClientFactory([(503, _OVERLOADED)])
+    factory = _MockClientFactory([(503, _OVERLOADED), (200, _OK)])
     monkeypatch.setattr(model, "client", factory)
+    refused = []
 
-    def resend(_seconds):
-        s.state.manual_model_retry_requested = True
-        model.cancel()
+    async def drive():
+        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+        await _wait_for(lambda: s.state.model_retry_until > 0)
+        refused.append(model.retry_active_request())
+        return await request
 
-    monkeypatch.setattr(time, "sleep", resend)
-
-    with pytest.raises(ModelRequestRetry):
-        model.request([{"role": "user", "content": "hi"}], None)
-    assert s.state.manual_model_retry_requested is False
+    _, _, content = asyncio.run(drive())
+    assert refused == [False]
+    assert content == "ok"
+    assert s.state.model_retry_count == 1  # the backoff's own retry, not a resend
     assert s.state.model_retry_until == 0.0
 
 
@@ -576,12 +563,12 @@ def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
     message body (incomplete chunked read)"."""
     s = _session(tmp_path)
     model = ModelClient(s)
-    _patch_fast_clock(monkeypatch)
+    record_backoff(monkeypatch)
 
     cause = httpx.RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)")
     calls = {"n": 0}
 
-    def api_request(_messages, _tools, **_kw):
+    async def api_request(_messages, _tools, **_kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise ModelError(str(cause)) from cause
@@ -728,7 +715,7 @@ def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
     model = ModelClient(s)
     calls = []
 
-    def api_request(_messages, _tools, **kwargs):
+    async def api_request(_messages, _tools, **kwargs):
         calls.append(kwargs.get("provider"))
         return {}, [], '{"summary":"short"}'
 
@@ -761,7 +748,7 @@ def test_compaction_response_timeout_follows_base_entry(tmp_path, monkeypatch):
     model = ModelClient(s)
     seen = []
 
-    def api_request(_messages, _tools, **kwargs):
+    async def api_request(_messages, _tools, **kwargs):
         seen.append(kwargs)
         return {}, [], '{"summary":"short"}'
 
@@ -812,7 +799,7 @@ def test_compaction_retries_once_when_the_model_replies_in_prose(tmp_path, monke
     model = ModelClient(s)
     sent = []
 
-    def api_request(messages, _tools, **kwargs):
+    async def api_request(messages, _tools, **kwargs):
         sent.append(messages)
         if len(sent) == 1:
             return None, None, "继续 Part B 收尾：检查 `_run_workflow` 的所有调用点。\n\ntool:\ntool tr.268 Bash rg -n"
@@ -832,7 +819,10 @@ def test_compaction_failure_names_the_provider_entry(tmp_path, monkeypatch):
     this way -- the fallback line has to say which one to go look at."""
     s = _session(tmp_path)
     model = ModelClient(s)
-    monkeypatch.setattr(model, "api_request", lambda *_a, **_k: (None, None, "user:\nnot json at all"))
+    async def api_request(*_a, **_k):
+        return None, None, "user:\nnot json at all"
+
+    monkeypatch.setattr(model, "api_request", api_request)
 
     with pytest.raises(ModelError, match=r"compaction provider `default/gpt-4`"):
         compaction.Compactor(ContextManager(s), model).compact("long context")
@@ -881,7 +871,7 @@ def test_compaction_rejects_a_summary_that_copies_the_conversation(tmp_path, mon
     echo = "继续 Part B 收尾：检查 `_run_workflow` 的所有调用点，确保新参数没有遗漏，然后跑 lint 与 pyright，再把结果贴回来。"
     sent = []
 
-    def api_request(messages, _tools, **kwargs):
+    async def api_request(messages, _tools, **kwargs):
         sent.append(messages)
         if len(sent) == 1:
             return None, None, json.dumps({"title": "Part B", "summary": echo}, ensure_ascii=False)
@@ -906,32 +896,59 @@ def test_compaction_echo_guard_leaves_real_summaries_alone(tmp_path):
 
 
 def test_whole_turn_cancellation_and_resend_are_distinct_dispositions(tmp_path):
-    """Both end the in-flight attempt, but only /resend re-enters the request loop.
+    """Both end the attempt in flight, but they mean opposite things and cannot be confused.
 
-    Whole-turn cancellation ends the turn and must never be read as a retry, so the disposition is
-    carried by the explicit retry request rather than inferred from an interrupted attempt. The
-    flag is consumed exactly once: a second interrupted attempt with nothing requested cancels."""
+    The disposition rides on the claim made under the attempt lock, not on any session flag a
+    later cancellation could pick up: cancelling the request task propagates CancelledError and
+    ends the turn, while a claimed attempt becomes ModelRequestRetry and is sent again."""
+
     s = _session(tmp_path)
     model = ModelClient(s)
     attempts = []
 
-    def interrupted(messages, tools=None, **kwargs):
+    async def hanging(messages, tools=None, **kwargs):
         attempts.append(messages)
-        raise KeyboardInterrupt
+        await asyncio.sleep(30)
+        raise AssertionError("the provider attempt must not complete in this test")
 
-    model.api_request = interrupted
+    model.api_request = hanging
 
-    with pytest.raises(KeyboardInterrupt):
-        model.request([{"role": "user", "content": "hi"}], [])
-    assert len(attempts) == 1
-    assert not s.state.manual_model_retry_requested
+    async def cancelled():
+        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], []))
+        await _wait_for(lambda: len(attempts) == 1)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
 
-    s.state.manual_model_retry_requested = True
-    with pytest.raises(ModelRequestRetry):
-        model.request([{"role": "user", "content": "hi"}], [])
+    asyncio.run(cancelled())
+
+    async def resent():
+        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], []))
+        await _wait_for(lambda: len(attempts) == 2)
+        assert model.retry_active_request() is True
+        assert model.retry_active_request() is False  # the same attempt cannot be claimed twice
+        with pytest.raises(ModelRequestRetry):
+            await request
+
+    asyncio.run(resent())
     assert len(attempts) == 2
-    assert not s.state.manual_model_retry_requested  # consumed by the retry it produced
 
-    with pytest.raises(KeyboardInterrupt):
-        model.request([{"role": "user", "content": "hi"}], [])
-    assert len(attempts) == 3
+
+def test_a_claimed_attempt_cannot_publish_a_result_that_arrived_first(tmp_path):
+    """The narrow race the claim exists for: the provider answered between the claim and the
+    cancellation running. The user asked for that attempt to be sent again, so its answer is
+    discarded rather than published as if nothing had been asked."""
+
+    s = _session(tmp_path)
+    model = ModelClient(s)
+    claimed = []
+
+    async def racing(messages, tools=None, **kwargs):
+        claimed.append(model.retry_active_request())  # claim from inside the attempt, then answer
+        return {"role": "assistant", "content": "raced"}, [], "raced"
+
+    model.api_request = racing
+
+    with pytest.raises(ModelRequestRetry):
+        asyncio.run(model.request_async([{"role": "user", "content": "hi"}], []))
+    assert claimed == [True]

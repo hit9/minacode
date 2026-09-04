@@ -220,7 +220,7 @@ def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
             cancelled.wait(5)
             raise KeyboardInterrupt
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: SlowModel())

@@ -45,7 +45,7 @@ class WireProtocol(Protocol):
     the flag and ignore it rather than passing an unknown keyword to their SDK.
     """
 
-    def request(
+    async def request(
         self,
         messages: list[Json],
         tools: list[Json] | None,
@@ -68,7 +68,7 @@ class ChatWire:
     def __init__(self, client: ModelClient):
         self._client = client
 
-    def request(
+    async def request(
         self,
         messages: list[Json],
         tools: list[Json] | None,
@@ -97,9 +97,9 @@ class ChatWire:
         omit_request_fields(params, provider.omit_body)
         client = self._client.client(provider=provider)
         if stream:
-            message, usage, finish_reason = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
+            message, usage, finish_reason = await self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
         else:
-            response = self._client.call_client(client, lambda: client.chat.completions.create(**params), response_timeout=response_timeout)
+            response = await self._client.call_client(client, lambda: client.chat.completions.create(**params), response_timeout=response_timeout)
             usage = getattr(response, "usage", None)
             message = response.choices[0].message
             finish_reason = str(self._client.message_field(response.choices[0], "finish_reason") or "")
@@ -133,7 +133,7 @@ class ChatWire:
             payload["tools"] = request_tools
         return payload
 
-    def _stream(self, client: Any, params: Json) -> tuple[Json, Any, str]:
+    async def _stream(self, client: Any, params: Json) -> tuple[Json, Any, str]:
         """Reassemble a streamed chat completion into one assistant message and its finish reason.
 
         Tool calls are the hard part. The spec streams them as deltas keyed by `index`, but providers
@@ -147,7 +147,7 @@ class ChatWire:
         delta: compatible providers can vary their delta order. `finish_reason=tool_calls` is the
         first protocol boundary that proves this assistant message is complete.
         """
-        return chat_module.reassemble_stream(
+        return await chat_module.reassemble_stream(
             client,
             params,
             message_field=self._client.message_field,
@@ -163,7 +163,7 @@ class ResponsesWire:
     def __init__(self, client: ModelClient):
         self._client = client
 
-    def request(
+    async def request(
         self,
         messages: list[Json],
         tools: list[Json] | None,
@@ -212,19 +212,19 @@ class ResponsesWire:
         omit_request_fields(params, provider.omit_body)
         client = self._client.client(provider=provider)
         if stream:
-            result = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
+            result = await self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
             streamed = True
         else:
-            result = self._client.call_client(client, lambda: client.responses.create(**params), response_timeout=response_timeout)
+            result = await self._client.call_client(client, lambda: client.responses.create(**params), response_timeout=response_timeout)
             streamed = False
         self._client._record_usage(self._client.message_field(result, "usage"), billing=billing)
         assistant, calls, text = self.result(result, streamed)
         assistant[PROVIDER_ORIGIN_KEY] = self._client.provider_origin(provider)
         return assistant, calls, text
 
-    def _stream(self, client: Any, params: Json) -> Any:
+    async def _stream(self, client: Any, params: Json) -> Any:
         """Consume a Responses stream, promoting completed text before tool arguments finish."""
-        return responses_module.reassemble_stream(
+        return await responses_module.reassemble_stream(
             client,
             params,
             message_field=self._client.message_field,
@@ -274,7 +274,7 @@ class AnthropicWire:
     def __init__(self, client: ModelClient):
         self._client = client
 
-    def request(
+    async def request(
         self,
         messages: list[Json],
         tools: list[Json] | None,
@@ -291,19 +291,19 @@ class AnthropicWire:
         client = self._client.anthropic_client(provider=provider)
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         if stream:
-            result = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
+            result = await self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
             streamed = True
         else:
-            result = self._client.call_client(client, lambda: client.messages.create(**params), response_timeout=response_timeout)
+            result = await self._client.call_client(client, lambda: client.messages.create(**params), response_timeout=response_timeout)
             streamed = False
         self._client._record_usage(self._client.message_field(result, "usage"), billing=billing)
         assistant, calls, content = self.result(result, streamed)
         assistant[PROVIDER_ORIGIN_KEY] = self._client.provider_origin(provider)
         return assistant, calls, content
 
-    def _stream(self, client: Any, params: Json) -> Any:
+    async def _stream(self, client: Any, params: Json) -> Any:
         """Consume Messages blocks and promote text once both text and tool blocks are known."""
-        return anthropic_module.reassemble_stream(
+        return await anthropic_module.reassemble_stream(
             client,
             params,
             message_field=self._client.message_field,

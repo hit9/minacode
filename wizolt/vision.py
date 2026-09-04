@@ -33,9 +33,6 @@ class VisionObserver:
         self.model = model
 
     def observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
-        # Like ModelClient.request() and Compactor.compact(), the entry clears the cancel flag so a
-        # stale flag left by a previous turn's Ctrl-C cannot abort a fresh observation.
-        self.model.cancel_requested.clear()
         entry_name = self.model.session.config.vision_provider
         provider = self.model.session.config.providers[entry_name]
         if missing := provider.missing_fields():
@@ -51,7 +48,7 @@ class VisionObserver:
         ]
         # Billed as a vision observation: joins the session totals but must not overwrite the
         # last-request ctx/cache snapshot the status bar reads (see ModelClient._record_usage).
-        _, _, content = self.model.api_request(
+        _, _, content = self.model.api_request_sync(
             messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
         )
         return content.strip()

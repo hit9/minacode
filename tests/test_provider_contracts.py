@@ -74,13 +74,13 @@ def test_provider_wire_contracts_are_serialized_by_the_real_sdks(tmp_path, monke
     assert resolved.api == case.expected_api
     if case.expected_api == "anthropic":
         factory = _AnthropicMockClientFactory([(200, _anthropic_response(case.model))])
-        monkeypatch.setattr(anthropic, "Anthropic", factory)
-        monkeypatch.setattr(openai, "OpenAI", lambda **_kwargs: pytest.fail("provider resolved to OpenAI SDK instead of Anthropic"))
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", factory)
+        monkeypatch.setattr(openai, "AsyncOpenAI", lambda **_kwargs: pytest.fail("provider resolved to OpenAI SDK instead of Anthropic"))
     else:
         response = _responses_response(case.model) if case.expected_api == "responses" else _chat_response(case.model)
         factory = _MockClientFactory([(200, response)])
-        monkeypatch.setattr(openai, "OpenAI", factory)
-        monkeypatch.setattr(anthropic, "Anthropic", lambda **_kwargs: pytest.fail("provider resolved to Anthropic instead of OpenAI SDK"))
+        monkeypatch.setattr(openai, "AsyncOpenAI", factory)
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda **_kwargs: pytest.fail("provider resolved to Anthropic instead of OpenAI SDK"))
 
     model.request([{"role": "user", "content": "hello"}], [])
 

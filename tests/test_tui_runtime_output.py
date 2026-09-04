@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from prompt_toolkit.formatted_text import fragment_list_to_text
 from test_tui_runtime import TextRecordingOutput
+from model_harness import async_create
 from tui_harness import loop, run_interactive_tui, session, wait_until
 
 from wizolt.base import (
@@ -206,7 +207,7 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
         yield {"type": "response.function_call_arguments.delta", "delta": '{"args"'}
         yield {"type": "response.completed", "response": terminal}
 
-    responses = SimpleNamespace(create=lambda **_params: events())
+    responses = SimpleNamespace(create=async_create(lambda **_params: events()))
     monkeypatch.setattr(command_loop.agent.model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     real_emit = command_loop.emit_agent_output
 
@@ -284,7 +285,7 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
         },
         {"type": "response.completed", "response": terminal},
     ]
-    responses = SimpleNamespace(create=lambda **_params: iter(events))
+    responses = SimpleNamespace(create=async_create(lambda **_params: iter(events)))
     monkeypatch.setattr(command_loop.agent.model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
@@ -324,7 +325,7 @@ def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(t
         {"type": "response.output_text.done"},
         {"type": "response.completed", "response": terminal},
     ]
-    responses = SimpleNamespace(create=lambda **_params: iter(events))
+    responses = SimpleNamespace(create=async_create(lambda **_params: iter(events)))
     monkeypatch.setattr(command_loop.agent.model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)

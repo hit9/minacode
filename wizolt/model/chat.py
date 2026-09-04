@@ -17,7 +17,7 @@ from wizolt.model.history import keeps_reasoning
 from wizolt.providers.compat import ResolvedProvider
 
 if TYPE_CHECKING:
-    from openai import OpenAI
+    from openai import AsyncOpenAI
 
 
 def chat_messages(
@@ -93,8 +93,8 @@ def chat_params(
     return params
 
 
-def reassemble_stream(
-    client: OpenAI,
+async def reassemble_stream(
+    client: AsyncOpenAI,
     params: Json,
     *,
     message_field: Callable[[Any, str], Any],
@@ -163,7 +163,7 @@ def reassemble_stream(
         return index
 
     try:
-        for chunk in client.chat.completions.create(**params):
+        async for chunk in await client.chat.completions.create(**params):
             raise_if_inactive()
             if chunk_usage := message_field(chunk, "usage"):
                 usage = chunk_usage

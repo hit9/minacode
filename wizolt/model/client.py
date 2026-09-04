@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from json_repair import repair_json
 
@@ -22,7 +24,6 @@ from wizolt.base import (
     PROVIDER_ORIGIN_KEY,
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
-    ActiveResource,
     Billing,
     Json,
     ModelError,
@@ -35,6 +36,7 @@ from wizolt.base import (
     ToolCall,
     ToolError,
     builtin_tool_label,
+    fail_if_running_loop,
 )
 from wizolt.config import ProviderConfig
 from wizolt.image import IMAGE_REFS_KEY, ImageInputs
@@ -49,8 +51,8 @@ from wizolt.providers.compat import (
 if TYPE_CHECKING:
     # The provider SDKs cost ~0.8s to import and are not needed until the first request;
     # the runtime imports below keep them off the startup path (see MCPManager for the same pattern).
-    from anthropic import Anthropic
-    from openai import OpenAI
+    from anthropic import AsyncAnthropic
+    from openai import AsyncOpenAI
 
 from wizolt.session import AgentState, QueuedInput, Session
 from wizolt.tools import (
@@ -59,10 +61,6 @@ from wizolt.tools import (
 )
 
 _ResultT = TypeVar("_ResultT")
-
-# Retry-wait granularity: sleeping in ~0.1s slices lets the wait observe the UI-thread cancel flag
-# instead of relying on a signal interrupting one long sleep.
-_RETRY_SLEEP_SLICE = 0.1
 
 
 def prompt_value(value: object) -> object:
@@ -105,11 +103,22 @@ class PreparedRequest:
 
 
 class _RequestLease:
-    """Keep callbacks inside the lifetime of the background request that produced them."""
+    """Keep callbacks inside the lifetime of the provider attempt that produced them.
+
+    A stream callback can arrive after its request has already lost -- a total-response timeout
+    fired, or the attempt was cancelled -- and publishing it then would attribute one request's
+    text to whatever is on screen now. The lease is per attempt and is set in the attempt's own
+    context, so an expired attempt's callbacks are rejected by identity rather than by a mutable
+    flag that a later request would have to clear."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.active = True
+
+
+# Set inside the attempt's coroutine, so every wire and stream reader beneath it reads its own
+# request's lease. Tasks copy the context at creation, so leases never leak between attempts.
+_active_lease: contextvars.ContextVar[_RequestLease | None] = contextvars.ContextVar("wizolt_model_request_lease", default=None)
 
 
 class ModelClient:
@@ -125,16 +134,23 @@ class ModelClient:
     published through session state for the status bar. A missing model or a refused modality is a
     decision rather than a glitch and surfaces at once. Streaming is the same call, not a second path.
 
-    Cancelling closes the in-flight client, so a blocked read ends instead of waiting out its timeout.
+    One request is one asyncio task: each provider attempt runs as a child task the client holds
+    only while it is in flight, so cancelling the caller cancels the attempt, and the attempt's
+    own `finally` closes the client it used on the loop that used it.
     """
 
     _JSON_FENCE_RE: ClassVar[re.Pattern] = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.IGNORECASE | re.DOTALL)
 
     def __init__(self, session: Session):
         self.session = session
-        self.cancel_requested = threading.Event()
-        self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
-        self._request_local = threading.local()
+        # Guards only the active-attempt control metadata below, so a /resend arriving from the UI
+        # thread can claim the exact attempt now in flight without touching request state itself.
+        self._attempt_lock = threading.Lock()
+        self._attempt: asyncio.Task | None = None
+        self._attempt_loop: asyncio.AbstractEventLoop | None = None
+        # True once /resend has claimed the current attempt. A claimed attempt can no longer
+        # publish a result, even if the provider answered in the race before cancellation ran.
+        self._attempt_claimed = False
         self.on_stream: Callable[[str, str], None] | None = None
         # Called with (label, detail) for each provider-side tool call a response reports. Reported
         # from the parsed result rather than the stream, so a search is logged the same way when
@@ -161,10 +177,59 @@ class ModelClient:
 
         return self.session.policy.apply_request(params, provider, resolved, wire=wire)
 
-    def cancel(self) -> None:
-        self.cancel_requested.set()
-        with contextlib.suppress(Exception):
-            self.active_client.apply(lambda client: client.close())
+    def retry_active_request(self) -> bool:
+        """Claim the exact provider attempt now in flight for `/resend`; report whether it took.
+
+        Thread-safe by construction: the claim and the task/loop capture happen together under the
+        attempt lock, and the cancellation itself is scheduled on the loop that owns the task. A
+        `False` return means there was nothing to resend -- no attempt, or one already claimed --
+        and nothing about the request or the session's retry counters has changed.
+
+        This is not turn cancellation. The turn's own task is untouched; only this attempt ends,
+        and `request_async` re-enters its loop with the same messages."""
+
+        with self._attempt_lock:
+            task, loop = self._attempt, self._attempt_loop
+            if task is None or loop is None or task.done() or self._attempt_claimed:
+                return False
+            self._attempt_claimed = True
+        # RuntimeError here means the owning loop is already gone, which the attempt's own
+        # completion path handles; the claim still stands, so no result can be published.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(task.cancel)
+        return True
+
+    def cancel_active_request(self) -> None:
+        """TODO(async-phase-4): abort the in-flight provider attempt with no retry disposition.
+
+        The compatibility path for the whole-turn interrupt while Agent is still synchronous: the
+        turn cannot cancel this client's task by propagation yet, so it asks for the attempt to
+        end and takes the resulting interrupt. Phase 4 deletes this method -- cancelling the Agent
+        task then cancels the attempt through ordinary task propagation."""
+
+        with self._attempt_lock:
+            task, loop = self._attempt, self._attempt_loop
+        if task is None or loop is None or task.done():
+            return
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(task.cancel)
+
+    async def close_async(self) -> None:
+        """Release what this client still owns: the in-flight attempt, if there is one.
+
+        Idempotent, and an ownership check rather than a best-effort close: the attempt's clients
+        belong to the loop that created them, so a foreign loop closing them would leave httpx
+        connections bound to a loop nobody will run again."""
+
+        with self._attempt_lock:
+            task, loop = self._attempt, self._attempt_loop
+        if task is None or loop is None or task.done():
+            return
+        if loop is not asyncio.get_running_loop():
+            raise RuntimeError("ModelClient.close_async() must run on the loop that owns the active request")
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
 
     def provider_origin(self, provider: ProviderConfig | None = None) -> str:
         """Identity of the endpoint that issues — and alone can verify — a provider echo.
@@ -235,79 +300,69 @@ class ModelClient:
         images = self.session.images.estimated_tokens(messages) if not self.session.image_route.is_text_only() else 0
         return (chars + 3) // 4 + images
 
-    def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT], *, response_timeout: float | None = None) -> _ResultT:
+    async def call_client(
+        self, client: AsyncOpenAI | AsyncAnthropic, request: Callable[[], Awaitable[_ResultT]], *, response_timeout: float | None = None
+    ) -> _ResultT:
+        """Run one provider call under the total-response deadline and close its client afterwards.
+
+        The deadline bounds generation, not connection: a stream that keeps arriving forever is
+        exactly what it is for, so it wraps the whole await rather than any single read. The client
+        is closed in `finally` on this loop -- the one that opened it -- on every ending, including
+        cancellation, so no connection outlives the attempt that owns it."""
+
         response_timeout = self.session.config.provider.response_timeout if response_timeout is None else response_timeout
-        outcome: list[tuple[bool, object]] = []
-        completed = threading.Event()
         lease = _RequestLease()
-
-        def invoke() -> None:
-            self._request_local.lease = lease
+        token = _active_lease.set(lease)
+        try:
             try:
-                outcome.append((True, request()))
-            except BaseException as error:  # noqa: BLE001 - preserve the provider call's exact outcome across the deadline thread boundary.
-                outcome.append((False, error))
-            finally:
-                del self._request_local.lease
-                completed.set()
-
-        worker = threading.Thread(target=invoke, name="model-request", daemon=True)
-        with self.active_client.track(client):
-            worker.start()
-            try:
-                deadline = time.monotonic() + response_timeout if response_timeout else 0.0
-                while not completed.wait(_RETRY_SLEEP_SLICE):
-                    if self.cancel_requested.is_set():
-                        raise KeyboardInterrupt
-                    if deadline and time.monotonic() >= deadline:
-                        raise ModelResponseTimeout(
-                            f"Model response exceeded provider.response_timeout={response_timeout:g}s; set it to 0 to disable the total-generation limit"
-                        )
-                succeeded, value = outcome[0]
-                if not succeeded:
-                    raise cast(BaseException, value)
-                if self.cancel_requested.is_set():
-                    raise KeyboardInterrupt
-                return cast(_ResultT, value)
+                async with asyncio.timeout(response_timeout or None):
+                    return await request()
+            except TimeoutError:
+                raise ModelResponseTimeout(
+                    f"Model response exceeded provider.response_timeout={response_timeout:g}s; set it to 0 to disable the total-generation limit"
+                ) from None
             # ModelStreamIncomplete is raised by the Responses stream reassembler and must reach
             # the retry classifier as itself: flattening it here would lose the retry decision.
             except (ModelResponseTimeout, ModelStreamIncomplete):
                 raise
             except Exception as error:
-                if self.cancel_requested.is_set():
-                    raise KeyboardInterrupt from None
                 raise ModelError(str(error)) from error
-            finally:
-                with lease.lock:
-                    lease.active = False
-                with contextlib.suppress(Exception):
-                    client.close()
+        finally:
+            _active_lease.reset(token)
+            with lease.lock:
+                lease.active = False
+            with contextlib.suppress(Exception):
+                await client.close()
 
     def _request_active(self) -> bool:
-        lease = getattr(self._request_local, "lease", None)
+        lease = _active_lease.get()
         if lease is None:
-            return not self.cancel_requested.is_set()
+            return True
         with lease.lock:
-            return lease.active and not self.cancel_requested.is_set()
+            return lease.active
 
     def _raise_if_request_inactive(self) -> None:
         if not self._request_active():
-            raise KeyboardInterrupt
+            raise asyncio.CancelledError
 
     def _request_callback(self, callback: Callable[[], None]) -> None:
-        lease = getattr(self._request_local, "lease", None)
+        lease = _active_lease.get()
         if lease is None:
-            if not self.cancel_requested.is_set():
-                callback()
+            callback()
             return
         with lease.lock:
-            if lease.active and not self.cancel_requested.is_set():
+            if lease.active:
                 callback()
 
     def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
+        """Synchronous entry point for direct Python callers; production code awaits request_async."""
+
+        fail_if_running_loop("use await ModelClient.request_async(...)")
+        return asyncio.run(self.request_async(messages, tools))
+
+    async def request_async(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        self.cancel_requested.clear()
         tools = tools if tools is not None else Tool.resolved_schemas(self.session)
         state = self.session.state
         state.model_retry_reason = ""
@@ -317,13 +372,12 @@ class ModelClient:
                 state.current_model_attempt = attempt + 1
                 state.current_model_call_started_at = time.monotonic()
                 state.stream_started_at = state.stream_chars = 0
+                # UI state, never a control signal: a new attempt is under way, so the previous
+                # /resend has landed and the next one may be offered. What a cancelled attempt
+                # meant is decided by the attempt's own claim, not by this flag.
+                state.manual_model_retry_requested = False
                 try:
-                    return self.api_request(messages, tools)
-                except KeyboardInterrupt:
-                    if state.manual_model_retry_requested:
-                        state.manual_model_retry_requested = False
-                        raise ModelRequestRetry() from None
-                    raise
+                    return await self._attempt_request(messages, tools)
                 except ModelError as error:
                     retryable = resilience.retryable_error(error)
                     if attempt >= MODEL_REQUEST_RETRIES or not retryable:
@@ -333,7 +387,7 @@ class ModelClient:
                     state.current_model_attempt = attempt + 2
                     state.model_retry_reason = resilience.retry_reason(error)
                     state.model_retry_count += 1
-                    self._wait_before_retry(resilience.retry_delay(error, attempt), state)
+                    await self._wait_before_retry(resilience.retry_delay(error, attempt), state)
                 finally:
                     state.current_model_call_started_at = 0.0
                     # Cleared, not kept: a rate with no stream behind it would freeze on the divider
@@ -344,29 +398,76 @@ class ModelClient:
             state.current_model_attempt = 0
             state.model_retry_reason = ""
 
-    def _wait_before_retry(self, delay: float, state: AgentState) -> None:
-        """Sleep in ~0.1s slices, watching the UI-thread cancel signal, and publish the wait as facts:
-        model_retry_until (monotonic deadline, the renderer formats it) and the on_retry_wait phase
-        hook. The retry decision is unchanged (see retryable_error); only the pacing is here."""
+    async def _attempt_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
+        """Run one provider attempt as a child task this client can name from another thread.
+
+        The child exists so `/resend` has something exact to claim: a request the user asked to
+        resend must not be able to publish, and the turn's own cancellation must not be readable as
+        a resend. So the two dispositions are separated by construction -- the parent's cancellation
+        is checked before the child's outcome is interpreted and again before a result is published,
+        and only a claim made under the attempt lock turns a cancelled child into a retry."""
+
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(self.api_request(messages, tools))
+        with self._attempt_lock:
+            self._attempt = task
+            self._attempt_loop = loop
+            self._attempt_claimed = False
+        parent_cancelled: asyncio.CancelledError | None = None
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError as error:
+            # The turn was cancelled while this attempt was in flight. The child does not get to
+            # outlive it: cancel it and wait for the provider client to be closed before unwinding.
+            parent_cancelled = error
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        finally:
+            with self._attempt_lock:
+                claimed = self._attempt_claimed
+                self._attempt = None
+                self._attempt_loop = None
+                self._attempt_claimed = False
+        if parent_cancelled is not None:
+            raise parent_cancelled
+        self._raise_if_parent_cancelled()
+        if claimed:
+            # Including the narrow race where the provider answered before the cancellation ran:
+            # the user asked for this attempt to be resent, so its result is discarded.
+            raise ModelRequestRetry()
+        if task.cancelled():
+            # TODO(async-phase-4): only reachable through cancel_active_request(), the temporary
+            # whole-turn interrupt path. Phase 4 makes this ordinary parent cancellation.
+            raise KeyboardInterrupt
+        if error := task.exception():
+            raise error
+        self._raise_if_parent_cancelled()
+        return task.result()
+
+    @staticmethod
+    def _raise_if_parent_cancelled() -> None:
+        """Turn a cancellation already requested on this task into one, before publishing anything.
+
+        `asyncio.wait` returns normally when the child finishes even if the parent was cancelled in
+        the same iteration; the CancelledError would only be delivered at the next await, which may
+        be after a provider result has been handed to the caller."""
+
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise asyncio.CancelledError
+
+    async def _wait_before_retry(self, delay: float, state: AgentState) -> None:
+        """Wait out the backoff, publishing it as facts: model_retry_until (monotonic deadline, the
+        renderer formats it) and the on_retry_wait phase hook. The retry decision is unchanged (see
+        retryable_error); only the pacing is here. The sleep is an ordinary cancellable await, so a
+        turn cancelled during a backoff ends here rather than after the deadline."""
         on_retry_wait = self.on_retry_wait
         if on_retry_wait is not None:
             on_retry_wait(True)
         try:
             state.model_retry_until = time.monotonic() + delay
-            deadline = state.model_retry_until
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return
-                time.sleep(min(_RETRY_SLEEP_SLICE, remaining))
-                # Cancellation is a control signal from the UI thread; a signal interrupting
-                # time.sleep is not guaranteed. A /resend racing the start of this wait remains a
-                # retry request, not a user cancellation of the whole turn.
-                if self.cancel_requested.is_set():
-                    if state.manual_model_retry_requested:
-                        state.manual_model_retry_requested = False
-                        raise ModelRequestRetry() from None
-                    raise KeyboardInterrupt
+            await asyncio.sleep(max(0.0, delay))
         finally:
             state.model_retry_until = 0.0
             if on_retry_wait is not None:
@@ -427,7 +528,23 @@ class ModelClient:
         request quietly sent on the wrong wire."""
         return self._wires[self.resolved(provider).api]
 
-    def api_request(
+    def api_request_sync(
+        self,
+        messages: list[Json],
+        tools: list[Json] | None,
+        **kwargs,
+    ) -> tuple[Json, list[ToolCall], str]:
+        """TODO(async-phase-2): the last synchronous secondary-request entry point.
+
+        Compaction and vision issue their own provider requests and are still synchronous, so they
+        need an outer boundary of their own until Phase 2 makes them async end to end. It lives
+        here rather than in either caller so there is one owner to delete, and neither of those
+        modules ever starts a loop."""
+
+        fail_if_running_loop("use await ModelClient.api_request(...)")
+        return asyncio.run(self.api_request(messages, tools, **kwargs))
+
+    async def api_request(
         self,
         messages: list[Json],
         tools: list[Json] | None,
@@ -439,7 +556,7 @@ class ModelClient:
         billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
-        return self.wire(provider).request(
+        return await self.wire(provider).request(
             messages,
             tools,
             provider=provider,
@@ -491,14 +608,14 @@ class ModelClient:
             headers["User-Agent" if name.lower() == "user-agent" else name.lower()] = value
         return headers
 
-    def client(self, provider: ProviderConfig | None = None) -> OpenAI:
+    def client(self, provider: ProviderConfig | None = None) -> AsyncOpenAI:
         provider = provider if provider is not None else self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
-        from openai import OpenAI
+        from openai import AsyncOpenAI
 
-        return OpenAI(
+        return AsyncOpenAI(
             api_key=provider.key,
             base_url=self.resolved(provider).base_url,
             timeout=provider.timeout,
@@ -506,15 +623,15 @@ class ModelClient:
             default_headers=self.request_headers(provider),
         )
 
-    def anthropic_client(self, provider: ProviderConfig | None = None) -> Anthropic:
+    def anthropic_client(self, provider: ProviderConfig | None = None) -> AsyncAnthropic:
         provider = provider if provider is not None else self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         url = self.resolved(provider).base_url.rstrip("/")
         # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
-        from anthropic import Anthropic
+        from anthropic import AsyncAnthropic
 
-        return Anthropic(
+        return AsyncAnthropic(
             api_key=provider.key,
             base_url=url.removesuffix("/v1"),
             timeout=provider.timeout,

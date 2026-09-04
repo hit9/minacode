@@ -174,7 +174,7 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
             self.calls = 0
             self.cancel_requested = threading.Event()
 
-        def api_request(self, _messages, _tools, **_kwargs):
+        def api_request_sync(self, _messages, _tools, **_kwargs):
             self.calls += 1
             return "", "", json.dumps({"summary": f"summary {self.calls}"})
 
@@ -269,7 +269,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
             self.session = session
             self.cancel_requested = threading.Event()
 
-        def api_request(self, _messages, _tools, **_kwargs):
+        def api_request_sync(self, _messages, _tools, **_kwargs):
             assert transitions == ["compacting context"]
             return "", "", json.dumps({"summary": "summary", "plan": ["next"], "known": ["fact"]})
 
@@ -312,7 +312,7 @@ def test_manual_compact_names_the_segment_with_the_compactor_title(tmp_path):
             self.session = session
             self.cancel_requested = threading.Event()
 
-        def api_request(self, _messages, _tools, **_kwargs):
+        def api_request_sync(self, _messages, _tools, **_kwargs):
             return "", "", json.dumps({"title": "Tokenizer extraction", "summary": "summary"})
 
         @staticmethod
@@ -616,7 +616,7 @@ def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
             self.calls = 0
             self.cancel_requested = threading.Event()
 
-        def api_request(self, _messages, _tools, **_kwargs):
+        def api_request_sync(self, _messages, _tools, **_kwargs):
             self.calls += 1
             return "", "", json.dumps({"summary": f"summary {self.calls}"})
 

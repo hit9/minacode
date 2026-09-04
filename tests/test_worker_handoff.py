@@ -62,7 +62,7 @@ class FakeModelClient:
     def estimated_request_tokens(self, messages, tools=None):
         return sum(len(str(message)) for message in messages) // 4
 
-    def cancel(self):
+    def cancel_active_request(self):
         pass
 
 

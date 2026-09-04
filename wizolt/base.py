@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import re
@@ -55,6 +56,22 @@ def configure_logging() -> None:
     # library's own transport traceback is pure noise. Raise it out of the ERROR band.
     for _transport_logger in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
         logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
+
+
+def fail_if_running_loop(hint: str) -> None:
+    """Refuse a synchronous facade that was called from inside a running event loop.
+
+    Every synchronous entry point in wizolt is `asyncio.run()` over the async implementation, and
+    `asyncio.run()` cannot nest. The alternative -- a helper thread with a second loop -- would put
+    the work on a loop that does not own the resources it touches, which is the exact ownership
+    error this codebase spends its cancellation and shutdown rules avoiding. So the facade names
+    the async method instead of quietly building a bridge to it."""
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    raise RuntimeError(f"this synchronous entry point cannot be called from a running event loop; {hint}")
 
 
 MAX_TOOL_OUTPUT_TOKENS = 6_000

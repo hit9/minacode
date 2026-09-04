@@ -9,6 +9,8 @@ from PIL import Image
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 
+from model_harness import async_create
+
 import wizolt.cli.loop as loop_module
 import wizolt.tui as tui_module
 from wizolt.base import ModelError, ToolCall, ToolError
@@ -34,6 +36,11 @@ from wizolt.runner import ToolRunner
 from wizolt.session import Session, SessionSnapshotStore
 from wizolt.tools import ViewImageTool
 from wizolt.tui import TuiApp
+
+
+async def _no_close():
+    """The async close the provider SDK clients expose; awaited by ModelClient.call_client."""
+
 
 
 def image_file(path, *, size=(32, 24), image_format="PNG", color=(12, 34, 56)):
@@ -465,7 +472,7 @@ def test_chat_request_does_not_leak_internal_image_metadata(tmp_path, monkeypatc
         response.choices = [SimpleNamespace(message=SimpleNamespace(role="assistant", content="ok", tool_calls=None))]
         return response
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)), close=lambda: None)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=async_create(create))), close=_no_close)
     monkeypatch.setattr(ModelClient, "client", lambda _self, **kwargs: client)
 
     ModelClient(s).request([message], None)

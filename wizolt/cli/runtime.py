@@ -56,13 +56,21 @@ class TuiRuntime:
         self._interrupt_active(self.loop.agent.cancel)
 
     def _request_model_retry(self) -> None:
+        """`/resend`: ask the model client to drop the exact attempt in flight and send it again.
+
+        Not a turn cancellation and not a signal: the client's own thread-safe claim is the entire
+        wake-up mechanism, and it is also the debounce -- an attempt already claimed, or none in
+        flight, answers False and nothing about the session changes. The retry counters move only
+        once the request has actually been accepted."""
+
         state = self.loop.session.state
-        if state.current_model_call_started_at <= 0 or state.model_retry_until > 0 or state.manual_model_retry_requested:
+        if state.model_retry_until > 0 or state.manual_model_retry_requested:
+            return
+        if not self.loop.agent.model.retry_active_request():
             return
         state.manual_model_retry_requested = True
         state.model_retry_count += 1
         self.tui.invalidate()
-        self._interrupt_active(self.loop.agent.model.cancel)
 
     def submit_running(self, value: str | UserInput) -> None:
         value = value if isinstance(value, UserInput) else UserInput(value)

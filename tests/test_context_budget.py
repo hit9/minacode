@@ -139,7 +139,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
             self.input = None
             self.cancel_requested = threading.Event()
 
-        def api_request(self, messages, _tools, **_kwargs):
+        def api_request_sync(self, messages, _tools, **_kwargs):
             # The inline form carries the conversation as messages; the flattened text is only
             # built when that form cannot serve, so this reads whichever one was actually sent.
             self.input = "\n".join(str(message.get("content") or "") for message in messages)
@@ -209,7 +209,7 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
             self.called = False
             self.cancel_requested = threading.Event()
 
-        def api_request(self, _messages, _tools, **_kwargs):
+        def api_request_sync(self, _messages, _tools, **_kwargs):
             self.called = True
             return "", "", json.dumps({"summary": "summary"})
 

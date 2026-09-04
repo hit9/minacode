@@ -1,4 +1,5 @@
 """agent flow (split from tests/test_agent_turn.py)."""
+import asyncio
 import threading
 from types import SimpleNamespace
 
@@ -17,7 +18,12 @@ from wizolt.prompts import LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from wizolt.tools import Tool
 
 
-def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
+def test_cancel_active_request_ends_the_in_flight_attempt_and_closes_its_client(tmp_path):
+    """The whole-turn interrupt while the turn itself is still synchronous.
+
+    Cancellation is asked for from another thread and scheduled on the loop that owns the attempt,
+    so the request ends at once instead of waiting out the provider timeout -- and the attempt
+    closes the client it opened on its way out, on the loop that opened it."""
     s = session(tmp_path)
     s.config.provider.url = "https://example.test/v1"
     s.config.provider.key = "test"
@@ -26,10 +32,9 @@ def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
     closed = threading.Event()
 
     class Completions:
-        def create(self, **_params):
+        async def create(self, **_params):
             started.set()
-            closed.wait(timeout=1)
-            raise RuntimeError("connection closed")
+            await asyncio.sleep(30)
 
     class Client:
         chat = SimpleNamespace(completions=Completions())
@@ -37,7 +42,7 @@ def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
         def __init__(self, provider=None):
             pass
 
-        def close(self):
+        async def close(self):
             closed.set()
 
     model = ModelClient(s)
@@ -52,12 +57,13 @@ def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
 
     thread = threading.Thread(target=request)
     thread.start()
-    assert started.wait(timeout=1)
-    model.cancel()
-    thread.join(timeout=1)
+    assert started.wait(timeout=2)
+    model.cancel_active_request()
+    thread.join(timeout=2)
 
     assert not thread.is_alive()
     assert len(errors) == 1 and isinstance(errors[0], KeyboardInterrupt)
+    assert closed.is_set()
 
 def test_agent_injects_pending_user_input_once(tmp_path):
     s = session(tmp_path)

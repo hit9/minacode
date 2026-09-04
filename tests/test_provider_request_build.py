@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from catalog_harness import resolve
+from model_harness import record_backoff
 from test_core_logic import session
 
 from wizolt.base import (
@@ -232,22 +233,15 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
     client = ModelClient(s)
     calls = []
 
-    def fail(_messages, _tools, **_kwargs):
+    async def fail(_messages, _tools, **_kwargs):
         calls.append(1)
         raise ModelError("Error code: 500 - provider failed")
 
     monkeypatch.setattr(client.wire(s.config.provider), "request", fail)
-    clock = {"now": 0.0}
     seen: dict[int, str] = {}
-
-    def sleeper(seconds):
-        # The wait is sliced; record each attempt's phase once and advance the clock so the
-        # slice loop finishes instantly (the status facts, not the pacing, are under test).
-        seen[s.state.current_model_attempt] = s.state.model_retry_reason
-        clock["now"] += seconds
-
-    monkeypatch.setattr(time, "sleep", sleeper)
-    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    # Record each attempt's published phase as its backoff begins; the status facts, not the
+    # pacing, are what this test is about, so no wait is actually spent.
+    record_backoff(monkeypatch, on_wait=lambda: seen.__setitem__(s.state.current_model_attempt, s.state.model_retry_reason))
 
     with pytest.raises(ModelError, match="after 6 attempts"):
         client.request([{"role": "user", "content": "hi"}])

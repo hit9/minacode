@@ -1,13 +1,14 @@
 """Responses API requests: output items, streaming, replay, and reasoning parameters."""
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from model_harness import _MockClientFactory, _session, _StreamClientFactory
-from openai import OpenAI
+from model_harness import _MockClientFactory, _session, _StreamClientFactory, async_create, record_backoff
+from openai import AsyncOpenAI
 
 from wizolt.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ModelStreamIncomplete, ToolCall
 from wizolt.config import ProviderConfig
@@ -184,22 +185,15 @@ class _SequenceStreamFactory:
         self.streams = streams
         self.calls: list[httpx.Request] = []
 
-    def __call__(self, **kwargs) -> OpenAI:
+    def __call__(self, **kwargs) -> AsyncOpenAI:
         def respond(request: httpx.Request) -> httpx.Response:
             self.calls.append(request)
             events = self.streams[min(len(self.calls) - 1, len(self.streams) - 1)]
             body = "".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n"
             return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
 
-        http_client = httpx.Client(transport=httpx.MockTransport(respond))
-        return OpenAI(api_key="sk-test", base_url="http://test", http_client=http_client, max_retries=0)
-
-
-def _patch_fast_clock(monkeypatch):
-    """Advance the clock by each requested sleep so backoff waits complete instantly."""
-    clock = {"now": 0.0}
-    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
-    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        return AsyncOpenAI(api_key="sk-test", base_url="http://test", http_client=http_client, max_retries=0)
 
 
 def test_responses_stream_incomplete_is_retryable():
@@ -217,7 +211,7 @@ def test_responses_stream_without_terminal_event_retries_then_succeeds(tmp_path,
     "Responses stream ended without a terminal response"."""
     s = _session(tmp_path, api="responses", model="gpt-5")
     model = ModelClient(s)
-    _patch_fast_clock(monkeypatch)
+    record_backoff(monkeypatch)
 
     terminal = {
         "id": "resp_stream",
@@ -321,7 +315,7 @@ def test_responses_stream_promotes_completed_text_before_tool_arguments_finish(t
         yield {"type": "response.function_call_arguments.delta", "delta": '{"args"'}
         yield {"type": "response.completed", "response": terminal}
 
-    responses = SimpleNamespace(create=lambda **_params: events())
+    responses = SimpleNamespace(create=async_create(lambda **_params: events()))
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
@@ -362,7 +356,7 @@ def test_responses_stream_promotes_completed_text_across_provider_call(tmp_path,
         yield from prefix
         yield {"type": "response.completed", "response": terminal}
 
-    responses = SimpleNamespace(create=lambda **_params: events())
+    responses = SimpleNamespace(create=async_create(lambda **_params: events()))
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
     model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
@@ -404,7 +398,7 @@ def test_responses_stream_promotes_when_output_item_added_is_missing(tmp_path, m
         {"type": "response.completed", "response": terminal},
     ]
     timeline = []
-    responses = SimpleNamespace(create=lambda **_params: iter(events))
+    responses = SimpleNamespace(create=async_create(lambda **_params: iter(events)))
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
@@ -784,7 +778,7 @@ def test_responses_reports_unsupported_reasoning_off_instead_of_guessing(tmp_pat
         s.config.provider.url = "https://api.openai.com/v1"
 
     with pytest.raises(ModelError, match="reasoning off is not defined"):
-        ModelClient(s).wire(s.config.provider).request([{"role": "user", "content": "hi"}], None)
+        asyncio.run(ModelClient(s).wire(s.config.provider).request([{"role": "user", "content": "hi"}], None))
 
 
 def test_responses_replay_drops_reasoning_items_that_carry_no_payload(tmp_path):
@@ -886,7 +880,7 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
         ]
     )
     monkeypatch.setattr(model, "client", factory)
-    model.wire(ProviderConfig(api="chat", model="gpt-4o")).request(history, None)
+    asyncio.run(model.wire(ProviderConfig(api="chat", model="gpt-4o")).request(history, None))
     body = factory.calls[0].content.decode()
     assert "_responses_output" not in body
     assert "_anthropic_content" not in body
@@ -1031,7 +1025,7 @@ def test_configured_reasoning_fields_merge_into_the_managed_object(tmp_path, mon
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
+    asyncio.run(model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None))
 
     body = json.loads(factory.calls[0].content)
     assert body["reasoning"] == {"effort": "high", "context": "current_turn"}
@@ -1058,7 +1052,7 @@ def test_catalog_extra_body_paths_do_not_replace_user_extensions(tmp_path, monke
 
     monkeypatch.setattr(model, "apply_request", apply_catalog_recipe)
 
-    model.wire(s.config.provider).request([{"role": "user", "content": "hi"}], None)
+    asyncio.run(model.wire(s.config.provider).request([{"role": "user", "content": "hi"}], None))
 
     body = json.loads(factory.calls[0].content)
     assert body["user_extension"] == "kept"
@@ -1082,7 +1076,7 @@ def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monke
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
+    asyncio.run(model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None))
 
     assert json.loads(factory.calls[0].content)["reasoning"] == {"context": "all_turns"}
 

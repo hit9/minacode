@@ -338,7 +338,7 @@ def test_agent_followup_turn_snapshot_resume_invariant(tmp_path, monkeypatch):
     ]
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
 
-    def fake_api_request(messages, tools, *, allow_stream=True):
+    async def fake_api_request(messages, tools, *, allow_stream=True):
         assert tools, "the tool list must never be emptied for a request"
         return responses.pop(0)
 

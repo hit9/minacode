@@ -64,7 +64,7 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
     before = len(s.messages)
 
     loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
-    loop.agent.model.api_request = lambda _messages, _tools, **_kwargs: ("", "", '{"summary": "a compacted summary"}')
+    loop.agent.model.api_request_sync = lambda _messages, _tools, **_kwargs: ("", "", '{"summary": "a compacted summary"}')
     result = compact(loop, "")
 
     assert "Compacted context" in result

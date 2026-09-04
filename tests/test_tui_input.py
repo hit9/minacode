@@ -88,7 +88,7 @@ def ctrl_c_queue_scenario(cwd, results):
             finally:
                 first_running.clear()
 
-        def cancel(self):
+        def cancel_active_request(self):
             cancel_calls.append(True)
 
     command_loop.agent.model = RecordingModel()

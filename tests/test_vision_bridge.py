@@ -99,7 +99,7 @@ def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monkeypatc
     image_file(tmp_path / "shot.png")
     captured = {}
 
-    def fake_api_request(self, messages, tools, **kwargs):
+    async def fake_api_request(self, messages, tools, **kwargs):
         captured.update(messages=messages, tools=tools, kwargs=kwargs)
         return {}, [], OBSERVATION
 
@@ -124,7 +124,7 @@ def test_static_text_only_view_image_bridges_with_default_question(tmp_path, mon
     image_file(tmp_path / "shot.png")
     captured = {}
 
-    def fake_api_request(self, messages, tools, **kwargs):
+    async def fake_api_request(self, messages, tools, **kwargs):
         captured["question"] = messages[1]["content"][-1]["text"]
         return {}, [], OBSERVATION
 

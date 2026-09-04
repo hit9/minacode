@@ -39,7 +39,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
             requests.append([message.get("content") for message in messages if message.get("role") == "user"])
             return {"role": "assistant", "content": "done"}, [], "done"
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     command_loop.agent.model = RecordingModel()
@@ -84,7 +84,7 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
                 assert release_first.wait(timeout=1)
             return {"role": "assistant", "content": "done"}, [], "done"
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     command_loop.agent.model = RecordingModel()
@@ -153,19 +153,36 @@ def test_manual_resend_preserves_stream_driven_status(tmp_path, monkeypatch):
     command_loop.tui.set_running("working")
     command_loop.session.state.current_model_call_started_at = 1.0
     runtime = TuiRuntime(command_loop)
-    monkeypatch.setattr(runtime, "_interrupt_active", lambda _cancel: None)
+    claims = []
+    monkeypatch.setattr(command_loop.agent.model, "retry_active_request", lambda: claims.append(True) or True)
 
     command_loop.session.state.model_retry_until = 2.0
     runtime._request_model_retry()
+    assert claims == []  # a backoff is already on its way back to the provider; nothing to claim
     assert command_loop.session.state.manual_model_retry_requested is False
     assert command_loop.session.state.model_retry_count == 0
 
     command_loop.session.state.model_retry_until = 0.0
     runtime._request_model_retry()
 
+    assert claims == [True]
     assert command_loop.tui.status_label == "working"
     assert command_loop.session.state.manual_model_retry_requested is True
     assert command_loop.session.state.model_retry_count == 1
+
+
+def test_manual_resend_with_no_attempt_in_flight_changes_nothing(tmp_path):
+    """The retry counters follow the client's answer: with no provider attempt to claim, the key
+    is a no-op rather than a counter bump the status bar would then have to explain."""
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    command_loop.tui.set_running("working")
+    runtime = TuiRuntime(command_loop)
+
+    runtime._request_model_retry()
+
+    assert command_loop.session.state.manual_model_retry_requested is False
+    assert command_loop.session.state.model_retry_count == 0
 
 def test_recalling_sent_input_does_not_leave_revising_status(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -175,7 +192,7 @@ def test_recalling_sent_input_does_not_leave_revising_status(tmp_path, monkeypat
     command_loop.session.claim_user_inputs()
     command_loop.session.state.current_model_call_started_at = 1.0
     runtime = TuiRuntime(command_loop)
-    monkeypatch.setattr(runtime, "_interrupt_active", lambda _cancel: None)
+    monkeypatch.setattr(command_loop.agent.model, "retry_active_request", lambda: True)
 
     assert runtime.recall() == "revise me"
     command_loop.model_stream_output("output", "updated response")

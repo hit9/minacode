@@ -184,7 +184,7 @@ def test_interrupted_current_turn_compaction_falls_back_before_cancelling(tmp_pa
             self.session = session
             self.cancel_requested = threading.Event()
 
-        def api_request(self, *_args, **_kwargs):
+        def api_request_sync(self, *_args, **_kwargs):
             raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):

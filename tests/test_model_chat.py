@@ -1,11 +1,12 @@
 """Chat Completions requests: streaming reassembly, tool-call deltas, and reasoning history."""
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
 
 import pytest
-from model_harness import _MockClientFactory, _session, _StreamClientFactory
+from model_harness import _MockClientFactory, _session, _StreamClientFactory, async_create, record_backoff
 
 from wizolt.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
 from wizolt.model import ModelClient, resilience
@@ -368,11 +369,11 @@ def test_chat_stream_waits_for_tool_finish_before_promoting_text(tmp_path):
             ]
         }
 
-    completions = SimpleNamespace(create=lambda **_params: chunks())
+    completions = SimpleNamespace(create=async_create(lambda **_params: chunks()))
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    message, _, _ = ChatWire(model)._stream(client, {})
+    message, _, _ = asyncio.run(ChatWire(model)._stream(client, {}))
 
     assert timeline == [
         ("output", "hello"),
@@ -668,7 +669,7 @@ def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
     streamed = []
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    record_backoff(monkeypatch)
 
     _, _, content = model.request([{"role": "user", "content": "hi"}], [])
 

@@ -1,10 +1,11 @@
 """Anthropic Messages requests: block streaming, thinking, and tool blocks."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
-from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _session
+from model_harness import AsyncStreamContext, _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _session
 
 from wizolt.base import ModelOutputTruncated, ToolCall
 from wizolt.model import ModelClient, resilience
@@ -32,7 +33,7 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, calls, content = model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
+    assistant, calls, content = asyncio.run(model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None))
 
     assert content == "hello from claude"
     assert assistant == {
@@ -154,7 +155,7 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, calls, content = model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
+    assistant, calls, content = asyncio.run(model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None))
 
     body = json.loads(factory.calls[0].content)
     assert factory.calls[0].url.path.endswith("/messages")
@@ -182,24 +183,12 @@ def test_anthropic_stream_promotes_when_tool_precedes_completed_text(tmp_path):
         {"type": "content_block_stop", "index": 1},
     ]
 
-    class Stream:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def __iter__(self):
-            return iter(events)
-
-        def get_final_message(self):
-            return {"content": []}
 
     streamed = []
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
-    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: AsyncStreamContext(events)))
 
-    model.wire(model.session.config.provider)._stream(client, {})
+    asyncio.run(model.wire(model.session.config.provider)._stream(client, {}))
 
     assert streamed == [("output", "hello"), ("output_done", "hello"), ("", "")]
 
@@ -217,25 +206,13 @@ def test_anthropic_stream_promotes_completed_text_before_server_tool(tmp_path):
         {"type": "content_block_stop", "index": 1},
     ]
 
-    class Stream:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def __iter__(self):
-            return iter(events)
-
-        def get_final_message(self):
-            return {"content": []}
 
     timeline = []
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
     model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
-    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: AsyncStreamContext(events)))
 
-    model.wire(model.session.config.provider)._stream(client, {})
+    asyncio.run(model.wire(model.session.config.provider)._stream(client, {}))
 
     promoted = ("output_done", "the answer")
     builtin = ("builtin", "Web Search", "q")
@@ -255,24 +232,12 @@ def test_anthropic_stream_promotes_server_tool_first_text_at_block_completion(tm
         {"type": "content_block_stop", "index": 1},
     ]
 
-    class Stream:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def __iter__(self):
-            return iter(events)
-
-        def get_final_message(self):
-            return {"content": []}
 
     streamed = []
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
-    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: AsyncStreamContext(events)))
 
-    model.wire(model.session.config.provider)._stream(client, {})
+    asyncio.run(model.wire(model.session.config.provider)._stream(client, {}))
 
     assert streamed == [("Web Search", ""), ("output", "hello"), ("output_done", "hello"), ("", "")]
     assert streamed.count(("output_done", "hello")) == 1

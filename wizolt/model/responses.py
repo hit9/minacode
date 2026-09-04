@@ -27,7 +27,7 @@ from wizolt.image import ImageInputs
 from wizolt.model.history import keeps_reasoning
 
 if TYPE_CHECKING:
-    from openai import OpenAI
+    from openai import AsyncOpenAI
 
 
 def responses_input(
@@ -162,8 +162,8 @@ def responses_extra_body(extra_body: Json, params: Json) -> Json:
     return merged
 
 
-def reassemble_stream(
-    client: OpenAI,
+async def reassemble_stream(
+    client: AsyncOpenAI,
     params: Json,
     *,
     message_field: Callable[[Any, str], Any],
@@ -193,7 +193,7 @@ def reassemble_stream(
             output_promoted = True
 
     try:
-        for event in client.responses.create(**params):
+        async for event in await client.responses.create(**params):
             raise_if_inactive()
             event_type = str(message_field(event, "type") or "")
             # Two wire spellings of the same event: summarized reasoning and raw reasoning text.

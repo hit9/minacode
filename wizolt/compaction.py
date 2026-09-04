@@ -124,7 +124,6 @@ class Compactor:
         echo_source: str = "",
     ) -> Json:
         model = self.model
-        model.cancel_requested.clear()
         # The summary request runs on the [compaction]-resolved provider entry (empty [compaction]
         # = the active provider), resolved per call so a runtime /provider switch applies next
         # time. The context budget is untouched: compaction still measures against the main
@@ -188,7 +187,7 @@ class Compactor:
                 # request exists to reuse -- it would spend the prize to buy the guarantee. The
                 # instruction not to call tools lives in the appended message instead, and a model
                 # that calls one anyway returns no text, which the retry below already handles.
-                _, _, content = model.api_request(
+                _, _, content = model.api_request_sync(
                     attempt_messages,
                     tools,
                     allow_stream=False,

@@ -46,7 +46,7 @@ class SequenceModel:
             raise outcome
         return {"role": "assistant", "content": outcome}, [], outcome
 
-    def cancel(self):
+    def cancel_active_request(self):
         pass
 
 
@@ -153,7 +153,7 @@ def test_failed_queued_image_is_committed_text_only_instead_of_requeued(tmp_path
                 return {}, [ToolCall("read", "Read", ["missing.txt"])], ""
             raise ModelError("queued image rejected")
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     model = QueuingModel()

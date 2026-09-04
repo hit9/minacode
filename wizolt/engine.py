@@ -101,7 +101,9 @@ class Agent:
     def cancel(self) -> None:
         self.cancel_requested.set()
         self.tools.cancel()
-        self.model.cancel()
+        # TODO(async-phase-4): the turn is still synchronous, so it cannot cancel the model's task
+        # by propagation; ask the in-flight provider attempt to end and let the interrupt arrive.
+        self.model.cancel_active_request()
 
     def raise_if_cancelled(self) -> None:
         if self.cancel_requested.is_set():

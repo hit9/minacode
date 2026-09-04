@@ -177,7 +177,9 @@ class ToolRunner:
         self._active_job.apply(lambda tool: tool.cancel())
         self._active_worker.apply(lambda agent: agent.cancel())
         if self._vision_client is not None:
-            self._vision_client.cancel()
+            # TODO(async-phase-4): tool cancellation is still a fan-out from the caller's thread;
+            # ask the in-flight observation to end rather than waiting out the provider timeout.
+            self._vision_client.cancel_active_request()
 
     def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str | ToolOutput:
         if isinstance(tool, DelegateTool):

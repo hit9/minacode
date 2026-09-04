@@ -255,7 +255,7 @@ def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
         def request(self, messages, tools=None):
             return {}, [call("Read", [{"path": "missing", "ranges": [[0, 0]]}])], ""
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     class Tools:
@@ -288,7 +288,7 @@ def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
             self.calls += 1
             return {}, [call("Read", [{"path": "missing", "ranges": [[0, 0]]}])], ""
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     class Tools:
@@ -322,7 +322,7 @@ def test_interrupted_turn_settles_once_and_matches_every_visible_tool_call(tmp_p
         def request(self, messages, tools=None):
             return {}, [call("Read", [{"path": "a", "ranges": [[0, 0]]}]), call("Recall", [{"key": "tr.1"}])], ""
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     class Tools:
@@ -356,7 +356,7 @@ def test_accepted_request_acknowledges_its_queued_follow_up(tmp_path):
         def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     agent.model = Model()
@@ -377,7 +377,7 @@ def test_interrupt_releases_a_claimed_queued_follow_up(tmp_path):
         def request(self, messages, tools=None):
             raise KeyboardInterrupt
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     agent.model = Model()

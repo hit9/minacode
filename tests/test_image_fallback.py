@@ -68,7 +68,7 @@ class FallbackModel:
         self.vision_calls.append((tuple(image.name for image in images), question.strip() or VISION_OBSERVE_DEFAULT_QUESTION))
         return VISION_TEXT
 
-    def cancel(self):
+    def cancel_active_request(self):
         pass
 
 
@@ -316,7 +316,7 @@ def test_queued_attachment_400_commits_once_after_fallback(tmp_path):
                 raise ModelError("Error code: 400 - boom")
             return {"role": "assistant", "content": "queued ok"}, [], "queued ok"
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     agent, _ = run_with(s, QueueingModel())
@@ -499,7 +499,7 @@ def test_queued_image_400_fallback_cancelled_keeps_pending_and_no_history_duplic
                 raise ModelError("Error code: 400 - boom")
             raise KeyboardInterrupt()
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     agent, _ = run_with(s, CancelDuringFallback())
@@ -544,7 +544,7 @@ def test_queued_image_400_fallback_manual_retry_observes_once(tmp_path):
                 raise ModelRequestRetry()
             return {"role": "assistant", "content": "queued ok"}, [], "queued ok"
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     agent, _ = run_with(s, RetryDuringFallback())
@@ -579,7 +579,7 @@ def test_view_image_400_fallback_cancel_keeps_paid_observation(tmp_path):
                 raise ModelError("Error code: 400 - boom")
             raise KeyboardInterrupt()
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     agent, _ = run_with(s, CancelAfterViewImage())
@@ -615,7 +615,7 @@ def test_queued_image_400_manual_retry_then_cancel_releases_pending(tmp_path):
                 raise ModelRequestRetry()
             raise KeyboardInterrupt()
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     agent, _ = run_with(s, RetryThenCancel())
@@ -647,7 +647,7 @@ def test_queued_image_400_fallback_failure_keeps_paid_observation(tmp_path):
                 raise ModelError("Error code: 400 - boom")
             raise ModelError("fallback main request failed")
 
-        def cancel(self):
+        def cancel_active_request(self):
             pass
 
     agent, _ = run_with(s, FailingDuringFallback())

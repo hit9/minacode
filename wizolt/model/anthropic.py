@@ -27,7 +27,7 @@ from wizolt.model.history import keeps_reasoning
 from wizolt.providers.compat import ResolvedProvider
 
 if TYPE_CHECKING:
-    from anthropic import Anthropic
+    from anthropic import AsyncAnthropic
 
 
 def anthropic_params(
@@ -247,8 +247,8 @@ def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
     return [convert(schema) for schema in tools]
 
 
-def reassemble_stream(
-    client: Anthropic,
+async def reassemble_stream(
+    client: AsyncAnthropic,
     params: Json,
     *,
     message_field: Callable[[Any, str], Any],
@@ -278,8 +278,8 @@ def reassemble_stream(
             output_promoted = True
 
     try:
-        with client.messages.stream(**params) as stream:
-            for event in stream:
+        async with client.messages.stream(**params) as stream:
+            async for event in stream:
                 raise_if_inactive()
                 event_type = message_field(event, "type")
                 if event_type == "content_block_start":
@@ -344,7 +344,7 @@ def reassemble_stream(
                     if index in server_tools:
                         server_tools[index]["json"] += str(message_field(delta, "partial_json") or "")
             raise_if_inactive()
-            return stream.get_final_message()
+            return await stream.get_final_message()
     finally:
         emit("", "")
 
