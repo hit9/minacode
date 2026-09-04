@@ -498,7 +498,7 @@ def test_promoted_bash_job_view_includes_output_from_before_and_after_promotion(
     command_loop = loop(tmp_path)
     command_loop.session.settings.bash_wait_timeout = 0.03
 
-    promoted = BashTool(command_loop.session, ["printf early; sleep 0.08; printf late"]).call()
+    promoted = BashTool(command_loop.session, ["printf early; sleep 0.08; printf late"]).call_sync()
     job = command_loop.session.jobs["job.1"]
     status = JobTool(command_loop.session, [{"action": "wait", "job": job.id, "timeout": 2}]).call_sync()
     # The process can exit just before its drainer consumes EOF. Wait for that observable state

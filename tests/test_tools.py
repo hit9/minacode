@@ -646,7 +646,7 @@ async def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path)
     with pytest.raises(ToolError):
         EditTool(s, ["a.txt", [{"op": "bogus", "content": "a\n"}]]).call()
     with pytest.raises(ToolError):
-        BashTool(s, []).call()
+        await BashTool(s, []).call()
     with pytest.raises(ToolError):
         await SearchTool(s, [{"pattern": "["}]).call()
     with pytest.raises(ToolError):

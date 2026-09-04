@@ -324,14 +324,14 @@ def test_job_wait_call_line_is_not_repeated_after_an_approval(tmp_path, monkeypa
 
 def test_bash_behaviors(tmp_path):
     s = session(tmp_path)
-    bash = BashTool(s, ["printf out; printf err >&2; exit 3"]).call()
+    bash = BashTool(s, ["printf out; printf err >&2; exit 3"]).call_sync()
     assert "* exit_code: 3" in bash
     assert "<stdout>\nout\n</stdout>" in bash
     assert "<stderr>\nerr\n</stderr>" in bash
 
     # Multibyte UTF-8 output large enough to span 4096-byte read boundaries must decode cleanly
     # (regression: per-chunk decoding mangled split characters into replacement chars).
-    wide = BashTool(s, ['python3 -c "print(chr(0x4e2d)*3000)"']).call()
+    wide = BashTool(s, ['python3 -c "print(chr(0x4e2d)*3000)"']).call_sync()
     assert "�" not in wide
     assert wide.count(chr(0x4E2D)) == 3000
 
@@ -354,7 +354,7 @@ def test_bash_cancel_kills_active_process(tmp_path):
     finished = threading.Event()
 
     def run():
-        tool.call()
+        tool.call_sync()
         finished.set()
 
     thread = threading.Thread(target=run)
@@ -369,12 +369,32 @@ def test_bash_cancel_kills_active_process(tmp_path):
     thread.join(timeout=1)
 
 
+async def test_bash_coroutine_cancellation_kills_and_reaps_process(tmp_path):
+    s = session(tmp_path)
+    s.settings.bash_wait_timeout = 0
+    tool = BashTool(s, ["sleep 30"])
+
+    call = asyncio.create_task(tool.call())
+    deadline = time.monotonic() + 1
+    while tool._process is None and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    proc = tool._process
+    assert proc is not None
+
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    assert proc.poll() is not None
+    assert tool._process is None
+
+
 def test_bash_fast_command_does_not_promote(tmp_path):
     s = session(tmp_path)
     s.settings.bash_wait_timeout = 5
     s.settings.shell_timeout = 30
 
-    output = BashTool(s, ["printf hi"]).call()
+    output = BashTool(s, ["printf hi"]).call_sync()
 
     assert "* exit_code: 0" in output
     assert "hi" in output
@@ -420,7 +440,7 @@ def test_bash_promoted_job_is_killable(tmp_path):
     s.settings.bash_wait_timeout = 0.2
     s.settings.shell_timeout = 5
 
-    BashTool(s, ["sleep 60"]).call()
+    BashTool(s, ["sleep 60"]).call_sync()
     assert "job.1" in s.jobs
     job = s.jobs["job.1"]
     job.kill()
@@ -433,7 +453,7 @@ def test_bash_promotion_disabled_when_wait_timeout_zero(tmp_path):
     s.settings.bash_wait_timeout = 0
     s.settings.shell_timeout = 0.2
 
-    output = BashTool(s, ["sleep 5"]).call()
+    output = BashTool(s, ["sleep 5"]).call_sync()
 
     assert "* exit_code: -1" in output
     assert "timeout" in output
@@ -503,7 +523,7 @@ def test_bash_slow_command_promotes_to_job(tmp_path):
     s.settings.bash_wait_timeout = 0.2
     s.settings.shell_timeout = 5
 
-    output = BashTool(s, ["printf early; sleep 0.5; printf late"]).call()
+    output = BashTool(s, ["printf early; sleep 0.5; printf late"]).call_sync()
 
     assert "* exit_code: -1" in output
     assert "early" in output
@@ -535,7 +555,7 @@ def test_bash_timeout_and_live_output(tmp_path):
     tool = BashTool(s, ["printf live; sleep 5"])
     tool.live_output = lambda stream, text: events.append((stream, text))
 
-    output = tool.call()
+    output = tool.call_sync()
 
     assert "* exit_code: -1" in output
     assert "live" in output
@@ -548,7 +568,7 @@ def test_bash_timeout_applies_after_output_streams_close(tmp_path):
     s = session(tmp_path)
     s.settings.shell_timeout = 0.05
 
-    output = BashTool(s, ["exec 1>&- 2>&-; sleep 1"]).call()
+    output = BashTool(s, ["exec 1>&- 2>&-; sleep 1"]).call_sync()
 
     assert "* exit_code: -1" in output
     assert "timeout" in output

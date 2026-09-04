@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 from typing import Any, ClassVar, cast
 
-from wizolt.base import Json, ToolArgs, ToolError
+from wizolt.base import Json, ToolArgs, ToolError, fail_if_running_loop
 from wizolt.session import BackgroundJob, Session
 from wizolt.tools.base import Tool
 
@@ -206,21 +206,20 @@ class BashTool(Tool):
     def short_args(self) -> list[str]:
         return [self.command()]
 
-    def call(self) -> str:
+    async def call(self) -> str:
         command = self.command()
         bash = shutil.which("bash") or "bash"
         proc = None
         try:
-            proc = subprocess.Popen(
+            # Keep a Popen handle because an auto-promoted command must outlive this event loop;
+            # all potentially blocking pipe I/O below is event-loop driven.
+            proc = subprocess.Popen(  # noqa: ASYNC220
                 [bash, "-lc", command], cwd=self.session.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
             )
             with self._process_lock:
                 self._process = proc
             assert proc.stdout is not None and proc.stderr is not None
-            return self.stream_process(proc)
-        except KeyboardInterrupt:
-            self.kill_and_collect(proc)
-            raise
+            return await self.stream_process(proc)
         finally:
             with self._process_lock:
                 if self._process is proc:
@@ -228,18 +227,53 @@ class BashTool(Tool):
             if self.live_output is not None:
                 self.live_output("", "")
 
-    def stream_process(self, proc: subprocess.Popen[bytes]) -> str:
+    def call_sync(self) -> str:
+        """Synchronous facade for callers that do not already own an event loop."""
+        fail_if_running_loop("use await BashTool.call()")
+        return asyncio.run(self.call())
+
+    async def stream_process(self, proc: subprocess.Popen[bytes]) -> str:
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
         # Per-stream incremental decoders so a multibyte UTF-8 character split across two 4096-byte
         # reads is decoded once it is complete, instead of being mangled into replacement chars.
         self._decoders = {"stdout": codecs.getincrementaldecoder("utf-8")("replace"), "stderr": codecs.getincrementaldecoder("utf-8")("replace")}
-        selector = selectors.DefaultSelector()
         stdout, stderr = proc.stdout, proc.stderr
         assert stdout is not None and stderr is not None
-        selector.register(stdout, selectors.EVENT_READ, "stdout")
-        selector.register(stderr, selectors.EVENT_READ, "stderr")
+        loop = asyncio.get_running_loop()
+        pipes: dict[str, Any] = {"stdout": stdout, "stderr": stderr}
+        changed = asyncio.Event()
+
+        def read_ready(stream: str) -> None:
+            pipe = pipes.get(stream)
+            if pipe is None:
+                return
+            try:
+                data = os.read(pipe.fileno(), 4096)
+            except BlockingIOError:
+                return
+            except OSError:
+                data = b""
+            eof = not data
+            if eof:
+                with contextlib.suppress(Exception):
+                    loop.remove_reader(pipe.fileno())
+                pipes.pop(stream, None)
+                with contextlib.suppress(Exception):
+                    pipe.close()
+            text = self._decoders[stream].decode(data, final=eof)
+            if text:
+                (stdout_parts if stream == "stdout" else stderr_parts).append(text)
+                if self.live_output is not None:
+                    self.live_output(stream, text)
+            changed.set()
+
+        for stream, pipe in pipes.items():
+            os.set_blocking(pipe.fileno(), False)
+            loop.add_reader(pipe.fileno(), read_ready, stream)
+
         timed_out = False
+        promoted = False
         started = time.monotonic()
         shell_deadline = started + self.session.settings.shell_timeout
         wait_budget = self.session.settings.bash_wait_timeout
@@ -249,31 +283,42 @@ class BashTool(Tool):
         # >= shell_timeout (in which case we would kill on the same deadline anyway).
         promote_deadline = started + wait_budget if wait_budget and wait_budget < self.session.settings.shell_timeout else None
         try:
-            while selector.get_map() or proc.poll() is None:
+            while pipes or proc.poll() is None:
                 now = time.monotonic()
                 if promote_deadline is not None and now >= promote_deadline and proc.poll() is None:
-                    # Don't drain here: drain_selector does BLOCKING os.reads, which would wait
-                    # until bash produced more output (or exited) — defeating the whole point of
-                    # promotion. Whatever data the streaming loop already read is the partial
-                    # payload; anything still in-flight becomes the drainer thread's first read.
-                    return self.promote_to_job(proc, selector, stdout_parts, stderr_parts)
+                    # Detach the loop readers without closing their pipes. The persistent job's
+                    # drainer takes over those same descriptors and can outlive this event loop.
+                    pending = {stream: cast(bytes, self._decoders[stream].getstate()[0]) for stream in pipes}
+                    for pipe in pipes.values():
+                        loop.remove_reader(pipe.fileno())
+                    promoted = True
+                    return self.promote_to_job(proc, pipes, stdout_parts, stderr_parts, pending)
                 remaining = shell_deadline - now
                 if remaining <= 0:
                     timed_out = True
                     self.kill_process_group(proc)
-                    proc.wait()
-                    self.drain_selector(selector, stdout_parts, stderr_parts)
-                    break
+                    # The normal loop keeps draining until both pipes reach EOF and poll() reaps
+                    # the killed child. Disable the deadline so this branch runs only once.
+                    shell_deadline = float("inf")
+                    promote_deadline = None
                 wait = min(0.2, remaining, promote_deadline - now if promote_deadline is not None else remaining)
-                if selector.get_map():
-                    for key, _ in selector.select(max(0.0, wait)):
-                        self.read_stream_chunk(selector, key, stdout_parts, stderr_parts)
-                else:
-                    time.sleep(max(0.0, wait))
-            if proc.returncode is None:
-                proc.wait()
+                changed.clear()
+                try:
+                    await asyncio.wait_for(changed.wait(), timeout=max(0.0, wait))
+                except TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            self.kill_process_group(proc)
+            while proc.poll() is None:
+                await asyncio.sleep(0.01)
+            raise
         finally:
-            selector.close()
+            if not promoted:
+                for pipe in pipes.values():
+                    with contextlib.suppress(Exception):
+                        loop.remove_reader(pipe.fileno())
+                    with contextlib.suppress(Exception):
+                        pipe.close()
         stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
         if timed_out:
             stderr += ("\n" if stderr else "") + "timeout"
@@ -283,17 +328,12 @@ class BashTool(Tool):
     def promote_to_job(
         self,
         proc: subprocess.Popen[bytes],
-        selector: selectors.BaseSelector,
+        pipes: dict[str, Any],
         stdout_parts: list[str],
         stderr_parts: list[str],
+        pending: dict[str, bytes],
     ) -> str:
-        """Hand off a still-running Bash proc to the background job registry. Closes the streaming
-        selector, starts a drainer thread that keeps reading proc.stdout/stderr into an in-memory
-        tail buffer (bounded), and returns a partial-output payload for the model."""
-        # Take pipe handles before closing the selector so the drainer can keep reading them.
-        stdout_pipe, stderr_pipe = proc.stdout, proc.stderr
-        with contextlib.suppress(OSError):
-            selector.close()
+        """Hand a live Bash process and its pipes to the persistent background-job registry."""
         self.session.job_counter += 1
         job_id = f"job.{self.session.job_counter}"
         partial_stdout = "".join(stdout_parts)
@@ -310,27 +350,41 @@ class BashTool(Tool):
             stream_lock=buffer_lock,
         )
         self.session.jobs[job_id] = job
-        # Output already consumed by the foreground selector belongs to the same job history as
-        # bytes drained after promotion. Seed it before the drainer threads start so Ctrl-O and
+        # Output already consumed by the event-loop readers belongs to the same job history as
+        # bytes drained after promotion. Seed it before the drainer thread starts so Ctrl-O and
         # later Job calls do not begin halfway through the command.
         job.append_stream(partial_stdout)
         job.append_stream(partial_stderr)
 
-        def drain_pipe(pipe: Any) -> None:
-            if pipe is None:
-                return
+        def drain_pipes() -> None:
+            selector = selectors.DefaultSelector()
+            decoders = {stream: codecs.getincrementaldecoder("utf-8")("replace") for stream in pipes}
             try:
-                # read1 returns whatever is immediately available (line-buffered producers ship one
-                # line per call), so a slow trickle of output lands in the tail buffer promptly
-                # instead of blocking until a full 4KB is buffered.
-                for chunk in iter(lambda: pipe.read1(4096), b""):
-                    text = chunk.decode("utf-8", errors="replace")
-                    job.append_stream(text)
-            except (OSError, ValueError):
-                return
+                for stream, pipe in pipes.items():
+                    selector.register(pipe, selectors.EVENT_READ, stream)
+                while selector.get_map():
+                    for key, _ in selector.select():
+                        try:
+                            data = os.read(cast(Any, key.fileobj).fileno(), 4096)
+                        except OSError:
+                            data = b""
+                        eof = not data
+                        stream = cast(str, key.data)
+                        initial = pending.pop(stream, b"")
+                        text = decoders[stream].decode(initial + data, final=eof)
+                        if text:
+                            job.append_stream(text)
+                        if eof:
+                            with contextlib.suppress(Exception):
+                                selector.unregister(key.fileobj)
+                            with contextlib.suppress(Exception):
+                                cast(Any, key.fileobj).close()
+            finally:
+                selector.close()
 
-        threading.Thread(target=drain_pipe, args=(stdout_pipe,), daemon=True).start()
-        threading.Thread(target=drain_pipe, args=(stderr_pipe,), daemon=True).start()
+        # A promoted process intentionally outlives the turn and, for call_sync(), the event loop.
+        # One daemon owns both pipes; ordinary foreground Bash execution creates no worker thread.
+        threading.Thread(target=drain_pipes, daemon=True).start()
         # Leads with status, not wait: this note is read right after backgrounding handed control
         # back, and waiting is what gives it away again. Getting on with other work is the point.
         note = (
@@ -340,37 +394,6 @@ class BashTool(Tool):
         partial_stderr = partial_stderr + ("\n" if partial_stderr else "") + note
         return self.process_result("BashToolResult", -1, partial_stdout, partial_stderr)
 
-    def drain_selector(self, selector: selectors.BaseSelector, stdout_parts: list[str], stderr_parts: list[str]) -> None:
-        for key in list(selector.get_map().values()):
-            while self.read_stream_chunk(selector, key, stdout_parts, stderr_parts):
-                pass
-
-    def read_stream_chunk(
-        self,
-        selector: selectors.BaseSelector,
-        key: selectors.SelectorKey,
-        stdout_parts: list[str],
-        stderr_parts: list[str],
-    ) -> bool:
-        try:
-            data = os.read(cast(Any, key.fileobj).fileno(), 4096)
-        except OSError:
-            data = b""
-        eof = not data
-        if eof:
-            with contextlib.suppress(Exception):
-                selector.unregister(key.fileobj)
-            with contextlib.suppress(Exception):
-                cast(Any, key.fileobj).close()
-        # final=True on EOF flushes any bytes still buffered in the decoder (e.g. a truncated
-        # trailing character) so they are not silently dropped.
-        text = self._decoders[key.data].decode(data, final=eof)
-        if text:
-            (stdout_parts if key.data == "stdout" else stderr_parts).append(text)
-            if self.live_output is not None:
-                self.live_output(str(key.data), text)
-        return not eof
-
     @staticmethod
     def kill_process_group(proc: subprocess.Popen[bytes]) -> None:
         try:
@@ -378,18 +401,6 @@ class BashTool(Tool):
         except OSError:
             with contextlib.suppress(OSError):
                 proc.kill()
-
-    @classmethod
-    def kill_and_collect(cls, proc: subprocess.Popen[bytes] | None) -> tuple[str, str]:
-        if proc is None:
-            return "", ""
-        cls.kill_process_group(proc)
-        stdout, stderr = proc.communicate()
-
-        def decode(value: bytes | str | None) -> str:
-            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
-
-        return decode(stdout), decode(stderr)
 
 
 class JobTool(Tool):
@@ -487,6 +498,7 @@ class JobTool(Tool):
 
     def call_sync(self) -> str:
         """Synchronous facade for callers that do not already own an event loop."""
+        fail_if_running_loop("use await JobTool.call()")
         return asyncio.run(self.call())
 
     def _start(self, payload: Json) -> str:

@@ -385,7 +385,7 @@ class ToolRunner:
             return await tool.call()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):
-                return await self._run_in_executor(tool.call, tool)
+                return await tool.call()
         if isinstance(tool, JobTool):
             with self._active_job.track(tool):
                 # Waiting is native asyncio. The process handle itself remains Popen-backed so a

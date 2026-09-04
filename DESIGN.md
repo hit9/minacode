@@ -222,7 +222,9 @@ while a request is in flight and lets one cancellation reach all of it.
 - Threads remain only at genuinely synchronous boundaries — local file reads, a ToolScript body,
   and the bounded termination of a persistent background `Popen` handle — reached through the
   managed executor or `asyncio.to_thread`. Search subprocesses and `Job` waits are native async
-  operations. A thread never gets an exception injected into it and never owns an async client.
+  operations; foreground Bash pipes are event-loop readers. A promoted Bash process moves both
+  pipes to one daemon drainer because it can outlive the loop that launched it. A thread never gets
+  an exception injected into it and never owns an async client.
 
 **Cancellation is a request, and quiescence is the answer.** The turn is one task; `Agent.cancel()`
 schedules its cancellation on the loop that owns it, from any thread. Cancelling the task that
