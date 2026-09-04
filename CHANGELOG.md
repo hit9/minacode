@@ -16,6 +16,27 @@
 
 ### Changed
 
+- The prompt stays live and responsive for the whole turn. The TUI, the running turn, model
+  requests, MCP, compaction, and vision now share one event loop instead of the TUI having a thread
+  of its own, so input, redraws, the status line, and the queue keep working while a request, an
+  automatic compaction, a slow MCP server, or a long `Bash` call is in flight. `/compact` and
+  queued slash commands run on that loop too, and no longer block the terminal while they reach the
+  provider.
+- Ctrl-C reports `cancelled` only once the turn has actually let go. The status stays on
+  `cancelling` while a tool that cannot be interrupted finishes unwinding — a `Bash` process being
+  reaped, an MCP client closing, a `ToolScript` worker returning — so a cancelled turn is never
+  still writing files or talking to a server behind the next prompt. `/resend` and automatic model
+  retries stay separate from cancelling the turn.
+- Answers promoted into scrollback and the tool output that follows them are ordered by an awaited
+  queue, so a promoted response can no longer land under the batch it introduced.
+- Exiting closes what the session opened, in order, before the process ends: the active turn is
+  cancelled and awaited, background work is drained, and the model client and MCP are closed. A
+  Ctrl-D during a model request or during MCP discovery now exits cleanly instead of leaving
+  interpreter warnings behind.
+- MCP no longer runs on an event loop thread of its own. Discovery, connect/disconnect, tool and
+  resource calls, and the `/mcp` manager all run on the session's loop, so a cancelled or timed-out
+  MCP call closes its client before it returns, and one unreachable server no longer interferes
+  with discovering the healthy ones.
 - **Breaking.** `Read`, `Search`, and `InspectCode` now return numbered source views (`view.N`)
   instead of `line:hash` anchors, and `Edit` targets an existing file by naming a source view plus
   ordinary one-based line numbers. The whole selected range is validated against the file before

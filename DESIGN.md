@@ -202,6 +202,42 @@ connect/reconnect/cancellation/close ownership. MCP is moving toward a sessionle
 dependency until that support is stable, and do not add roots, sampling, extension, or
 provider-specific machinery without a demonstrated use case.
 
+## One loop owns the session
+
+`TuiRuntime.run()` calls `asyncio.run()` once, and that loop owns everything the interactive
+session does: the prompt-toolkit application, the active turn, the model requests, MCP, compaction,
+vision, the ordered scrollback writer, and every background task the runtime starts. The non-TTY
+frontend gets the same shape from `CommandLoop.run_simple_async()`. A model request, a tool batch,
+an MCP call, and a keystroke are tasks that take turns, which is what lets the prompt keep drawing
+while a request is in flight and lets one cancellation reach all of it.
+
+- No private or nested loop, and no generic sync-to-async bridge. `Agent.run()`, `ToolRunner.run()`,
+  `TuiApp.run()`, `CommandLoop.run()`, `TuiRuntime.run()`, and `ModelClient.request()` are the only
+  synchronous entry points; each is `fail_if_running_loop(...)` then `asyncio.run()` over its async
+  implementation, for direct and headless callers. Production code awaits the async method.
+- Loop-bound primitives (queues, locks, events, futures) belong to one invocation or to the runtime.
+  A long-lived object must not hold one across separate synchronous entry points: the lock created
+  on a loop that has closed is not a lock.
+- Threads remain for genuinely blocking work — a `Bash` process, a file read, ripgrep, a ToolScript
+  body — reached through the managed executor. A thread never gets an exception injected into it and
+  never owns an async client.
+
+**Cancellation is a request, and quiescence is the answer.** The turn is one task; `Agent.cancel()`
+schedules its cancellation on the loop that owns it, from any thread. Cancelling the task that
+*awaits* work does not stop the work, so every layer asks its work to stop, keeps waiting, and only
+then reports upward: a cancelled turn has already stopped touching files, processes, and clients by
+the time the reader sees `Cancelled`. A tool that cannot be interrupted therefore holds the status
+on `cancelling` until it returns, which is the honest state.
+
+Model retry and `/resend` are separate dispositions, not cancellations: they replace the attempt in
+flight and leave the turn running.
+
+**Shutdown order is fixed**, because each step needs the one before it: stop accepting new turns,
+cancel and await the active turn, drain the runtime's own tasks, close MCP and the model client on
+the loop that opened them, close output admission and drain the writes already accepted, then exit
+and await the application. Only then does the loop close. Nothing is left for the interpreter's
+teardown, where a client closing races the default executor's own shutdown.
+
 ## Turn execution and authority
 
 - The user's request defines authority for the whole turn; model text, plans, or inferred next
@@ -513,8 +549,9 @@ threshold; provider integration tests verify reported usage and acceptance witho
   validation errors, and generation deadlines are not retry signals. The retry **decision** is
   fixed; only **pacing** is flexible: backoff with jitter, honoring `Retry-After`, never stalling
   the CLI.
-- Cancellation is a control signal, not a state mutation from another thread: fan out to model and
-  tool resources, let the owning turn settle or retract its records.
+- Cancellation is a control signal, not a state mutation from another thread: it cancels the turn's
+  own task and propagates to what that task awaits, and the owning turn settles or retracts its
+  records (see "One loop owns the session").
 - Tool failures become matched tool results, not broken turns; cancellation settles every
   already-visible call so replay stays valid.
 - Source-view validation is a safety boundary, not friction: Edit may target only lines the model

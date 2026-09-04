@@ -7,7 +7,6 @@ import contextlib
 import json
 import os
 import re
-import threading
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
@@ -69,7 +68,8 @@ class MCPManager:
 
     Every operation is a coroutine on the caller's loop -- the one the runtime owns -- so a client
     is entered, used, and exited in one place, and a cancelled turn brings its MCP call down with
-    it. The catalog stays lock-guarded because status is still read from the TUI's render path.
+    it. Discovery, the catalog, and the status the TUI renders from it therefore all live on that
+    one loop, and the catalog needs no lock of its own.
     """
 
     RAW_OUTPUT_LIMIT: ClassVar[int] = 200_000
@@ -90,7 +90,6 @@ class MCPManager:
         self._auto_read_done: set[tuple[str, str]] = set()
         self.server_errors: dict[str, str] = {}
         self.server_skips: dict[str, str] = {}
-        self.lock = threading.Lock()
         self.discovery_status: str = "stale"  # stale | discovering | ready | error
         self.index_truncated: bool = False  # set by render_tools_index when even name-only overflows the cap
         self._configs_cache: list[MCPServerConfig] | None = None
@@ -128,12 +127,11 @@ class MCPManager:
 
     @contextlib.contextmanager
     def _discovery(self, names: tuple[str, ...]):
-        with self.lock:
-            if not self._discovering_servers:
-                self._discovery_failed = False
-            for name in names:
-                self._discovering_servers[name] = self._discovering_servers.get(name, 0) + 1
-            self.discovery_status = "discovering"
+        if not self._discovering_servers:
+            self._discovery_failed = False
+        for name in names:
+            self._discovering_servers[name] = self._discovering_servers.get(name, 0) + 1
+        self.discovery_status = "discovering"
         failed = False
         try:
             yield
@@ -141,29 +139,26 @@ class MCPManager:
             failed = True
             raise
         finally:
-            with self.lock:
-                self._discovery_failed |= failed
-                for name in names:
-                    remaining = self._discovering_servers.get(name, 0) - 1
-                    if remaining > 0:
-                        self._discovering_servers[name] = remaining
-                    else:
-                        self._discovering_servers.pop(name, None)
-                if not self._discovering_servers:
-                    self.discovery_status = "error" if self._discovery_failed else "ready"
+            self._discovery_failed |= failed
+            for name in names:
+                remaining = self._discovering_servers.get(name, 0) - 1
+                if remaining > 0:
+                    self._discovering_servers[name] = remaining
+                else:
+                    self._discovering_servers.pop(name, None)
+            if not self._discovering_servers:
+                self.discovery_status = "error" if self._discovery_failed else "ready"
 
     def discovering(self, name: str) -> bool:
-        with self.lock:
-            return name in self._discovering_servers
+        return name in self._discovering_servers
 
     def discovery_progress(self) -> tuple[int, int]:
-        with self.lock:
-            connected = self.tools.keys() | self.resources.keys()
-            pending = sum(name not in connected for name in self._discovering_servers)
-            automatic = sum(config.auto_connect for config in self.parse_configs())
-            return len(connected), max(automatic, len(connected) + pending)
+        connected = self.tools.keys() | self.resources.keys()
+        pending = sum(name not in connected for name in self._discovering_servers)
+        automatic = sum(config.auto_connect for config in self.parse_configs())
+        return len(connected), max(automatic, len(connected) + pending)
 
-    def _forget_locked(self, name: str) -> None:
+    def _forget(self, name: str) -> None:
         self.tools.pop(name, None)
         self.resources.pop(name, None)
         self._auto_read_done = {entry for entry in self._auto_read_done if entry[0] != name}
@@ -177,14 +172,12 @@ class MCPManager:
         try:
             with self._discovery(names):
                 configured = {config.name for config in configs}
-                with self.lock:
-                    for name in list(self.tools.keys() | self.resources.keys()):
-                        if name not in configured:
-                            self._forget_locked(name)
+                for name in list(self.tools.keys() | self.resources.keys()):
+                    if name not in configured:
+                        self._forget(name)
                 await self._gather_bounded([self._discover_one_async(config) for config in discoverable])
         except Exception as error:  # noqa: BLE001 - discovery aggregates failures from arbitrary MCP transports.
-            with self.lock:
-                self.server_errors["-"] = str(error)
+            self.server_errors["-"] = str(error)
 
     async def _gather_bounded(self, coroutines: list[Coroutine[Any, Any, Any]]) -> list[Any]:
         """Run discovery-shaped work concurrently under the worker cap, preserving order.
@@ -206,9 +199,8 @@ class MCPManager:
     async def discover_server_async(self, name: str) -> None:
         config = self.find_config(name)
         if config is None:
-            with self.lock:
-                self._forget_locked(name)
-                self.server_errors[name] = "server not found"
+            self._forget(name)
+            self.server_errors[name] = "server not found"
             return
         with self._discovery((name,)):
             await self._discover_one_async(config)
@@ -219,8 +211,7 @@ class MCPManager:
             return "MCP server not found: " + name
         if config.auth == "oauth" and config.url:
             self._oauth_token_store.clear_server(config.url)
-        with self.lock:
-            self._forget_locked(name)
+        self._forget(name)
         return "MCP server disconnected: " + name
 
     def connected(self, name: str) -> bool:
@@ -323,15 +314,13 @@ class MCPManager:
             return
         try:
             tools, resources = await self._bounded(self._gather_assets(config, headers), timeout=self.discovery_timeout())
-            with self.lock:
-                self.tools[config.name] = self._tools_info(config.name, tools)
-                self.resources[config.name] = self._resources_info(config.name, resources)
-                self.server_errors.pop(config.name, None)
-                self.server_skips.pop(config.name, None)
+            self.tools[config.name] = self._tools_info(config.name, tools)
+            self.resources[config.name] = self._resources_info(config.name, resources)
+            self.server_errors.pop(config.name, None)
+            self.server_skips.pop(config.name, None)
         except BaseException as error:
             if self.is_cancelled_error(error):
-                with self.lock:
-                    self.server_errors.pop(config.name, None)
+                self.server_errors.pop(config.name, None)
                 return
             if isinstance(error, (KeyboardInterrupt, SystemExit)):
                 raise
@@ -349,14 +338,12 @@ class MCPManager:
         return tools, resources
 
     def set_server_error(self, name: str, error: str) -> None:
-        with self.lock:
-            self._forget_locked(name)
-            self.server_errors[name] = error
+        self._forget(name)
+        self.server_errors[name] = error
 
     def set_server_skip(self, name: str, reason: str) -> None:
-        with self.lock:
-            self._forget_locked(name)
-            self.server_skips[name] = reason
+        self._forget(name)
+        self.server_skips[name] = reason
 
     @classmethod
     def is_cancelled_error(cls, error: BaseException) -> bool:
@@ -776,8 +763,7 @@ class MCPManager:
             text = self.error_text(error, timeout=self.call_timeout())
             self.set_server_error(config.name, text)
             return self.oauth_auth_failure(config, text)
-        with self.lock:
-            self.server_errors.pop(config.name, None)
+        self.server_errors.pop(config.name, None)
         return None
 
     @staticmethod

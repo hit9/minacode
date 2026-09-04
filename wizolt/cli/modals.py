@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -129,20 +128,17 @@ async def mcp_manager(loop: CommandLoop) -> None:
     state = ChoiceViewState(tuple(config.name for config in configs), {}, set())
     transitions: dict[str, str] = {}
     errors: dict[str, str] = {}
-    state_lock = threading.Lock()
-    modal_open = threading.Event()
-    modal_open.set()
+    # No locks: the rows, the toggles that change them, and the render that reads them all run on
+    # the one loop this modal is awaited on.
+    modal_open = True
     toggles: list[asyncio.Task] = []
 
     def server_labels() -> dict[str, str]:
-        with state_lock:
-            changing = dict(transitions)
-            failed = dict(errors)
         server_rows = []
         for config in configs:
-            if transition := changing.get(config.name):
+            if transition := transitions.get(config.name):
                 status = mcp.STATUS_MARKER + " " + transition
-            elif config.name in failed:
+            elif config.name in errors:
                 status = mcp.STATUS_MARKER + " error"
             elif issue := mcp.server_issue(config.name):
                 status = mcp.STATUS_MARKER + " " + issue[0]
@@ -158,9 +154,8 @@ async def mcp_manager(loop: CommandLoop) -> None:
         return {name: f"{name:<{name_width}}  {status:<{status_width}}  {mode:<6}  {count:>3} tools" for name, status, mode, count in server_rows}
 
     def preview(name: str) -> str:
-        with state_lock:
-            if message := errors.get(name):
-                return message
+        if message := errors.get(name):
+            return message
         if issue := mcp.server_issue(name):
             return issue[1]
         return ""
@@ -178,14 +173,12 @@ async def mcp_manager(loop: CommandLoop) -> None:
         except Exception as error:  # noqa: BLE001 - keep background MCP failures visible in the selector.
             result = f"MCP server error: {name}: {error}"
 
-        succeeded = mcp.connected(name) == connect
-        with state_lock:
-            transitions.pop(name, None)
-            if succeeded:
-                errors.pop(name, None)
-            else:
-                errors[name] = result
-        if modal_open.is_set():
+        transitions.pop(name, None)
+        if mcp.connected(name) == connect:
+            errors.pop(name, None)
+        else:
+            errors[name] = result
+        if modal_open:
             tui.invalidate()
         else:
             loop.emit_background(result)
@@ -194,19 +187,18 @@ async def mcp_manager(loop: CommandLoop) -> None:
         result = state.handle_key(key, data)
         if not isinstance(result, str):
             return result
-        with state_lock:
-            if result in transitions:
-                return TUI_MODAL_PENDING
-            connect = not mcp.connected(result)
-            errors.pop(result, None)
-            transitions[result] = "connecting" if connect else "disconnecting"
+        if result in transitions:
+            return TUI_MODAL_PENDING
+        connect = not mcp.connected(result)
+        errors.pop(result, None)
+        transitions[result] = "connecting" if connect else "disconnecting"
         toggles.append(asyncio.ensure_future(toggle(result, connect)))
         return TUI_MODAL_PENDING
 
     try:
         await tui.show_modal_async(fragments, handle_key)
     finally:
-        modal_open.clear()
+        modal_open = False
         outstanding = [task for task in toggles if not task.done()]
         if outstanding:
             # Awaited, never abandoned: a toggle still opening a FastMCP client when the modal
