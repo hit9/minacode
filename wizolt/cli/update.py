@@ -61,7 +61,10 @@ class UpdateChecker:
             self.session.update.error = Text.clean(str(error))
         finally:
             self.session.update.checking = False
-            await run_blocking(self._save)
+            cache_path = self.cache_path
+            latest = self.session.update.latest
+            checked_at = time.time()
+            await run_blocking(lambda: UpdateChecker._save(cache_path, latest, checked_at))
 
     def _load(self) -> tuple[float, str]:
         with contextlib.suppress(Exception):
@@ -72,11 +75,12 @@ class UpdateChecker:
                 return float(data.get("checked_at") or 0), latest
         return 0.0, ""
 
-    def _save(self) -> None:
+    @staticmethod
+    def _save(cache_path: str, latest: str, checked_at: float) -> None:
         with contextlib.suppress(Exception):
-            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
-            with open(self.cache_path, "w", encoding="utf-8") as file:
-                json.dump({"checked_at": time.time(), "latest": self.session.update.latest}, file)
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as file:
+                json.dump({"checked_at": checked_at, "latest": latest}, file)
 
     @staticmethod
     async def fetch_latest() -> str:

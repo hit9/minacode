@@ -243,6 +243,27 @@ async def test_update_check_records_a_timeout_as_a_status_error(tmp_path, monkey
     assert s.update.checking is False
 
 
+async def test_update_cache_write_uses_state_frozen_before_worker_admission(tmp_path, monkeypatch):
+    s = data_session(tmp_path)
+    saved = []
+
+    async def fetch_latest():
+        return "9.8.7"
+
+    async def delayed_worker(invoke):
+        s.update.latest = "1.0.0"
+        return invoke()
+
+    monkeypatch.setattr(UpdateChecker, "fetch_latest", staticmethod(fetch_latest))
+    monkeypatch.setattr(UpdateChecker, "_save", staticmethod(lambda path, latest, checked_at: saved.append((path, latest, checked_at))))
+    monkeypatch.setattr(update_module, "run_blocking", delayed_worker)
+
+    await UpdateChecker(s).check()
+
+    assert saved[0][1] == "9.8.7"
+    assert s.update.latest == "1.0.0"
+
+
 async def test_cancelling_the_update_check_closes_the_client(tmp_path, monkeypatch):
     """The request is the runtime's, so cancelling it must close the pool rather than leave a
     socket to a finalizer -- which is the whole reason the client is used as a context manager."""

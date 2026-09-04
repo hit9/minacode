@@ -1,6 +1,7 @@
 """loop display (split from tests/test_loop_commands.py)."""
 from types import SimpleNamespace
 
+import pytest
 from agent_harness import call, queue, session
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -17,6 +18,17 @@ from wizolt.engine import Agent
 from wizolt.render import UiPrinter
 from wizolt.session import Session
 from wizolt.tui import TuiApp
+
+
+async def test_run_refuses_to_nest_the_cli_runtime(tmp_path):
+    loop = CommandLoop(
+        Agent(session(tmp_path), output_fn=lambda _text: None),
+        input_fn=lambda _prompt: "",
+        output_fn=lambda _text: None,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot be called from a running event loop"):
+        loop.run()
 
 
 async def test_ps_command_uses_markdown_renderer(tmp_path):

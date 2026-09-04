@@ -214,7 +214,8 @@ cancellation reach all of it.
 - No private or nested loop, no generic sync-to-async bridge, and no lower-level synchronous
   facades. `CommandLoop.run()` is the sole production runtime boundary; code that already owns a
   loop awaits `Agent.run()`, `ToolRunner.run()`, `ModelClient.request()`, `TuiRuntime.run()`, or
-  `TuiApp.run()` directly.
+  `TuiApp.run()` directly. The standalone `wizolt update` command deliberately uses a synchronous
+  HTTP client before any session runtime exists; the in-session update check uses the async client.
 - Loop-bound primitives (queues, locks, events, futures) belong to one invocation or to the runtime.
   A long-lived object must not hold one across separate synchronous entry points: the lock created
   on a loop that has closed is not a lock.
