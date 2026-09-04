@@ -31,6 +31,7 @@ from wizolt.base import (
     LogRole,
     ModelUsage,
     Text,
+    oneline,
     run_blocking,
 )
 from wizolt.cli.modals import (
@@ -543,6 +544,7 @@ class SessionPreviewCache:
     def __init__(self, tui: Any | None):
         self._tui = tui
         self._summaries: dict[str, list[tuple[str, str]]] = {}
+        self._errors: dict[str, str] = {}
         self._inflight: dict[str, asyncio.Task[None]] = {}
         self._last_uid: str | None = None
 
@@ -552,8 +554,21 @@ class SessionPreviewCache:
         if entry.uid != self._last_uid:
             self._last_uid = entry.uid
             if entry.uid not in self._summaries and entry.uid not in self._inflight:
-                self._inflight[entry.uid] = asyncio.create_task(self._load(entry.path, entry.uid))
+                task = asyncio.create_task(self._load(entry.path, entry.uid))
+                self._inflight[entry.uid] = task
+                task.add_done_callback(lambda done, uid=entry.uid: self._task_done(uid, done))
+        if error := self._errors.get(entry.uid):
+            return [("class:choice.disabled", "  Preview unavailable: " + error + "\n")]
         return session_preview(entry, summary=self._summaries.get(entry.uid))
+
+    def _task_done(self, uid: str, task: asyncio.Task[None]) -> None:
+        """Observe a completed load and retain a compact failure for the next preview frame."""
+        if task.cancelled():
+            return
+        if error := task.exception():
+            self._errors[uid] = oneline(Text.clean(str(error)), 160)
+            if self._tui is not None:
+                self._tui.invalidate()
 
     def cached(self, uid: str) -> bool:
         return uid in self._summaries

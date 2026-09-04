@@ -439,3 +439,21 @@ async def test_session_preview_cache_settle_cancels_outstanding_loads(tmp_path, 
 
     assert not cache.cached(entry.uid)
     assert not cache._inflight  # nothing left running after the modal closed
+
+
+async def test_session_preview_cache_uses_its_task_owner_for_load_failures(tmp_path, monkeypatch):
+    target = await stored_session(tmp_path, "broken", name="broken")
+    await target.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(target.config.data_dir, target.cwd)[0]
+    def fail(_cls, _path, limit=5):
+        del limit
+        raise OSError("gone during preview")
+
+    monkeypatch.setattr(SessionSnapshotStore, "tail_summary", classmethod(fail))
+    cache = commands_mod.SessionPreviewCache(None)
+
+    cache.render(entry)
+    await cache.idle()
+    await asyncio.sleep(0)  # run the cache owner's done callback
+
+    assert "Preview unavailable: gone during preview" in "".join(text for _, text in cache.render(entry))
