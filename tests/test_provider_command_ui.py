@@ -114,7 +114,7 @@ async def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_pa
 
     monkeypatch.setattr(commands_mod, "select_choice", async_callable(select))
     discovered = []
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, provider: discovered.append(provider.model) or ())
+    monkeypatch.setattr(commands_mod, "remote_models", async_callable(lambda _loop, provider: discovered.append(provider.model) or ()))
 
     result = await provider(command_loop, "")
 
@@ -429,7 +429,7 @@ async def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reason
         return value
 
     monkeypatch.setattr(commands_mod, "select_choice", async_callable(select))
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _provider: ())
+    monkeypatch.setattr(commands_mod, "remote_models", async_callable(lambda _loop, _provider: ()))
 
     result = await model(command_loop, "")
 
@@ -465,16 +465,22 @@ async def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
     calls = []
 
     class Models:
-        def list(self):
+        async def list(self):
             return SimpleNamespace(data=[{"id": "zeta"}, SimpleNamespace(id="alpha"), {"id": "zeta"}, {"missing": True}, None])
+
+    class Client:
+        models = Models()
+
+        async def close(self):
+            pass
 
     def openai(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(models=Models())
+        return Client()
 
-    monkeypatch.setattr(openai_module, "OpenAI", openai)
+    monkeypatch.setattr(openai_module, "AsyncOpenAI", openai)
 
-    assert remote_models(command_loop, provider) == ("alpha", "zeta")
+    assert await remote_models(command_loop, provider) == ("alpha", "zeta")
     assert calls[0]["api_key"] == "secret"
     assert calls[0]["max_retries"] == 0
     assert calls[0]["default_headers"]["x-tenant"] == "team-a"
@@ -484,13 +490,13 @@ async def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path)
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
 
-    assert remote_models(command_loop, provider) == ()
+    assert await remote_models(command_loop, provider) == ()
 
     provider.url = "https://example.com/v1"
     provider.key = "secret"
-    monkeypatch.setattr(openai_module, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(openai_module, "AsyncOpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
 
-    assert remote_models(command_loop, provider) == ()
+    assert await remote_models(command_loop, provider) == ()
 
 
 async def test_effort_is_an_alias_for_reason(tmp_path):
@@ -531,7 +537,7 @@ async def test_model_selection_groups_configured_and_remote_choices_like_master(
         return "remote-model"
 
     monkeypatch.setattr(commands_mod, "select_choice", async_callable(select))
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _provider: ("remote-model",))
+    monkeypatch.setattr(commands_mod, "remote_models", async_callable(lambda _loop, _provider: ("remote-model",)))
 
     assert "Set provider.model = remote-model" in await model(command_loop, "")
     assert shown[0] == (
@@ -556,7 +562,7 @@ async def test_model_discovery_shows_loading_state_for_selected_provider(tmp_pat
     transitions = []
     command_loop.tui = TuiApp()
     command_loop.tui.set_dispatching = lambda prompt="": transitions.append(prompt)
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, selected: ("remote-model",))
+    monkeypatch.setattr(commands_mod, "remote_models", async_callable(lambda _loop, selected: ("remote-model",)))
     selected = iter(["remote-model", "auto", "off"])
     monkeypatch.setattr(commands_mod, "select_choice", async_callable(lambda *_args, **_kwargs: next(selected)))
 

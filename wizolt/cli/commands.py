@@ -827,7 +827,7 @@ async def model(loop: CommandLoop, args: str) -> str:
     if show_loading and tui is not None:
         tui.set_dispatching("Loading models...")
     try:
-        remote = tuple(model for model in remote_models(loop, provider) if model not in configured)
+        remote = tuple(model for model in await remote_models(loop, provider) if model not in configured)
     finally:
         if show_loading and tui is not None:
             tui.set_dispatching()
@@ -856,22 +856,26 @@ async def model(loop: CommandLoop, args: str) -> str:
         return str(result)
 
 
-def remote_models(loop: CommandLoop, provider: ProviderConfig) -> tuple[str, ...]:
+async def remote_models(loop: CommandLoop, provider: ProviderConfig) -> tuple[str, ...]:
     if not provider.url or not provider.key:
         return ()
     try:
         # lazy import: /model discovery is the only OpenAI use here, so the SDK stays off the startup path
-        from openai import OpenAI
+        from openai import AsyncOpenAI
 
         from wizolt.model import ModelClient
 
-        page = OpenAI(
+        client = AsyncOpenAI(
             api_key=provider.key,
             base_url=loop.session.policy.resolve(provider).base_url,
             timeout=min(provider.timeout, 10),
             max_retries=0,
             default_headers=ModelClient.request_headers(provider),
-        ).models.list()
+        )
+        try:
+            page = await client.models.list()
+        finally:
+            await client.close()
     except Exception:  # noqa: BLE001 - remote model discovery is optional and provider SDKs expose varied failures.
         return ()
     names = []

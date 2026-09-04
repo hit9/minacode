@@ -32,6 +32,8 @@
   retries stay separate from cancelling the turn.
 - Answers promoted into scrollback and the tool output that follows them are ordered by an awaited
   queue, so a promoted response can no longer land under the batch it introduced.
+- `/model` and `/worker model` now discover remote models through the async provider client, so a
+  slow model-list endpoint no longer freezes input or redraws.
 - Exiting closes what the session opened, in order, before the process ends: the active turn is
   cancelled and awaited, background work is drained, and the model client and MCP are closed. A
   Ctrl-D during a model request or during MCP discovery now exits cleanly instead of leaving

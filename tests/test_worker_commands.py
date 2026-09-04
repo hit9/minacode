@@ -554,7 +554,10 @@ async def test_worker_model_discovery_shows_loading_state(tmp_path, monkeypatch)
     transitions = []
     loop.tui = TuiApp()
     loop.tui.set_dispatching = lambda prompt="": transitions.append(prompt)
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _provider: ("remote-model",))
+    async def remote_models(_loop, _provider):
+        return ("remote-model",)
+
+    monkeypatch.setattr(commands_mod, "remote_models", remote_models)
 
     # Non-interactive select_choice yields nothing, but remote discovery still runs (and
     # still shows the loading note while it does): the entry has credentials.

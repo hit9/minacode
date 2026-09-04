@@ -191,7 +191,7 @@ async def test_worker_model_picker_sets_the_override_without_the_model_chain(tmp
         return next(picks)
 
     monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, entry: discovered.append(entry.model) or ("m-remote",))
+    monkeypatch.setattr(commands_mod, "remote_models", async_callable(lambda _loop, entry: discovered.append(entry.model) or ("m-remote",)))
 
     result = await worker_command(command_loop, "model")
     assert titles == ["Worker model"]
@@ -282,7 +282,7 @@ async def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path
         return next(picks)
 
     monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, entry: discovered.append(entry.model) or ("remote-mini",))
+    monkeypatch.setattr(commands_mod, "remote_models", async_callable(lambda _loop, entry: discovered.append(entry.model) or ("remote-mini",)))
 
     result = await worker_command(command_loop, "provider")
 
@@ -308,7 +308,7 @@ async def test_worker_provider_cascade_aborts_at_model_stage_keeping_earlier_sta
     command_loop.session.config.worker_reasoning = "high"
     picks = iter(["fast", SELECTION_BACK])
     monkeypatch.setattr(worker_mod, "select_choice", async_callable(lambda *_args, **_kwargs: next(picks)))
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _entry: ())
+    monkeypatch.setattr(commands_mod, "remote_models", async_callable(lambda _loop, _entry: ()))
 
     result = await worker_command(command_loop, "provider")
 
@@ -327,7 +327,7 @@ async def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_
     command_loop.session.config.worker_reasoning = "high"
     picks = iter(["fast", "fast-model", None])  # None = the picker was dismissed
     monkeypatch.setattr(worker_mod, "select_choice", async_callable(lambda *_args, **_kwargs: next(picks)))
-    monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _entry: ())
+    monkeypatch.setattr(commands_mod, "remote_models", async_callable(lambda _loop, _entry: ()))
 
     result = await worker_command(command_loop, "provider")
 

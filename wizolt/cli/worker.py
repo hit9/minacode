@@ -196,7 +196,7 @@ class WorkerFlow:
         if show_loading and tui is not None:
             tui.set_dispatching("Loading models...")
         try:
-            remote = tuple(model for model in commands.remote_models(self.loop, entry) if model not in configured)
+            remote = tuple(model for model in await commands.remote_models(self.loop, entry) if model not in configured)
         finally:
             if show_loading and tui is not None:
                 tui.set_dispatching()
