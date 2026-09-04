@@ -207,7 +207,7 @@ async def mcp_manager(loop: CommandLoop) -> None:
             await asyncio.gather(*outstanding, return_exceptions=True)
 
 
-def select_choice(
+async def select_choice(
     loop: CommandLoop,
     title: str,
     choices: tuple[str, ...],
@@ -224,13 +224,13 @@ def select_choice(
     if len(enabled) == 1:
         return enabled[0]
     try:
-        return choice_application(loop, title, choices, labels, current, set(disabled), preview_fn=preview_fn)
+        return await choice_application(loop, title, choices, labels, current, set(disabled), preview_fn=preview_fn)
     except (EOFError, KeyboardInterrupt):
         loop.emit_turn("Cancelled")
         return None
 
 
-def choice_application(
+async def choice_application(
     loop: CommandLoop,
     title: str,
     choices: tuple[str, ...],
@@ -248,7 +248,7 @@ def choice_application(
     state.selected = options.index(current) if current in options else 0
     if loop.tui is None:
         return None
-    result = loop.tui.show_modal_sync(lambda: state.fragments(title, preview_fn, label_fn), state.handle_key, exclusive=exclusive)
+    result = await loop.tui.show_modal(lambda: state.fragments(title, preview_fn, label_fn), state.handle_key, exclusive=exclusive)
     if isinstance(result, KeyboardInterrupt):
         raise result
     return result
@@ -419,7 +419,7 @@ def tool_output_viewer(loop: CommandLoop) -> None:
         if picked is None:
             return
         # Esc, q, or Ctrl-C in a detail goes back to the list; Ctrl-O closes the whole browser.
-        if approval_text_viewer(loop, picked, back_on_escape=True) is not _TOOL_OUTPUT_BACK:
+        if approval_text_viewer_sync(loop, picked, back_on_escape=True) is not _TOOL_OUTPUT_BACK:
             return
 
 
@@ -584,7 +584,12 @@ def code_rows(text: str, lexer: str, width: int, margin: str = "  ") -> list[Sty
     return rows
 
 
-def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escape: bool = False) -> object:
+def _approval_text_view(
+    loop: CommandLoop,
+    view: ApprovalView,
+    *,
+    back_on_escape: bool = False,
+) -> tuple[Callable[[], StyleAndTextTuples], Callable[[str, str], Any]] | None:
     """Read-only viewer for the text behind a confirmation: header rows plus the complete text,
     rendered as highlighted code when the view names a lexer and as markdown when it does not (an
     order is prose; a script is not). Esc/q closes back to the approval prompt; nothing here edits
@@ -715,10 +720,25 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
         scroll = max(0, scroll)
         return TUI_MODAL_PENDING
 
-    return loop.tui.show_modal_sync(fragments, handle_key, exclusive=True)
+    return fragments, handle_key
 
 
-def diff_viewer(loop: CommandLoop) -> None:
+async def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escape: bool = False) -> object:
+    modal = _approval_text_view(loop, view, back_on_escape=back_on_escape)
+    if modal is None or loop.tui is None:
+        return None
+    return await loop.tui.show_modal(*modal, exclusive=True)
+
+
+def approval_text_viewer_sync(loop: CommandLoop, view: ApprovalView, *, back_on_escape: bool = False) -> object:
+    """Blocking adapter for the tool-output browser, which itself runs on a worker thread."""
+    modal = _approval_text_view(loop, view, back_on_escape=back_on_escape)
+    if modal is None or loop.tui is None:
+        return None
+    return loop.tui.show_modal_sync(*modal, exclusive=True)
+
+
+async def diff_viewer(loop: CommandLoop) -> None:
     """Interactive diff viewer. First shows a file list; open a file to see its diff.
 
     List mode: ↑/↓ or j/k move, h/l or ←/→ switches tabs, Enter opens the selected file,
@@ -804,10 +824,10 @@ def diff_viewer(loop: CommandLoop) -> None:
             return TUI_MODAL_PENDING
         return result
 
-    loop.tui.show_modal_sync(fragments, modal_key, exclusive=True)
+    await loop.tui.show_modal(fragments, modal_key, exclusive=True)
 
 
-def compaction_log_viewer(loop: CommandLoop) -> None:
+async def compaction_log_viewer(loop: CommandLoop) -> None:
     """Read-only viewer for `/compact log`: the stored compaction segments newest first, and the
     summary plus verbatim excerpt of the one opened with Enter. This is the user's half of what
     `RecallContext` gives the model — same segments, nothing here writes.
@@ -898,4 +918,4 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
     def modal_key(key: str, _data: str) -> Any:
         return state.handle_key(key, len(segments), size()[1])
 
-    loop.tui.show_modal_sync(fragments, modal_key, exclusive=True)
+    await loop.tui.show_modal(fragments, modal_key, exclusive=True)

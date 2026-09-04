@@ -1,4 +1,5 @@
 """tui modals (split from tests/test_tui_app.py)."""
+import asyncio
 import multiprocessing
 import threading
 
@@ -241,15 +242,10 @@ def test_interactive_tui_choice_ctrl_c_reports_cancellation(monkeypatch, tmp_pat
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
-        selector = threading.Thread(
-            target=lambda: result.append(select_choice(command_loop, "Pick", ("a", "b"))),
-            daemon=True,
-        )
-        selector.start()
+        selector = asyncio.run_coroutine_threadsafe(select_choice(command_loop, "Pick", ("a", "b")), app.app.loop)
         wait_until(lambda: app.modal is not None)
         pipe_input.send_text("\x03")
-        selector.join(timeout=1)
-        assert not selector.is_alive()
+        result.append(selector.result(timeout=1))
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)

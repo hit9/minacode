@@ -33,7 +33,7 @@ class WorkerFlow:
     def __init__(self, loop: CommandLoop) -> None:
         self.loop = loop
 
-    def worker_command(self, args: str) -> str:
+    async def worker_command(self, args: str) -> str:
         parts = args.split()
         subcommand = parts[0].lower() if parts else ""
         rest = parts[1:]
@@ -67,25 +67,25 @@ class WorkerFlow:
             if len(rest) > 1:
                 return "Usage: /worker provider [NAME]"
             if not rest:
-                return self._worker_provider_picker()
+                return await self._worker_provider_picker()
             return self._worker_set_provider(rest[0])
         if subcommand == "model":
             if len(rest) > 1:
                 return "Usage: /worker model [MODEL]"
             if not rest:
-                return self._worker_model_picker()
+                return await self._worker_model_picker()
             return self._worker_set_model(rest[0])
         if subcommand == "reason":
             if len(rest) > 1:
                 return "Usage: /worker reason [EFFORT]"
             if not rest:
-                return self._worker_reason_picker()
+                return await self._worker_reason_picker()
             return self._worker_set_reasoning(rest[0])
         if subcommand == "api":
             if len(rest) > 1:
                 return "Usage: /worker api [API]"
             if not rest:
-                return self._worker_api_picker()
+                return await self._worker_api_picker()
             return self._worker_set_api(rest[0])
         return "Usage: /worker [" + "|".join(WORKER_SUBCOMMANDS) + "]"
 
@@ -108,7 +108,7 @@ class WorkerFlow:
             ]
         )
 
-    def _worker_provider_picker(self) -> str:
+    async def _worker_provider_picker(self) -> str:
         summary = (
             "worker provider: "
             + (self.loop.session.config.worker_provider or "(off)")
@@ -119,7 +119,7 @@ class WorkerFlow:
         if "off" not in choices:
             choices = (*choices, "off")
         current = self.loop.session.config.worker_provider
-        choice = select_choice(self.loop, "Worker provider", choices, labels={current: current + " (current)"} if current else {}, current=current)
+        choice = await select_choice(self.loop, "Worker provider", choices, labels={current: current + " (current)"} if current else {}, current=current)
         if not isinstance(choice, str):
             return "No change" if choice is SELECTION_BACK else summary
         provider_result = self._worker_set_provider(choice)
@@ -130,12 +130,12 @@ class WorkerFlow:
         # One setup flow, like /provider: worker provider -> worker model -> worker reasoning.
         # Backing out of any stage keeps the stages already set and reports what landed.
         lines = [provider_result]
-        set_ok, model_result = self._worker_model_stage()
+        set_ok, model_result = await self._worker_model_stage()
         if not set_ok:
             lines.append("worker model: unchanged")
             return "\n".join(lines)
         lines.append(model_result)
-        set_ok, reason_result = self._worker_reason_stage()
+        set_ok, reason_result = await self._worker_reason_stage()
         if not set_ok:
             lines.append("worker reasoning: unchanged")
             return "\n".join(lines)
@@ -161,7 +161,7 @@ class WorkerFlow:
             result += " (delegation is off this session; takes effect after a restart)"
         return result
 
-    def _worker_simple_field(
+    async def _worker_simple_field(
         self,
         *,
         title: str,
@@ -175,16 +175,16 @@ class WorkerFlow:
         the standalone /worker pickers and the /worker provider cascade can tell a set from an
         abort. Shared by worker model/reasoning/api: same shape, no cascade, and each `apply`
         writes the config and refreshes a live worker itself."""
-        choice = select_choice(self.loop, title, choices, labels=labels, current=current)
+        choice = await select_choice(self.loop, title, choices, labels=labels, current=current)
         if not isinstance(choice, str):
             return False, ("No change" if choice is SELECTION_BACK else (f"{label}: " + (current or "(inherit)")))
         return True, apply(choice)
 
-    def _worker_model_picker(self) -> str:
+    async def _worker_model_picker(self) -> str:
         """Standalone /worker model picker: one selection, no cascade."""
-        return self._worker_model_stage()[1]
+        return (await self._worker_model_stage())[1]
 
-    def _worker_model_stage(self) -> tuple[bool, str]:
+    async def _worker_model_stage(self) -> tuple[bool, str]:
         """Pick a worker model override; returns (set, message). Shared by /worker model and the
         /worker provider cascade so the cascade can tell a set from an abort."""
         entry = self.loop.session.config.providers[self.loop.session.config.worker_provider or self.loop.session.config.active_provider]
@@ -208,7 +208,7 @@ class WorkerFlow:
         choice_values = tuple(dict.fromkeys(choices))
         labels = {override: override + " (current)"} if override in choice_values else {}
         labels["default"] = "default - inherit the provider entry's model"
-        return self._worker_simple_field(
+        return await self._worker_simple_field(
             title="Worker model", label="worker model", choices=choice_values, current=override, labels=labels, apply=self._worker_set_model
         )
 
@@ -222,11 +222,11 @@ class WorkerFlow:
             return "worker model: (inherit)"
         return "Set worker.model = " + value
 
-    def _worker_reason_picker(self) -> str:
+    async def _worker_reason_picker(self) -> str:
         """Standalone /worker reason picker: one selection, no cascade."""
-        return self._worker_reason_stage()[1]
+        return (await self._worker_reason_stage())[1]
 
-    def _worker_reason_stage(self) -> tuple[bool, str]:
+    async def _worker_reason_stage(self) -> tuple[bool, str]:
         """Pick a worker reasoning effort; returns (set, message). Shared by /worker reason and
         the /worker provider cascade."""
         current = self.loop.session.config.worker_reasoning
@@ -234,7 +234,7 @@ class WorkerFlow:
         labels = {"default": "default - inherit the provider entry's reasoning"}
         if current:
             labels[current] = current + " (current)"
-        return self._worker_simple_field(
+        return await self._worker_simple_field(
             title="Worker reasoning", label="worker reasoning", choices=choices, current=current, labels=labels, apply=self._worker_set_reasoning
         )
 
@@ -257,14 +257,16 @@ class WorkerFlow:
         provider_name = config.worker_provider or config.active_provider
         return self.loop.session.policy.reasoning_choices(worker_provider_config(config, provider_name))
 
-    def _worker_api_picker(self) -> str:
+    async def _worker_api_picker(self) -> str:
         """Standalone /worker api picker: one selection, no cascade."""
         current = self.loop.session.config.worker_api
         choices = (*PROVIDER_API_CHOICES, "default")
         labels = {"default": "default - inherit the provider entry's api"}
         if current:
             labels[current] = current + " (current)"
-        return self._worker_simple_field(title="Worker api", label="worker api", choices=choices, current=current, labels=labels, apply=self._worker_set_api)[1]
+        return (
+            await self._worker_simple_field(title="Worker api", label="worker api", choices=choices, current=current, labels=labels, apply=self._worker_set_api)
+        )[1]
 
     def _worker_set_api(self, value: str) -> str:
         if value != "default":
@@ -278,7 +280,7 @@ class WorkerFlow:
             return "worker api: (inherit)"
         return "Set worker.api = " + value
 
-    def run_worker_config(self) -> None:
+    async def run_worker_config(self) -> None:
         """The Delegate confirm-time `c` loop: pick which worker knob to adjust with the shared
         choice selector (each field labeled with its current value, done preselected), then drive
         the corresponding /worker picker -- which writes the config and refreshes a live worker
@@ -299,19 +301,19 @@ class WorkerFlow:
                 "api": f"api: {api_value}",
                 "done": "done - return to the confirmation prompt",
             }
-            choice = select_choice(self.loop, "Worker config", ("provider", "model", "effort", "api", "done"), labels=labels, current="done")
+            choice = await select_choice(self.loop, "Worker config", ("provider", "model", "effort", "api", "done"), labels=labels, current="done")
             if choice == "provider":
-                self._worker_provider_picker()
+                await self._worker_provider_picker()
             elif choice == "model":
-                self._worker_model_picker()
+                await self._worker_model_picker()
             elif choice == "effort":
-                self._worker_reason_picker()
+                await self._worker_reason_picker()
             elif choice == "api":
-                self._worker_api_picker()
+                await self._worker_api_picker()
             else:
                 return
 
 
-def worker_command(loop: CommandLoop, args: str) -> str:
+async def worker_command(loop: CommandLoop, args: str) -> str:
     """Dispatch a /worker subcommand through a fresh WorkerFlow."""
-    return WorkerFlow(loop).worker_command(args)
+    return await WorkerFlow(loop).worker_command(args)

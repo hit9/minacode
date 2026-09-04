@@ -10,7 +10,7 @@ from wizolt.cli.worker import worker_command
 from wizolt.prompts import WORKER_PROMPT
 
 
-def test_worker_config_parses_model_and_reasoning(tmp_path):
+async def test_worker_config_parses_model_and_reasoning(tmp_path):
     from wizolt.config import (
         Config,
     )
@@ -31,7 +31,7 @@ def test_worker_config_parses_model_and_reasoning(tmp_path):
     assert plain.worker_model == "" and plain.worker_reasoning == "" and plain.worker_api == ""
 
 
-def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
+async def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
     from wizolt.base import ConfigError
     from wizolt.config import (
         Config,
@@ -41,7 +41,7 @@ def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
         Config.from_dict({"worker": {"reasoning": "turbo"}, "provider": {"default": {}}})
 
 
-def test_worker_config_rejects_invalid_worker_api(tmp_path):
+async def test_worker_config_rejects_invalid_worker_api(tmp_path):
     from wizolt.base import ConfigError
     from wizolt.config import (
         Config,
@@ -51,7 +51,7 @@ def test_worker_config_rejects_invalid_worker_api(tmp_path):
         Config.from_dict({"worker": {"api": "oai"}, "provider": {"default": {}}})
 
 
-def test_worker_provider_config_applies_api_override(tmp_path):
+async def test_worker_provider_config_applies_api_override(tmp_path):
     """worker_provider_config folds an explicit worker.api into the detached entry; an empty
     worker_api inherits the entry's own protocol (the worker never shares the parent's object)."""
     from wizolt.config import (
@@ -78,7 +78,7 @@ def test_worker_provider_config_applies_api_override(tmp_path):
     assert entry.api == "auto"
 
 
-def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
+async def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.config import (
         ProviderConfig,
@@ -100,15 +100,15 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     assert "Delegate" not in names(parent)
     # Frozen off: the command stores the value for the next spawn and says a restart is needed;
     # the tool block is unchanged mid-session.
-    assert worker_command(loop, "provider alt") == "Set worker provider = alt (delegation is off this session; takes effect after a restart)"
+    assert await worker_command(loop, "provider alt") == "Set worker provider = alt (delegation is off this session; takes effect after a restart)"
     assert parent.config.worker_provider == "alt"
     assert "Delegate" not in names(parent)
     # "off" clears quietly when the gate is frozen off.
-    assert worker_command(loop, "provider off") == "worker provider: off"
+    assert await worker_command(loop, "provider off") == "worker provider: off"
     assert parent.config.worker_provider == ""
 
     before = parent.config.worker_provider
-    assert worker_command(loop, "provider nope") == "Unknown provider: nope"
+    assert await worker_command(loop, "provider nope") == "Unknown provider: nope"
     assert parent.config.worker_provider == before
 
     # Simulating a restart: a freshly constructed session over the same config re-evaluates the
@@ -122,12 +122,12 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     # provider; only the next session re-evaluates it.
     fresh_agent = Agent(fresh, output_fn=lambda text: None)
     fresh_loop = CommandLoop(fresh_agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
-    assert worker_command(fresh_loop, "provider off") == "worker provider: off"
+    assert await worker_command(fresh_loop, "provider off") == "worker provider: off"
     assert fresh.config.worker_provider == ""
     assert "Delegate" in names(fresh)
 
 
-def test_worker_provider_off_selects_literal_off_entry(tmp_path):
+async def test_worker_provider_off_selects_literal_off_entry(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.config import (
         ProviderConfig,
@@ -139,11 +139,11 @@ def test_worker_provider_off_selects_literal_off_entry(tmp_path):
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert worker_command(loop, "provider off") == "Set worker provider = off (delegation is off this session; takes effect after a restart)"
+    assert await worker_command(loop, "provider off") == "Set worker provider = off (delegation is off this session; takes effect after a restart)"
     assert parent.config.worker_provider == "off"
 
 
-def test_worker_model_and_reason_overrides(tmp_path):
+async def test_worker_model_and_reason_overrides(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
 
@@ -151,25 +151,25 @@ def test_worker_model_and_reason_overrides(tmp_path):
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert worker_command(loop, "model") == "worker model: (inherit)"
-    assert worker_command(loop, "model gpt-5.2") == "Set worker.model = gpt-5.2"
+    assert await worker_command(loop, "model") == "worker model: (inherit)"
+    assert await worker_command(loop, "model gpt-5.2") == "Set worker.model = gpt-5.2"
     assert parent.config.worker_model == "gpt-5.2"
-    assert worker_command(loop, "model") == "worker model: gpt-5.2"
-    assert worker_command(loop, "model default") == "worker model: (inherit)"
+    assert await worker_command(loop, "model") == "worker model: gpt-5.2"
+    assert await worker_command(loop, "model default") == "worker model: (inherit)"
     assert parent.config.worker_model == ""
 
-    assert worker_command(loop, "reason high") == "Set worker.reasoning = high"
+    assert await worker_command(loop, "reason high") == "Set worker.reasoning = high"
     assert parent.config.worker_reasoning == "high"
-    assert worker_command(loop, "reason off") == "Set worker.reasoning = off"  # a valid effort
+    assert await worker_command(loop, "reason off") == "Set worker.reasoning = off"  # a valid effort
     assert parent.config.worker_reasoning == "off"
-    assert worker_command(loop, "reason default") == "worker reasoning: (inherit)"
+    assert await worker_command(loop, "reason default") == "worker reasoning: (inherit)"
     assert parent.config.worker_reasoning == ""
 
     choices = ("off", *parent.policy.effort_order)
-    assert worker_command(loop, "reason turbo") == "Usage: /worker reason " + "|".join(choices)
-    assert worker_command(loop, "provider a b") == "Usage: /worker provider [NAME]"
-    assert worker_command(loop, "model a b") == "Usage: /worker model [MODEL]"
-    assert worker_command(loop, "reason a b") == "Usage: /worker reason [EFFORT]"
+    assert await worker_command(loop, "reason turbo") == "Usage: /worker reason " + "|".join(choices)
+    assert await worker_command(loop, "provider a b") == "Usage: /worker provider [NAME]"
+    assert await worker_command(loop, "model a b") == "Usage: /worker model [MODEL]"
+    assert await worker_command(loop, "reason a b") == "Usage: /worker reason [EFFORT]"
 
 
 async def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkeypatch):
@@ -229,11 +229,11 @@ async def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch)
     worker = parent.worker
     assert worker.config.provider.model == "parent-model"
 
-    worker_command(loop, "model worker-model")
+    await worker_command(loop, "model worker-model")
     assert worker.config.provider.model == "worker-model"
     assert parent.config.providers["default"].model == "parent-model"  # untouched
 
-    worker_command(loop, "model default")
+    await worker_command(loop, "model default")
     assert worker.config.provider.model == "parent-model"  # restores the entry's model
     assert parent.config.providers["default"].model == "parent-model"
 
@@ -256,7 +256,7 @@ async def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypat
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
     worker = parent.worker
 
-    worker_command(loop, "provider alt")
+    await worker_command(loop, "provider alt")
     assert worker.config.active_provider == "alt"
     assert worker.config.provider is not parent.config.providers["alt"]
     assert worker.config.provider.model == "m"
@@ -439,7 +439,7 @@ async def test_delegate_reset_finish_worker_rule_label(tmp_path):
     assert "worker context cleared" in next(item.text for block in outputs if isinstance(block, LogBlock) for item, _ in block.walk() if item.label == "done")
 
 
-def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
+async def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
     from wizolt.tools.delegate import _worker_stream
 
     calls: list[tuple[str, str]] = []
@@ -536,7 +536,7 @@ async def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_pat
     assert "x" * 200 not in second
 
 
-def test_worker_model_discovery_shows_loading_state(tmp_path, monkeypatch):
+async def test_worker_model_discovery_shows_loading_state(tmp_path, monkeypatch):
     """The /worker model stage shows the same dispatch note as /model while remote discovery
     runs, and drops it afterwards; without credentials the note never appears."""
     from wizolt.cli import CommandLoop
@@ -558,20 +558,23 @@ def test_worker_model_discovery_shows_loading_state(tmp_path, monkeypatch):
 
     # Non-interactive select_choice yields nothing, but remote discovery still runs (and
     # still shows the loading note while it does): the entry has credentials.
-    assert worker_command(loop, "model") == "worker model: (inherit)"
+    assert await worker_command(loop, "model") == "worker model: (inherit)"
     assert transitions == ["Loading models...", ""]
     transitions.clear()
 
     selected = iter(["remote-model"])
-    monkeypatch.setattr("wizolt.cli.worker.select_choice", lambda *_args, **_kwargs: next(selected))
-    assert "Set worker.model = remote-model" in worker_command(loop, "model")
+    async def select(*_args, **_kwargs):
+        return next(selected)
+
+    monkeypatch.setattr("wizolt.cli.worker.select_choice", select)
+    assert "Set worker.model = remote-model" in await worker_command(loop, "model")
     assert transitions == ["Loading models...", ""]
 
     # No url/key on the entry: no remote call, so no loading note either.
     parent.config.providers["fast"].url = ""
     parent.config.providers["fast"].key = ""
     selected = iter(["default"])
-    monkeypatch.setattr("wizolt.cli.worker.select_choice", lambda *_args, **_kwargs: next(selected))
+    monkeypatch.setattr("wizolt.cli.worker.select_choice", select)
     transitions.clear()
-    assert "worker model: (inherit)" in worker_command(loop, "model")
+    assert "worker model: (inherit)" in await worker_command(loop, "model")
     assert transitions == []

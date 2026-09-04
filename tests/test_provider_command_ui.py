@@ -1,6 +1,6 @@
 """provider command ui (split from tests/test_command_ui.py)."""
 
-import threading
+import asyncio
 from types import SimpleNamespace
 
 import openai as openai_module
@@ -39,7 +39,14 @@ from wizolt.providers.sync import CatalogRuntime
 from wizolt.tui import TUI_MODAL_PENDING, DiffViewState, TabbedViewState, TuiApp
 
 
-def test_catalog_command_reports_the_selected_snapshot_and_is_not_queue_safe(tmp_path):
+def async_callable(fn):
+    async def call(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return call
+
+
+async def test_catalog_command_reports_the_selected_snapshot_and_is_not_queue_safe(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
 
@@ -52,7 +59,7 @@ def test_catalog_command_reports_the_selected_snapshot_and_is_not_queue_safe(tmp
     assert catalog_command(command_loop, "unknown") == "Usage: /catalog [status|sync]"
 
 
-def test_catalog_command_completes_its_subcommands(tmp_path):
+async def test_catalog_command_completes_its_subcommands(tmp_path):
     from prompt_toolkit.document import Document
 
     completer = CommandCompleter()
@@ -62,7 +69,7 @@ def test_catalog_command_completes_its_subcommands(tmp_path):
     assert set(sync_texts) == {"sync"}
 
 
-def test_catalog_command_status_suggests_the_manual_sync(tmp_path):
+async def test_catalog_command_status_suggests_the_manual_sync(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
 
@@ -71,7 +78,7 @@ def test_catalog_command_status_suggests_the_manual_sync(tmp_path):
     assert "`/catalog sync`" in status
 
 
-def test_catalog_command_adds_the_sync_error_prefix_once(tmp_path, monkeypatch):
+async def test_catalog_command_adds_the_sync_error_prefix_once(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
 
@@ -84,17 +91,17 @@ def test_catalog_command_adds_the_sync_error_prefix_once(tmp_path, monkeypatch):
     assert "/catalog" not in QUEUE_SAFE_COMMANDS
 
 
-def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
+async def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
     command_loop = loop(tmp_path)
     modal = ModalHarness(["j", "enter"])
     command_loop.tui = modal
-    result = choice_application(command_loop, "Pick", ("a", "b", "c"), {"a": "Alpha", "b": "Beta", "c": "Gamma"}, "", set())
+    result = await choice_application(command_loop, "Pick", ("a", "b", "c"), {"a": "Alpha", "b": "Beta", "c": "Gamma"}, "", set())
 
     assert result == "b"
     assert "Beta" in "".join(text for frame in modal.frames for _, text in frame)
 
 
-def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, monkeypatch):
+async def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["other"] = ProviderConfig(model="model-b", available_models=("model-b",), reasoning="low")
@@ -105,11 +112,11 @@ def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, mo
         titles.append(title)
         return next(selected)
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(commands_mod, "select_choice", async_callable(select))
     discovered = []
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, provider: discovered.append(provider.model) or ())
 
-    result = provider(command_loop, "")
+    result = await provider(command_loop, "")
 
     assert titles == ["Provider", "Model", "Request API", "Reasoning effort"]
     assert command_loop.session.config.active_provider == "other"
@@ -121,28 +128,28 @@ def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, mo
     assert "Set provider.api = responses (wire: responses)" in result
 
 
-def test_runtime_provider_switches_are_recorded_for_resume(tmp_path):
+async def test_runtime_provider_switches_are_recorded_for_resume(tmp_path):
     """Every runtime switch is recorded per entry so a later --resume can restore it."""
     command_loop = loop(tmp_path)
     command_loop.interactive_input = False
     session = command_loop.session
     session.config.providers["other"] = ProviderConfig(model="m", api="chat", reasoning="low")
 
-    assert provider(command_loop, "other") == "Set provider = other"
+    assert await provider(command_loop, "other") == "Set provider = other"
     assert session.provider_overrides == {"active_provider": "other"}
 
-    assert set_model(command_loop, "model-b") == "Set provider.model = model-b"
+    assert await set_model(command_loop, "model-b") == "Set provider.model = model-b"
     assert session.provider_overrides["providers"]["other"]["model"] == "model-b"
 
-    assert reason(command_loop, "high") == "Set provider.reasoning = high"
+    assert await reason(command_loop, "high") == "Set provider.reasoning = high"
     assert session.provider_overrides["providers"]["other"]["reasoning"] == "high"
 
-    assert api(command_loop, "responses") == "Set provider.api = responses (wire: responses)"
+    assert await api(command_loop, "responses") == "Set provider.api = responses (wire: responses)"
     assert session.provider_overrides["providers"]["other"]["api"] == "responses"
     assert session.provider_overrides["active_provider"] == "other"
 
 
-def test_model_override_binds_to_the_entry_it_was_set_on(tmp_path):
+async def test_model_override_binds_to_the_entry_it_was_set_on(tmp_path):
     """model/reasoning/api overrides key on the active entry at switch time, so a /provider after a
     /model restores each switch to the entry it was made on."""
     command_loop = loop(tmp_path)
@@ -151,11 +158,11 @@ def test_model_override_binds_to_the_entry_it_was_set_on(tmp_path):
     session.config.providers["a"] = ProviderConfig(model="ma", api="chat", reasoning="low")
     session.config.providers["b"] = ProviderConfig(model="mb", api="chat", reasoning="low")
 
-    set_model(command_loop, "model-on-default")
+    await set_model(command_loop, "model-on-default")
     assert session.provider_overrides["providers"]["default"]["model"] == "model-on-default"
 
-    provider(command_loop, "a")
-    set_model(command_loop, "model-on-a")
+    await provider(command_loop, "a")
+    await set_model(command_loop, "model-on-a")
     assert session.provider_overrides["providers"]["a"]["model"] == "model-on-a"
     assert session.provider_overrides["active_provider"] == "a"
 
@@ -166,7 +173,7 @@ def test_model_override_binds_to_the_entry_it_was_set_on(tmp_path):
     assert session.config.providers["a"].model == "model-on-a"
 
 
-def test_saved_override_restores_a_level_declared_for_the_restored_model(tmp_path):
+async def test_saved_override_restores_a_level_declared_for_the_restored_model(tmp_path):
     command_loop = loop(tmp_path)
     session = command_loop.session
     session.config.providers["custom"] = ProviderConfig.from_dict(
@@ -189,21 +196,21 @@ def test_saved_override_restores_a_level_declared_for_the_restored_model(tmp_pat
     assert session.config.provider.reasoning == "deep"
 
 
-def test_provider_and_model_commands_validate_direct_arguments(tmp_path):
+async def test_provider_and_model_commands_validate_direct_arguments(tmp_path):
     command_loop = loop(tmp_path)
 
-    assert provider(command_loop, "one two") == "Usage: /provider [NAME]"
-    assert provider(command_loop, "missing") == "Unknown provider: missing"
-    assert model(command_loop, "one two") == "Usage: /model [MODEL]"
+    assert await provider(command_loop, "one two") == "Usage: /provider [NAME]"
+    assert await provider(command_loop, "missing") == "Unknown provider: missing"
+    assert await model(command_loop, "one two") == "Usage: /model [MODEL]"
 
 
-def test_reason_strict_and_set_commands_validate_values(tmp_path):
+async def test_reason_strict_and_set_commands_validate_values(tmp_path):
     from prompt_toolkit.document import Document
 
     command_loop = loop(tmp_path)
 
-    assert reason(command_loop, "invalid").startswith("Usage: /reason ")
-    assert reason(command_loop, "max") == "Set provider.reasoning = max"
+    assert (await reason(command_loop, "invalid")).startswith("Usage: /reason ")
+    assert await reason(command_loop, "max") == "Set provider.reasoning = max"
     assert command_loop.session.config.provider.reasoning == "max"
     assert strict(command_loop, "on") == "Usage: /strict"
     assert set_value(command_loop, "") == "Usage: /set KEY VALUE"
@@ -221,34 +228,34 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert set_value(command_loop, "provider.image_input off") == "Unknown config key: provider.image_input"
 
 
-def test_reason_only_accepts_efforts_the_active_model_takes(tmp_path):
+async def test_reason_only_accepts_efforts_the_active_model_takes(tmp_path):
     """What is offered is what the model accepts, so the chosen effort is the sent effort."""
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
     provider.url = "https://api.openai.com/v1"
     provider.model = "gpt-5.5"
 
-    assert reason(command_loop, "xhigh") == "Set provider.reasoning = xhigh"
+    assert await reason(command_loop, "xhigh") == "Set provider.reasoning = xhigh"
     assert resolve(command_loop.session.config.provider).reasoning_effort == "xhigh"
     # gpt-5.5 has no `max`, so it is not offered and cannot be set: the effort on screen is the
     # effort sent, with nothing rewritten in between.
-    assert reason(command_loop, "max").startswith("Usage: /reason ")
+    assert (await reason(command_loop, "max")).startswith("Usage: /reason ")
 
 
-def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
+async def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.config.providers["default"] = ProviderConfig.from_dict(
         {"url": "https://gw.example/v1", "model": "custom-1", "models": {"custom-*": {"reasoning": ["low", "high", "ultra"]}}}
     )
 
-    assert reason(command_loop, "ultra") == "Set provider.reasoning = ultra"
+    assert await reason(command_loop, "ultra") == "Set provider.reasoning = ultra"
     assert resolve(command_loop.session.config.provider).reasoning_effort == "ultra"
-    assert reason(command_loop, "elsewhere").startswith("Usage: /reason ")
+    assert (await reason(command_loop, "elsewhere")).startswith("Usage: /reason ")
     # A level wizolt knows but this model does not is refused like any other unavailable one.
-    assert reason(command_loop, "medium").startswith("Usage: /reason ")
+    assert (await reason(command_loop, "medium")).startswith("Usage: /reason ")
 
 
-def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):
+async def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
     provider.url = "https://api.openai.com/v1"
@@ -258,7 +265,7 @@ def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_pat
     assert "provider.resolved_reasoning_effort: xhigh" in config(command_loop, "")
 
 
-def test_language_command_shows_sets_and_resets(tmp_path):
+async def test_language_command_shows_sets_and_resets(tmp_path):
     command_loop = loop(tmp_path)
 
     assert language_command(command_loop, "") == "Reply language: auto (follows your messages)"
@@ -279,7 +286,7 @@ def test_language_command_shows_sets_and_resets(tmp_path):
     assert command_loop.session.settings.language == "auto"  # unchanged after the rejected set
 
 
-def test_config_shows_runtime_language(tmp_path):
+async def test_config_shows_runtime_language(tmp_path):
     command_loop = loop(tmp_path)
     assert "runtime.language: auto" in config(command_loop, "")
 
@@ -287,7 +294,7 @@ def test_config_shows_runtime_language(tmp_path):
     assert "runtime.language: Chinese" in config(command_loop, "")
 
 
-def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_path):
+async def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_path):
     # A model chosen with /model may not be served over the provider's configured protocol, so the
     # wire has to be switchable in-session rather than only in the config file.
     command_loop = loop(tmp_path)
@@ -295,18 +302,18 @@ def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_pa
     provider.url = "https://example.com/compatible-mode/v1"
     provider.api = "responses"
 
-    assert api(command_loop, "grpc").startswith("Usage: /api ")
+    assert (await api(command_loop, "grpc")).startswith("Usage: /api ")
     assert resolve(provider).api == "responses"
-    assert api(command_loop, "chat") == "Set provider.api = chat (wire: chat)"
+    assert await api(command_loop, "chat") == "Set provider.api = chat (wire: chat)"
     assert resolve(provider).api == "chat"
     # "auto" reports the wire it inferred rather than echoing "auto" back.
-    assert api(command_loop, "auto") == "Set provider.api = auto (wire: chat)"
+    assert await api(command_loop, "auto") == "Set provider.api = auto (wire: chat)"
 
     provider.url = "https://example.com/v1/responses"
-    assert api(command_loop, "auto") == "Set provider.api = auto (wire: responses)"
+    assert await api(command_loop, "auto") == "Set provider.api = auto (wire: responses)"
 
 
-def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_path, monkeypatch):
+async def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     provider = command_loop.session.config.provider
@@ -318,9 +325,9 @@ def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_
         shown.update(title=title, choices=choices, labels=labels, current=current)
         return "auto"
 
-    monkeypatch.setattr(modals_mod, "choice_application", choose)
+    monkeypatch.setattr(modals_mod, "choice_application", async_callable(choose))
 
-    assert api(command_loop, "") == "Set provider.api = auto (wire: responses)"
+    assert await api(command_loop, "") == "Set provider.api = auto (wire: responses)"
     assert shown["title"] == "Request API"
     assert shown["choices"] == PROVIDER_API_CHOICES
     assert shown["current"] == "chat"
@@ -328,7 +335,7 @@ def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_
     assert shown["labels"]["chat"] == "chat (current)"
 
 
-def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch):
+async def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch):
     """The picker is the model's scale, not wizolt's."""
     import wizolt.cli.modals as modals_mod
 
@@ -344,9 +351,9 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
         shown["footer_styles"] = {style for style, _text in preview_fn(choices[0])} if preview_fn else set()
         return "high"
 
-    monkeypatch.setattr(modals_mod, "choice_application", choose)
+    monkeypatch.setattr(modals_mod, "choice_application", async_callable(choose))
 
-    assert reason(command_loop, "") == "Set provider.reasoning = high"
+    assert await reason(command_loop, "") == "Set provider.reasoning = high"
     # gpt-5.5 documents low/medium/high/xhigh. `minimal` and `max` are not choices here, so no row
     # can be picked that the request would then have to rewrite.
     assert shown["choices"] == ("off", "low", "medium", "high", "xhigh")
@@ -358,7 +365,7 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
     assert shown["footer_styles"] == {"class:choice.explanation"}
 
 
-def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
+async def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
     import wizolt.cli.modals as modals_mod
 
     command_loop = loop(tmp_path)
@@ -373,9 +380,9 @@ def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeyp
         shown["footer_styles"] = {style for style, _text in preview_fn(choices[0])} if preview_fn else set()
         return "ultra"
 
-    monkeypatch.setattr(modals_mod, "choice_application", choose)
+    monkeypatch.setattr(modals_mod, "choice_application", async_callable(choose))
 
-    assert reason(command_loop, "") == "Set provider.reasoning = ultra"
+    assert await reason(command_loop, "") == "Set provider.reasoning = ultra"
     assert shown["choices"] == ("off", "low", "high", "ultra")
     # A config declaration is its own account of itself; there is no page to cite for it.
     assert shown["footer"] == "  │ Why these levels\n  │ declared for this model in your config\n"
@@ -397,7 +404,7 @@ async def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path)
     assert set_value(command_loop, "provider.api chat") == "Unknown config key: provider.api"
 
 
-def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reasoning_to_the_wire(tmp_path, monkeypatch):
+async def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reasoning_to_the_wire(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     provider = command_loop.session.config.provider
@@ -421,10 +428,10 @@ def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reasoning_to
         titles.append(title)
         return value
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(commands_mod, "select_choice", async_callable(select))
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _provider: ())
 
-    result = model(command_loop, "")
+    result = await model(command_loop, "")
 
     assert titles == ["Model", "Request API", "Model", "Request API", "Reasoning effort", "Request API", "Reasoning effort"]
     assert provider.model == "model-a"
@@ -433,7 +440,7 @@ def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reasoning_to
     assert "Set provider.api = responses (wire: responses)" in result
 
 
-def test_model_chain_leaves_the_wire_alone_when_selection_is_unavailable(tmp_path):
+async def test_model_chain_leaves_the_wire_alone_when_selection_is_unavailable(tmp_path):
     # Non-interactive input returns None from every picker; the model still applies, the wire is untouched.
     command_loop = loop(tmp_path)
     command_loop.interactive_input = False
@@ -441,7 +448,7 @@ def test_model_chain_leaves_the_wire_alone_when_selection_is_unavailable(tmp_pat
     provider.api = "responses"
     provider.reasoning = "low"
 
-    result = set_model(command_loop, "model-a")
+    result = await set_model(command_loop, "model-a")
 
     assert result == "Set provider.model = model-a"
     assert provider.model == "model-a"
@@ -449,7 +456,7 @@ def test_model_chain_leaves_the_wire_alone_when_selection_is_unavailable(tmp_pat
     assert provider.reasoning == "low"
 
 
-def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
+async def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
     provider.url = "https://example.com/v1"
@@ -473,7 +480,7 @@ def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
     assert calls[0]["default_headers"]["x-tenant"] == "team-a"
 
 
-def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
+async def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
 
@@ -505,7 +512,7 @@ async def test_effort_is_an_alias_for_reason(tmp_path):
     assert set(texts) == {"off", *command_loop.session.policy.effort_order}
 
 
-def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_path, monkeypatch):
+async def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     provider = command_loop.session.config.provider
@@ -523,10 +530,10 @@ def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_pa
             return "auto"
         return "remote-model"
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(commands_mod, "select_choice", async_callable(select))
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _provider: ("remote-model",))
 
-    assert "Set provider.model = remote-model" in model(command_loop, "")
+    assert "Set provider.model = remote-model" in await model(command_loop, "")
     assert shown[0] == (
         "Model",
         (
@@ -538,7 +545,7 @@ def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_pa
     )
 
 
-def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path, monkeypatch):
+async def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     provider = command_loop.session.config.provider
@@ -551,9 +558,9 @@ def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path, mon
     command_loop.tui.set_dispatching = lambda prompt="": transitions.append(prompt)
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, selected: ("remote-model",))
     selected = iter(["remote-model", "auto", "off"])
-    monkeypatch.setattr(commands_mod, "select_choice", lambda *_args, **_kwargs: next(selected))
+    monkeypatch.setattr(commands_mod, "select_choice", async_callable(lambda *_args, **_kwargs: next(selected)))
 
-    assert "Set provider.model = remote-model" in model(command_loop, "")
+    assert "Set provider.model = remote-model" in await model(command_loop, "")
     assert transitions == ["Loading models...", ""]
 
 
@@ -582,15 +589,13 @@ def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monk
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         application_ids.append(id(app.app))
-        worker = threading.Thread(target=lambda: result.append(provider(command_loop, "")), daemon=True)
-        worker.start()
+        future = asyncio.run_coroutine_threadsafe(provider(command_loop, ""), app.app.loop)
         for title in ("Provider", "Model", "Request API", "Reasoning effort"):
             wait_until(lambda title=title: modal_title().startswith(title))
             wait_until(lambda title=title: title in rendered_screen_text(app.app, output))
             application_ids.append(id(app.app))
             pipe_input.send_text("j\r")
-        worker.join(timeout=1)
-        assert not worker.is_alive()
+        result.append(future.result(timeout=1))
         app.set_idle()
         wait_until(lambda: app.modal is None)
         app.app.loop.call_soon_threadsafe(app.app.exit)
@@ -604,16 +609,16 @@ def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monk
     assert "Set provider.model = model-b" in result[0]
 
 
-def test_single_enabled_choice_is_selected_without_opening_modal(tmp_path, monkeypatch):
+async def test_single_enabled_choice_is_selected_without_opening_modal(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     monkeypatch.setattr(modals_mod, "choice_application", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("modal should not open")))
 
-    assert select_choice(command_loop, "Provider", ("only",), current="only") == "only"
-    assert select_choice(command_loop, "Model", ("heading", "only"), disabled={"heading"}) == "only"
+    assert await select_choice(command_loop, "Provider", ("only",), current="only") == "only"
+    assert await select_choice(command_loop, "Model", ("heading", "only"), disabled={"heading"}) == "only"
 
 
-def test_provider_auto_selects_sole_provider_and_model(tmp_path, monkeypatch):
+async def test_provider_auto_selects_sole_provider_and_model(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     provider_config = command_loop.session.config.provider
@@ -627,22 +632,22 @@ def test_provider_auto_selects_sole_provider_and_model(tmp_path, monkeypatch):
         titles.append(title)
         return current
 
-    monkeypatch.setattr(modals_mod, "choice_application", choose)
+    monkeypatch.setattr(modals_mod, "choice_application", async_callable(choose))
 
-    result = provider(command_loop, "")
+    result = await provider(command_loop, "")
 
     assert titles == ["Request API", "Reasoning effort"]
     assert "Set provider.model = only-model" in result
 
 
-def test_diff_viewer_switches_tabs_and_opens_selected_file(tmp_path):
+async def test_diff_viewer_switches_tabs_and_opens_selected_file(tmp_path):
     command_loop = diff_loop(tmp_path)
     switched = ModalHarness(["l", "q"])
     command_loop.tui = switched
-    diff_viewer(command_loop)
+    await diff_viewer(command_loop)
     opened = ModalHarness(["j", "enter", "q"])
     command_loop.tui = opened
-    diff_viewer(command_loop)
+    await diff_viewer(command_loop)
 
     assert any(("class:tab.active", " Session ") in frame for frame in switched.frames)
     assert switched.exclusive == [True]
@@ -652,14 +657,14 @@ def test_diff_viewer_switches_tabs_and_opens_selected_file(tmp_path):
     assert "[diff]" in text
 
 
-def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path):
+async def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path):
     command_loop = diff_loop(tmp_path)
     initial = ModalHarness(["enter", "q"])
     command_loop.tui = initial
-    diff_viewer(command_loop)
+    await diff_viewer(command_loop)
     scrolled = ModalHarness(["enter", "c-d", "c-d", "q"])
     command_loop.tui = scrolled
-    diff_viewer(command_loop)
+    await diff_viewer(command_loop)
 
     initial_text = "".join(text for frame in initial.frames for _, text in frame)
     scrolled_text = "".join(text for frame in scrolled.frames for _, text in frame)
@@ -667,18 +672,18 @@ def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path):
     assert "[diff]" in scrolled_text
 
 
-def test_empty_diff_viewer_reports_zero_position(tmp_path):
+async def test_empty_diff_viewer_reports_zero_position(tmp_path):
     command_loop = loop(tmp_path)
     modal = ModalHarness(["q"])
     command_loop.tui = modal
-    diff_viewer(command_loop)
+    await diff_viewer(command_loop)
     text = "".join(text for frame in modal.frames for _, text in frame)
 
     assert "No diffs" in text
     assert "[0/0]" in text
 
 
-def test_diff_view_state_owns_navigation_transitions():
+async def test_diff_view_state_owns_navigation_transitions():
     state = DiffViewState(TabbedViewState(("Latest", "Session")))
 
     state.handle_key("down", 3, 10)
@@ -697,7 +702,7 @@ def test_diff_view_state_owns_navigation_transitions():
     assert state.handle_key("q", 3, 10) is None
 
 
-def test_diff_view_g_and_shift_g_jump_top_and_bottom():
+async def test_diff_view_g_and_shift_g_jump_top_and_bottom():
     state = DiffViewState(TabbedViewState(("Latest", "Session")))
 
     # LIST mode: jump file selection to last / first.
@@ -716,7 +721,7 @@ def test_diff_view_g_and_shift_g_jump_top_and_bottom():
 
 
 @pytest.mark.parametrize(("key", "expected_tab"), [("l", 1), ("tab", 1), ("h", 0)])
-def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
+async def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
     state = DiffViewState(TabbedViewState(("Latest", "Session"), tab=0 if key != "h" else 1))
     state.open_file(3)
 
@@ -727,7 +732,7 @@ def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
     assert state.file == 0
 
 
-def test_switching_provider_says_when_it_had_to_move_the_effort(tmp_path):
+async def test_switching_provider_says_when_it_had_to_move_the_effort(tmp_path):
     """The one moment an effort changes without being chosen. Saying it is the price of never
     rewriting one silently on the way to the provider."""
     command_loop = loop(tmp_path)
@@ -736,17 +741,17 @@ def test_switching_provider_says_when_it_had_to_move_the_effort(tmp_path):
     # own model already holding one it cannot use.
     session.config.providers["deep"] = ProviderConfig(url="https://api.deepseek.com", key="k", model="deepseek-v4-flash", reasoning="medium")
 
-    result = provider(command_loop, "deep")
+    result = await provider(command_loop, "deep")
 
     assert result == "Set provider = deep\nReasoning medium is not offered by deepseek-v4-flash, using high"
     assert session.config.provider.reasoning == "high"
     assert session.provider_overrides["providers"]["deep"]["reasoning"] == "high"
 
 
-def test_switching_provider_stays_quiet_when_the_effort_still_fits(tmp_path):
+async def test_switching_provider_stays_quiet_when_the_effort_still_fits(tmp_path):
     command_loop = loop(tmp_path)
     session = command_loop.session
     session.config.providers["deep"] = ProviderConfig(url="https://api.deepseek.com", key="k", model="deepseek-v4-flash", reasoning="high")
 
-    assert provider(command_loop, "deep") == "Set provider = deep"
+    assert await provider(command_loop, "deep") == "Set provider = deep"
     assert session.config.provider.reasoning == "high"

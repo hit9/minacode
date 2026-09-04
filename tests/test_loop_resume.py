@@ -29,7 +29,7 @@ async def test_empty_exit_does_not_print_resume_command(tmp_path):
     assert output == []
     assert not os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
-def test_resumed_session_does_not_render_tool_results(tmp_path):
+async def test_resumed_session_does_not_render_tool_results(tmp_path):
     s = session(tmp_path)
     s.resumed = True
     arguments = json.dumps({"files": [{"path": "a.py", "ranges": [[0, 1]]}]})
@@ -61,7 +61,7 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     assert "tool:" not in text
     assert "raw tool result" not in text
 
-def test_resumed_session_matches_retried_tool_results_by_call_id(tmp_path):
+async def test_resumed_session_matches_retried_tool_results_by_call_id(tmp_path):
     s = session(tmp_path)
     s.resumed = True
     arguments = json.dumps({"files": [{"path": "a.py", "ranges": [[0, 1]]}]})
@@ -88,7 +88,7 @@ def test_resumed_session_matches_retried_tool_results_by_call_id(tmp_path):
     assert failed < stored
     assert text.count("tr.1") == 1
 
-def test_resumed_session_warns_when_older_version_wrote_after_transcript(tmp_path):
+async def test_resumed_session_warns_when_older_version_wrote_after_transcript(tmp_path):
     s = session(tmp_path)
     s.resumed = True
     s.transcript_incomplete = True
@@ -101,7 +101,7 @@ def test_resumed_session_warns_when_older_version_wrote_after_transcript(tmp_pat
     assert output[0] == f"Restored session: {s.uid}"
     assert output[1] == "Warning: this transcript may omit turns written by an older wizolt version."
 
-def test_resumed_session_hides_internal_checkpoint_and_resume_events(tmp_path):
+async def test_resumed_session_hides_internal_checkpoint_and_resume_events(tmp_path):
     s = session(tmp_path)
     s.resumed = True
     s.messages.extend(
@@ -136,7 +136,7 @@ def test_resumed_session_hides_internal_checkpoint_and_resume_events(tmp_path):
     assert "hidden working-state checkpoint" not in text
     assert "<session_event" not in text
 
-def test_resumed_session_with_only_internal_events_still_confirms_restore(tmp_path):
+async def test_resumed_session_with_only_internal_events_still_confirms_restore(tmp_path):
     s = session(tmp_path)
     s.resumed = True
     s.messages.extend(
@@ -152,7 +152,7 @@ def test_resumed_session_with_only_internal_events_still_confirms_restore(tmp_pa
 
     assert output == [f"Restored session: {s.uid}"]
 
-def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(tmp_path):
+async def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(tmp_path):
     s = session(tmp_path)
     s.resumed = True
     s.messages.extend(
@@ -174,7 +174,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
     assert "  Bash  wc -l wizolt.py\n    └ stored tr.1" in text
     assert "999 wizolt.py" not in text
 
-def test_resumed_session_separates_turn_boxes(tmp_path):
+async def test_resumed_session_separates_turn_boxes(tmp_path):
     s = session(tmp_path)
     s.resumed = True
     s.messages.extend(
@@ -194,7 +194,7 @@ def test_resumed_session_separates_turn_boxes(tmp_path):
     # bullet hangs in that same two-space margin, so every line of text starts at column 2.
     assert output[1:] == ["\n• first", "  one", "", "\n• second", "  two"]
 
-def test_turn_box_groups_followup_users_until_final_assistant():
+async def test_turn_box_groups_followup_users_until_final_assistant():
     messages = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "working", "tool_calls": [{"id": "one"}]},
@@ -207,7 +207,7 @@ def test_turn_box_groups_followup_users_until_final_assistant():
 
     assert [len(box.messages) for box in boxes] == [4, 1]
 
-def test_turn_box_groups_tool_results_with_calling_assistant():
+async def test_turn_box_groups_tool_results_with_calling_assistant():
     # Tool results (role="tool") are kept in the same TurnBox as the
     # assistant that issued the tool_calls, not split prematurely.
     messages = [
@@ -222,20 +222,20 @@ def test_turn_box_groups_tool_results_with_calling_assistant():
     roles = [m["role"] for m in boxes[0].messages]
     assert roles == ["user", "assistant", "tool", "assistant"]
 
-def test_eof_exit_prints_resume_command(tmp_path):
+async def test_eof_exit_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     output = []
     loop = CommandLoop(Agent(s, output_fn=output.append), input_fn=lambda prompt="": (_ for _ in ()).throw(EOFError()), output_fn=output.append)
 
-    assert loop.run() == 0
+    assert await loop.run_simple() == 0
 
     # The session took its name from the opening message; the pasted line still carries the uid.
     assert output[-1] == f"Resume 'hello' with:\nwizolt --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 @pytest.mark.parametrize(("interrupt_phase", "expected_cancelled"), [("input", 0), ("request", 1)])
-def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, monkeypatch, interrupt_phase, expected_cancelled):
+async def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, monkeypatch, interrupt_phase, expected_cancelled):
     output = []
     reads = iter([KeyboardInterrupt(), EOFError()] if interrupt_phase == "input" else ["question", EOFError()])
 
@@ -257,12 +257,12 @@ def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, monkeypat
     monkeypatch.setattr(CodeIndex, "status", lambda _index: False)
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
-    assert command_loop.run() == 0
+    assert await command_loop.run_simple() == 0
 
     assert [line.strip() for line in output].count("Cancelled") == expected_cancelled
 
 @pytest.mark.parametrize("raised", [None, "error"])
-def test_simple_repl_publishes_the_final_answer_exactly_once(tmp_path, monkeypatch, raised):
+async def test_simple_repl_publishes_the_final_answer_exactly_once(tmp_path, monkeypatch, raised):
     """The engine publishes a completed turn's answer through output_fn, so the REPL must not
     print the return value on top of it; an error raised before that publish still prints here,
     because nothing else put it in the scrollback."""
@@ -289,15 +289,15 @@ def test_simple_repl_publishes_the_final_answer_exactly_once(tmp_path, monkeypat
     monkeypatch.setattr(CodeIndex, "status", lambda _index: False)
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
-    assert command_loop.run() == 0
+    assert await command_loop.run_simple() == 0
 
     printed = [str(item) for item in output]
     expected = "Error: provider is down" if raised else "The answer."
     assert sum(expected in line for line in printed) == 1
 
-def test_select_choice_noninteractive_does_not_prompt(tmp_path):
+async def test_select_choice_noninteractive_does_not_prompt(tmp_path):
     output = []
     loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "1", output_fn=output.append)
 
-    assert select_choice(loop, "Pick", ("a", "b"), labels={"a": "A"}, current="a") is None
+    assert await select_choice(loop, "Pick", ("a", "b"), labels={"a": "A"}, current="a") is None
     assert output == []

@@ -191,13 +191,13 @@ class ToolRunner:
         # Injected by CommandLoop: drives the Delegate confirm-time `c` config loop through the
         # shared choice selector (see CommandLoop.run_worker_config). None degrades the `c` key to
         # printing the current worker config only (headless / non-CommandLoop runners).
-        self.worker_config_picker: Callable[[], None] | None = None
+        self.worker_config_picker: Callable[[], Awaitable[None] | None] | None = None
         # Injected by CommandLoop: opens a read-only viewer for the text behind a confirmation --
         # a Delegate order, a ToolScript body -- for the confirm-time `v`/`view` key (see
         # cli.modals.approval_text_viewer). None degrades the `v` key to printing the whole text
         # (headless / non-CommandLoop runners). The return value is the viewer's close signal and is
         # discarded here; the Ctrl-O browser's reopen loop reads it on its own.
-        self.text_viewer: Callable[[ApprovalView], object] | None = None
+        self.text_viewer: Callable[[ApprovalView], Awaitable[object] | object] | None = None
         # How many enclosing tool calls are running the calls being logged right now. Nested calls
         # (a ToolScript's call()) are printed one level deeper per enclosing call, so the log shows
         # who made them; see nested().
@@ -939,7 +939,7 @@ class ToolRunner:
             if always_option and lower in {"c", "config"}:
                 # The whole-line `c`/`config` opens the worker configuration loop; anything else
                 # (e.g. "cost too high") is an ordinary refusal reason, so only exact matches enter.
-                self.delegate_config_cycle()
+                await self.delegate_config_cycle()
                 continue  # re-ask; the config cycle printed what it changed
             if lower in {"v", "view"} and (view := tool.approval_view()) is not None:
                 # Same whole-line exact-match rule as `c`: `v`/`view` opens the read-only viewer on
@@ -949,7 +949,7 @@ class ToolRunner:
                 # Built here rather than before the loop: `c` can have edited the worker config
                 # since, and a viewer that reports the configuration a send will run under has to
                 # read it now, not as it stood when the prompt was first drawn.
-                self.view_text(view)
+                await self.view_text(view)
                 continue  # re-ask; viewing changed nothing, so there is nothing to redraw
             if lower in {"", "y", "yes"}:
                 return True, ""
@@ -972,7 +972,7 @@ class ToolRunner:
         (headless, piped stdin) sends the brief back to printing the typed legend."""
         return self.approval_form is not None and self.approval_form(actions)
 
-    def delegate_config_cycle(self) -> None:
+    async def delegate_config_cycle(self) -> None:
         """The `c` action of a Delegate send prompt: hand the interactive editing to the injected
         picker loop (CommandLoop.run_worker_config), which reuses the shared choice selector and
         writes back through the /worker pickers, then print the worker's provider/model/effort/api.
@@ -983,14 +983,18 @@ class ToolRunner:
         Without an injected picker (headless, or a runner outside CommandLoop) this just prints the
         current values; the confirmation prompt re-asks either way."""
         if self.worker_config_picker is not None:
-            self.worker_config_picker()
+            result = self.worker_config_picker()
+            if inspect.isawaitable(result):
+                await result
         self.emit(toolblocks.worker_config_block(self.session))
 
-    def view_text(self, view: ApprovalView) -> None:
+    async def view_text(self, view: ApprovalView) -> None:
         """The `v` action of a confirmation prompt: open a read-only viewer with the full,
         untruncated text behind the call. Without an injected viewer (headless, or a runner outside
         CommandLoop) this prints the whole thing; the confirmation prompt re-asks either way."""
         if self.text_viewer is not None:
-            self.text_viewer(view)
+            result = self.text_viewer(view)
+            if inspect.isawaitable(result):
+                await result
         else:
             self.emit(toolblocks.full_text_block(view))

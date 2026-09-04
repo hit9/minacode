@@ -1,8 +1,9 @@
 """Slash command implementations as free functions taking the CommandLoop.
 
-Each handler has the signature `def name(loop, args) -> str | None` and is referenced directly
-by the registry in wizolt/cli/__init__.py. A `None` result means the handler rendered its own
-UI (e.g. /diff's viewer). The multi-stage /worker flow lives in the WorkerFlow class below.
+Each handler takes `(loop, args)` and is referenced directly by the registry in
+`wizolt/cli/__init__.py`. Handlers that await a modal or the network are coroutines; the dispatcher
+accepts either shape. A `None` result means the handler rendered its own UI (e.g. /diff's viewer).
+The multi-stage /worker flow lives in the WorkerFlow class below.
 """
 
 from __future__ import annotations
@@ -162,7 +163,7 @@ async def mcp_command(loop: CommandLoop, args: str) -> str | None:
     raise AssertionError("unreachable MCP subcommand")
 
 
-def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
+async def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     """Offer the efforts `model` accepts — the entry's own model when none is named.
 
     The list is the model's scale, not wizolt's: a level this model has no spelling for is not
@@ -183,10 +184,10 @@ def select_reasoning(loop: CommandLoop, model: str = "") -> str | object | None:
     # The explanation has its own quiet informational tone: visible enough to read, while the
     # selected row remains the strongest element in the modal.
     footer: StyleAndTextTuples = [("class:choice.explanation", "  │ " + line + "\n") for line in ("Why these levels", why, evidence) if line]
-    return select_choice(loop, "Reasoning effort", choices, labels=labels, current=current, preview_fn=(lambda _choice: footer) if why else None)
+    return await select_choice(loop, "Reasoning effort", choices, labels=labels, current=current, preview_fn=(lambda _choice: footer) if why else None)
 
 
-def select_api(loop: CommandLoop, model: str) -> str | object | None:
+async def select_api(loop: CommandLoop, model: str) -> str | object | None:
     # An endpoint that lists several model families rarely serves them all over one protocol, and
     # a /models listing does not say which. Confirm the wire alongside the model that needs it.
     provider = loop.session.config.provider
@@ -194,7 +195,7 @@ def select_api(loop: CommandLoop, model: str) -> str | object | None:
     inferred = loop.session.policy.resolve(replace(provider, api="auto", model=model)).api
     labels = {"auto": f"auto - infer from the endpoint URL and model ({inferred})"}
     labels[current] = labels.get(current, current) + " (current)"
-    return select_choice(loop, "Request API", PROVIDER_API_CHOICES, labels=labels, current=current)
+    return await select_choice(loop, "Request API", PROVIDER_API_CHOICES, labels=labels, current=current)
 
 
 def help(loop: CommandLoop, args: str) -> str:
@@ -376,11 +377,11 @@ def ps_command(loop: CommandLoop, args: str) -> str:
     return f"### Active jobs · {len(running)}\n\n{table}"
 
 
-def diff_command(loop: CommandLoop, args: str) -> str | None:
+async def diff_command(loop: CommandLoop, args: str) -> str | None:
     if args.strip():
         return "Usage: /diff"
     if loop.interactive_input and loop.ui.color and (loop.tui is None or loop.tui.alternate_screen_available()):
-        diff_viewer(loop)
+        await diff_viewer(loop)
         return None
     latest = loop.agent.session.latest_round_diff_sections()
     session = loop.agent.session.session_diff_sections()
@@ -472,7 +473,7 @@ def config(loop: CommandLoop, args: str) -> str:
     )
 
 
-def sessions_command(loop: CommandLoop, args: str) -> str | None:
+async def sessions_command(loop: CommandLoop, args: str) -> str | None:
     """Browse saved sessions and re-enter one. `/sessions all` widens past this project."""
     argument = args.strip().lower()
     if argument not in {"", "all"}:
@@ -504,7 +505,7 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
             summaries[uid] = SessionSnapshotStore.tail_summary(entry.path)
         return session_preview(entry, summary=summaries[uid])
 
-    chosen = choice_application(
+    chosen = await choice_application(
         loop,
         title,
         tuple(entry.uid for entry in entries),
@@ -640,7 +641,7 @@ def language_command(loop: CommandLoop, args: str) -> str:
     return f"Reply language set: {language}"
 
 
-def compaction_log(loop: CommandLoop, args: str) -> str | LogBlock | None:
+async def compaction_log(loop: CommandLoop, args: str) -> str | LogBlock | None:
     """`/compact log [seg.N]`: review what compaction kept. The viewer is the interactive form; a
     headless run (piped input, no color, no alternate screen) gets the same segments as log lines,
     and naming one segment prints its whole summary, which the list can only show a title of.
@@ -671,7 +672,7 @@ def compaction_log(loop: CommandLoop, args: str) -> str | LogBlock | None:
     # A TUI is required, not just assumed from interactive input: without one the viewer would
     # render nothing at all, and the log lines below say the same thing without a screen.
     if loop.interactive_input and loop.ui.color and loop.tui is not None and loop.tui.alternate_screen_available():
-        compaction_log_viewer(loop)
+        await compaction_log_viewer(loop)
         return None
     count = loop.session.state.compaction_count
     return LogBlock(
@@ -694,7 +695,7 @@ async def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
     """`/compact`: the one command that reaches the provider, so the only awaited one."""
     sub, _, rest = args.strip().partition(" ")
     if sub == "log":
-        return compaction_log(loop, rest)
+        return await compaction_log(loop, rest)
     if args.strip():
         return "Usage: /compact [log [seg.N]]"
     before = len(loop.session.messages)
@@ -760,7 +761,7 @@ def index(loop: CommandLoop, args: str) -> str:
         loop.status_bar.stop()
 
 
-def provider(loop: CommandLoop, args: str) -> str:
+async def provider(loop: CommandLoop, args: str) -> str:
     parts = args.split()
     if len(parts) > 1:
         return "Usage: /provider [NAME]"
@@ -769,11 +770,11 @@ def provider(loop: CommandLoop, args: str) -> str:
     choices = tuple(sorted(loop.session.config.providers))
     summary = "provider: " + loop.session.config.active_provider + "\nproviders: " + ", ".join(choices)
     current = loop.session.config.active_provider
-    choice = select_choice(loop, "Provider", choices, labels={current: current + " (current)"}, current=current)
+    choice = await select_choice(loop, "Provider", choices, labels={current: current + " (current)"}, current=current)
     if not isinstance(choice, str):
         return "No change" if choice is SELECTION_BACK else summary
     provider_result = set_provider(loop, choice)
-    model_result = model(loop, "")
+    model_result = await model(loop, "")
     return provider_result + ("\n" + model_result if model_result else "")
 
 
@@ -812,12 +813,12 @@ def set_provider(loop: CommandLoop, name: str) -> str:
     return "\n".join(line for line in ("Set provider = " + name, realign_reasoning(loop)) if line)
 
 
-def model(loop: CommandLoop, args: str) -> str:
+async def model(loop: CommandLoop, args: str) -> str:
     parts = args.split()
     if len(parts) > 1:
         return "Usage: /model [MODEL]"
     if parts:
-        result = set_model(loop, parts[0])
+        result = await set_model(loop, parts[0])
         return "No change" if result is SELECTION_BACK else str(result)
     provider = loop.session.config.provider
     configured = tuple(dict.fromkeys(provider.available_models))
@@ -842,14 +843,14 @@ def model(loop: CommandLoop, args: str) -> str:
         current = loop.session.config.provider.model
         labels = {label: label for label in MODEL_LABELS if label in choice_values}
         labels.update({current: current + " (current)"} if current in choice_values else {})
-        choice = select_choice(loop, "Model", choice_values, labels=labels, current=current, disabled=MODEL_LABELS)
+        choice = await select_choice(loop, "Model", choice_values, labels=labels, current=current, disabled=MODEL_LABELS)
         if choice is SELECTION_BACK:
             return "No change"
         if not isinstance(choice, str):
             return "Current provider.model is " + (loop.session.config.provider.model or "(empty)")
         if choice in MODEL_LABELS:
             continue
-        result = set_model(loop, choice, back_to_model=True)
+        result = await set_model(loop, choice, back_to_model=True)
         if result is SELECTION_BACK:
             continue
         return str(result)
@@ -881,14 +882,14 @@ def remote_models(loop: CommandLoop, provider: ProviderConfig) -> tuple[str, ...
     return tuple(sorted(dict.fromkeys(names)))
 
 
-def set_model(loop: CommandLoop, model: str, *, back_to_model: bool = False) -> str | object:
+async def set_model(loop: CommandLoop, model: str, *, back_to_model: bool = False) -> str | object:
     while True:
-        api = select_api(loop, model)
+        api = await select_api(loop, model)
         if api is SELECTION_BACK:
             return SELECTION_BACK if back_to_model else "No change"
         # The model being switched to, not the one still configured: its scale is what the new
         # effort has to come from.
-        reasoning = select_reasoning(loop, model)
+        reasoning = await select_reasoning(loop, model)
         if reasoning is not SELECTION_BACK:
             break
     provider = loop.session.config.provider
@@ -913,7 +914,7 @@ def set_reasoning(loop: CommandLoop, value: str) -> str:
     return "Set provider.reasoning = " + value
 
 
-def reason(loop: CommandLoop, args: str) -> str:
+async def reason(loop: CommandLoop, args: str) -> str:
     value = args.strip()
     if value:
         # Typed efforts are held to the same list the picker offers, so `/reason` and the picker
@@ -922,18 +923,18 @@ def reason(loop: CommandLoop, args: str) -> str:
         if value not in choices:
             return "Usage: /reason " + "|".join(choices)
         return set_reasoning(loop, value)
-    choice = select_reasoning(loop)
+    choice = await select_reasoning(loop)
     return set_reasoning(loop, choice) if isinstance(choice, str) else "No change"
 
 
-def api(loop: CommandLoop, args: str) -> str:
+async def api(loop: CommandLoop, args: str) -> str:
     value = args.strip()
     provider = loop.session.config.provider
     if value:
         if value not in PROVIDER_API_CHOICES:
             return "Usage: /api " + "|".join(PROVIDER_API_CHOICES)
         return set_api(loop, value)
-    choice = select_api(loop, provider.model)
+    choice = await select_api(loop, provider.model)
     return set_api(loop, choice) if isinstance(choice, str) else "No change"
 
 

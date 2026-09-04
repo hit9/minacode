@@ -4,7 +4,7 @@ from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runne
 from wizolt.cli.worker import worker_command
 
 
-def test_status_bar_shows_worker_segment(tmp_path):
+async def test_status_bar_shows_worker_segment(tmp_path):
     from wizolt.config import (
         Config,
         ProviderConfig,
@@ -45,7 +45,7 @@ def test_status_bar_shows_worker_segment(tmp_path):
     assert "default/worker-model" in texts and parent_lead not in texts
     assert "ctx 50% · cache 50%" in texts
 
-def test_working_divider_marks_inflight_worker(tmp_path):
+async def test_working_divider_marks_inflight_worker(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
     from wizolt.session import Session
@@ -124,7 +124,7 @@ async def test_status_reports_worker_delegation_state(tmp_path):
     text = await status_text()
     assert "`delegating`, rounds `0`" in text
 
-def test_worker_status_command_is_human_readable(tmp_path):
+async def test_worker_status_command_is_human_readable(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
     from wizolt.session import Session
@@ -133,8 +133,8 @@ def test_worker_status_command_is_human_readable(tmp_path):
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert worker_command(loop, "") == chr(10).join(["worker: no active session", "worker provider: default"])
-    assert worker_command(loop, "status") == worker_command(loop, "")
+    assert await worker_command(loop, "") == chr(10).join(["worker: no active session", "worker provider: default"])
+    assert await worker_command(loop, "status") == await worker_command(loop, "")
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     parent.worker = worker
@@ -143,7 +143,7 @@ def test_worker_status_command_is_human_readable(tmp_path):
     worker.state.round_count = 3
     worker.usage.last_prompt_tokens = 50
     worker.usage.last_prompt_budget = 100
-    text = worker_command(loop, "status")
+    text = await worker_command(loop, "status")
     assert "worker: default/worker-model-x" in text
     assert "worker reasoning: high" in text
     assert "worker state: idle" in text
@@ -152,12 +152,12 @@ def test_worker_status_command_is_human_readable(tmp_path):
     assert "<Delegate" not in text
 
     worker._active_turn_messages.append({"role": "user", "content": "order"})
-    assert "worker state: delegating" in worker_command(loop, "status")
+    assert "worker state: delegating" in await worker_command(loop, "status")
 
     # Without provider-reported usage the state estimate is the fallback, like the envelope.
     worker.usage.last_prompt_budget = 0
     worker.state.context_percent = 42
-    assert "worker context: 42%" in worker_command(loop, "status")
+    assert "worker context: 42%" in await worker_command(loop, "status")
 
 async def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, ToolCall
@@ -214,7 +214,7 @@ async def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_
     assert agent.output_fn is append_answer
     assert agent.tools.output_fn is not append_answer
 
-def test_worker_output_passes_memory_shaped_text_through_for_highlighting():
+async def test_worker_output_passes_memory_shaped_text_through_for_highlighting():
     from types import SimpleNamespace
 
     from wizolt.base import LogBlock, LogLine, LogRole

@@ -69,6 +69,9 @@
 
 ### Fixed
 
+- Interactive selectors and read-only viewers no longer block the runtime event loop while waiting
+  for a key. This fixes hangs in `/provider`, `/model`, `/worker`, `/sessions`, `/diff`, compaction
+  history, and the approval `v`/`c` side trips.
 - `wizolt update` (including `/upgrade`) under uv tool and pipx installs previously misread the
   install source because the venv's `bin/python` is a symlink, ran
   `python -m pip install --upgrade wizolt`, and failed with `No module named pip`; the upgrade

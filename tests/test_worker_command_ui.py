@@ -21,7 +21,14 @@ from wizolt.config import (
 from wizolt.tools import Tool
 
 
-def test_worker_command_completion(tmp_path):
+def async_callable(fn):
+    async def call(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return call
+
+
+async def test_worker_command_completion(tmp_path):
     from prompt_toolkit.document import Document
 
     command_loop = loop(tmp_path)
@@ -58,22 +65,22 @@ def test_worker_command_completion(tmp_path):
     assert set(api_texts) == set(PROVIDER_API_CHOICES) | {"default"}
 
 
-def test_worker_api_subcommand_sets_clears_and_rejects(tmp_path):
+async def test_worker_api_subcommand_sets_clears_and_rejects(tmp_path):
     command_loop = loop(tmp_path)
 
-    assert worker_command(command_loop, "api responses") == "Set worker.api = responses"
+    assert await worker_command(command_loop, "api responses") == "Set worker.api = responses"
     assert command_loop.session.config.worker_api == "responses"
 
-    assert worker_command(command_loop, "api default") == "worker api: (inherit)"
+    assert await worker_command(command_loop, "api default") == "worker api: (inherit)"
     assert command_loop.session.config.worker_api == ""
 
-    assert worker_command(command_loop, "api oai") == "Usage: /worker api " + "|".join(PROVIDER_API_CHOICES)
+    assert await worker_command(command_loop, "api oai") == "Usage: /worker api " + "|".join(PROVIDER_API_CHOICES)
     assert command_loop.session.config.worker_api == ""
 
-    assert worker_command(command_loop, "api chat responses") == "Usage: /worker api [API]"
+    assert await worker_command(command_loop, "api chat responses") == "Usage: /worker api [API]"
 
 
-def test_worker_api_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeypatch):
+async def test_worker_api_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     picks = iter(["chat", "default"])
@@ -83,25 +90,25 @@ def test_worker_api_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeyp
         calls.append((title, choices, kwargs))
         return next(picks)
 
-    monkeypatch.setattr(worker_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
 
-    assert worker_command(command_loop, "api") == "Set worker.api = chat"
+    assert await worker_command(command_loop, "api") == "Set worker.api = chat"
     assert command_loop.session.config.worker_api == "chat"
     assert calls[0][0] == "Worker api"
     assert set(calls[0][1]) == set(PROVIDER_API_CHOICES) | {"default"}
     assert calls[0][2]["labels"]["default"].startswith("default")
 
-    assert worker_command(command_loop, "api") == "worker api: (inherit)"
+    assert await worker_command(command_loop, "api") == "worker api: (inherit)"
     assert command_loop.session.config.worker_api == ""
 
 
-def test_worker_status_line_reports_worker_config(tmp_path):
+async def test_worker_status_line_reports_worker_config(tmp_path):
     command_loop = loop(tmp_path)
 
-    assert "worker: no active session" in worker_command(command_loop, "")
+    assert "worker: no active session" in await worker_command(command_loop, "")
 
 
-def test_run_worker_config_drives_pickers_until_done(tmp_path, monkeypatch):
+async def test_run_worker_config_drives_pickers_until_done(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     picks = iter(["provider", "api", "done"])
@@ -112,13 +119,13 @@ def test_run_worker_config_drives_pickers_until_done(tmp_path, monkeypatch):
         calls.append((title, choices, kwargs))
         return next(picks)
 
-    monkeypatch.setattr(worker_mod, "select_choice", select)
-    monkeypatch.setattr(WorkerFlow, "_worker_provider_picker", lambda self: driven.append("provider"))
-    monkeypatch.setattr(WorkerFlow, "_worker_model_picker", lambda self: driven.append("model"))
-    monkeypatch.setattr(WorkerFlow, "_worker_reason_picker", lambda self: driven.append("effort"))
-    monkeypatch.setattr(WorkerFlow, "_worker_api_picker", lambda self: driven.append("api"))
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
+    monkeypatch.setattr(WorkerFlow, "_worker_provider_picker", async_callable(lambda self: driven.append("provider")))
+    monkeypatch.setattr(WorkerFlow, "_worker_model_picker", async_callable(lambda self: driven.append("model")))
+    monkeypatch.setattr(WorkerFlow, "_worker_reason_picker", async_callable(lambda self: driven.append("effort")))
+    monkeypatch.setattr(WorkerFlow, "_worker_api_picker", async_callable(lambda self: driven.append("api")))
 
-    WorkerFlow(command_loop).run_worker_config()
+    await WorkerFlow(command_loop).run_worker_config()
 
     assert driven == ["provider", "api"]
     assert calls[0][0] == "Worker config"
@@ -129,12 +136,12 @@ def test_run_worker_config_drives_pickers_until_done(tmp_path, monkeypatch):
 
     # Esc (SELECTION_BACK) and a non-interactive select (None) both exit without driving pickers.
     for value in (SELECTION_BACK, None):
-        monkeypatch.setattr(worker_mod, "select_choice", lambda *a, value=value, **k: value)
-        WorkerFlow(command_loop).run_worker_config()
+        monkeypatch.setattr(worker_mod, "select_choice", async_callable(lambda *a, value=value, **k: value))
+        await WorkerFlow(command_loop).run_worker_config()
     assert driven == ["provider", "api"]
 
 
-def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeypatch):
+async def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["alt"] = ProviderConfig(model="m")
@@ -147,9 +154,9 @@ def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path, mo
         calls.append((title, choices, kwargs))
         return next(picks)
 
-    monkeypatch.setattr(worker_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
 
-    first = worker_command(command_loop, "provider")
+    first = await worker_command(command_loop, "provider")
     assert calls[0][0] == "Worker provider"
     assert "off" in calls[0][1]
     assert calls[0][1][-1] == "off"  # the clear entry trails the provider names
@@ -161,14 +168,14 @@ def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path, mo
     assert command_loop.session.config.worker_model == ""
     assert command_loop.session.config.worker_reasoning == ""
 
-    cleared = worker_command(command_loop, "provider")
+    cleared = await worker_command(command_loop, "provider")
     assert calls[3][0] == "Worker provider"
     assert calls[3][2]["labels"] == {"alt": "alt (current)"}  # the live entry is marked
     assert cleared == "worker provider: off"  # picking "off" clears without cascading
     assert command_loop.session.config.worker_provider == ""
 
 
-def test_worker_model_picker_sets_the_override_without_the_model_chain(tmp_path, monkeypatch):
+async def test_worker_model_picker_sets_the_override_without_the_model_chain(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["alt"] = ProviderConfig(model="m-a", available_models=("m-a", "m-b"))
@@ -183,17 +190,17 @@ def test_worker_model_picker_sets_the_override_without_the_model_chain(tmp_path,
         assert "default" in choices and "m-c" in choices and "m-a" in choices
         return next(picks)
 
-    monkeypatch.setattr(worker_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, entry: discovered.append(entry.model) or ("m-remote",))
 
-    result = worker_command(command_loop, "model")
+    result = await worker_command(command_loop, "model")
     assert titles == ["Worker model"]
     assert discovered == ["m-a"]  # discovery ran against the worker's entry, not the parent's
     assert command_loop.session.config.worker_model == "m-b"
     assert result == "Set worker.model = m-b"
 
 
-def test_worker_reason_picker_covers_efforts_and_default(tmp_path, monkeypatch):
+async def test_worker_reason_picker_covers_efforts_and_default(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.worker_reasoning = "high"
@@ -204,13 +211,13 @@ def test_worker_reason_picker_covers_efforts_and_default(tmp_path, monkeypatch):
         assert kwargs["labels"] == {"default": "default - inherit the provider entry's reasoning", "high": "high (current)"}
         return next(picks)
 
-    monkeypatch.setattr(worker_mod, "select_choice", select)
-    result = worker_command(command_loop, "reason")
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
+    result = await worker_command(command_loop, "reason")
     assert command_loop.session.config.worker_reasoning == "low"
     assert result == "Set worker.reasoning = low"
 
 
-def test_worker_reason_picker_uses_the_effective_models_declared_scale(tmp_path, monkeypatch):
+async def test_worker_reason_picker_uses_the_effective_models_declared_scale(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["custom"] = ProviderConfig.from_dict(
@@ -226,41 +233,41 @@ def test_worker_reason_picker_uses_the_effective_models_declared_scale(tmp_path,
         assert choices == ("off", "cheap", "deep", "default")
         return "deep"
 
-    monkeypatch.setattr(worker_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
 
-    assert worker_command(command_loop, "reason") == "Set worker.reasoning = deep"
+    assert await worker_command(command_loop, "reason") == "Set worker.reasoning = deep"
 
 
-def test_worker_pickers_return_no_change_on_back(tmp_path, monkeypatch):
+async def test_worker_pickers_return_no_change_on_back(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["alt"] = ProviderConfig(model="m", available_models=("m",))
     command_loop.session.config.worker_provider = "alt"
     command_loop.session.config.worker_model = "m-x"
     command_loop.session.config.worker_reasoning = "high"
-    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: SELECTION_BACK)
-    assert worker_command(command_loop, "provider") == "No change"
-    assert worker_command(command_loop, "model") == "No change"
-    assert worker_command(command_loop, "reason") == "No change"
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(lambda *_args, **_kwargs: SELECTION_BACK))
+    assert await worker_command(command_loop, "provider") == "No change"
+    assert await worker_command(command_loop, "model") == "No change"
+    assert await worker_command(command_loop, "reason") == "No change"
     assert command_loop.session.config.worker_provider == "alt"
     assert command_loop.session.config.worker_model == "m-x"
     assert command_loop.session.config.worker_reasoning == "high"
 
 
-def test_worker_model_and_reason_pickers_clear_via_default(tmp_path, monkeypatch):
+async def test_worker_model_and_reason_pickers_clear_via_default(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.worker_model = "m-x"
     command_loop.session.config.worker_reasoning = "high"
     picks = iter(["default", "default"])
-    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
-    assert worker_command(command_loop, "model") == "worker model: (inherit)"
-    assert worker_command(command_loop, "reason") == "worker reasoning: (inherit)"
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(lambda *_args, **_kwargs: next(picks)))
+    assert await worker_command(command_loop, "model") == "worker model: (inherit)"
+    assert await worker_command(command_loop, "reason") == "worker reasoning: (inherit)"
     assert command_loop.session.config.worker_model == ""
     assert command_loop.session.config.worker_reasoning == ""
 
 
-def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path, monkeypatch):
+async def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["fast"] = ProviderConfig(model="fast-model", available_models=("fast-model", "fast-mini"))
@@ -274,10 +281,10 @@ def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path, monk
         titles.append(title)
         return next(picks)
 
-    monkeypatch.setattr(worker_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(select))
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, entry: discovered.append(entry.model) or ("remote-mini",))
 
-    result = worker_command(command_loop, "provider")
+    result = await worker_command(command_loop, "provider")
 
     assert titles == ["Worker provider", "Worker model", "Worker reasoning"]
     assert discovered == ["fast-model"]  # discovery ran against the newly selected entry
@@ -293,17 +300,17 @@ def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path, monk
     assert worker.config.providers["fast"].reasoning == "high"
 
 
-def test_worker_provider_cascade_aborts_at_model_stage_keeping_earlier_stages(tmp_path, monkeypatch):
+async def test_worker_provider_cascade_aborts_at_model_stage_keeping_earlier_stages(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["fast"] = ProviderConfig(model="fast-model", available_models=("fast-model",))
     command_loop.session.config.worker_model = "m-x"
     command_loop.session.config.worker_reasoning = "high"
     picks = iter(["fast", SELECTION_BACK])
-    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(lambda *_args, **_kwargs: next(picks)))
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _entry: ())
 
-    result = worker_command(command_loop, "provider")
+    result = await worker_command(command_loop, "provider")
 
     assert command_loop.session.config.worker_provider == "fast"  # the provider stage landed
     assert command_loop.session.config.worker_model == "m-x"  # model/reasoning untouched
@@ -313,16 +320,16 @@ def test_worker_provider_cascade_aborts_at_model_stage_keeping_earlier_stages(tm
     assert "worker reasoning" not in result
 
 
-def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_path, monkeypatch):
+async def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["fast"] = ProviderConfig(model="fast-model", available_models=("fast-model",))
     command_loop.session.config.worker_reasoning = "high"
     picks = iter(["fast", "fast-model", None])  # None = the picker was dismissed
-    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(lambda *_args, **_kwargs: next(picks)))
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _entry: ())
 
-    result = worker_command(command_loop, "provider")
+    result = await worker_command(command_loop, "provider")
 
     assert command_loop.session.config.worker_provider == "fast"
     assert command_loop.session.config.worker_model == "fast-model"
@@ -331,12 +338,12 @@ def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_path, 
     assert "worker reasoning: unchanged" in result
 
 
-def test_worker_provider_typed_form_does_not_cascade(tmp_path, monkeypatch):
+async def test_worker_provider_typed_form_does_not_cascade(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.session.config.providers["alt"] = ProviderConfig(model="m")
-    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("the typed form opens no picker")))
+    monkeypatch.setattr(worker_mod, "select_choice", async_callable(lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("the typed form opens no picker"))))
 
-    result = worker_command(command_loop, "provider alt")
+    result = await worker_command(command_loop, "provider alt")
 
     assert result.startswith("Set worker provider = alt")
     assert command_loop.session.config.worker_provider == "alt"
@@ -344,7 +351,7 @@ def test_worker_provider_typed_form_does_not_cascade(tmp_path, monkeypatch):
     assert command_loop.session.config.worker_reasoning == ""
 
 
-def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_path):
+async def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_path):
     """Ctrl-O is the only door to a script under yolo, where no prompt ever offered `v`: the entry
     hands the stored source to the same read-only viewer the confirm-time key opens."""
     command_loop = loop(tmp_path)
@@ -369,7 +376,7 @@ def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_pa
     assert "counted 30 rows" in viewer[-1]
 
 
-def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
+async def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.store_tool_result("ToolScript", [{"action": "describe", "tools": ["Read"]}], "Read\njson:    no")
     modal = ModalHarness([])
@@ -380,7 +387,7 @@ def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
     assert modal.frames == []
 
 
-def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_path):
+async def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_path):
     """The log line clips a failure to one row. Here the whole traceback sits under the numbered
     source, so `File "<toolscript>", line N` resolves against the line it names."""
     command_loop = loop(tmp_path)
@@ -398,7 +405,7 @@ def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_path):
     assert 'File "<toolscript>", line 2' in viewer
 
 
-def test_tool_output_viewer_shows_the_whole_command_not_the_clipped_log_line(tmp_path):
+async def test_tool_output_viewer_shows_the_whole_command_not_the_clipped_log_line(tmp_path):
     """The transcript row collapses and clips a command at 200 characters. A viewer opened to see
     what was run has to show what was run."""
     command_loop = loop(tmp_path)

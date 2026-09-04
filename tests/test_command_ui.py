@@ -38,12 +38,12 @@ def diff_loop(tmp_path):
 HELP_OMISSIONS = frozenset({"/worker"})
 
 
-def test_registry_names_and_aliases_appear_in_help():
+async def test_registry_names_and_aliases_appear_in_help():
     missing = {name for command in COMMANDS for name in (command.name, *command.aliases) if name not in CommandLoop.HELP}
     assert missing <= HELP_OMISSIONS, f"registered commands missing from HELP: {sorted(missing - HELP_OMISSIONS)}"
 
 
-def test_image_route_notice_matches_view_image_tree_vocabulary(tmp_path):
+async def test_image_route_notice_matches_view_image_tree_vocabulary(tmp_path):
     command_loop = loop(tmp_path)
     blocks = []
     command_loop.tool_output = blocks.append
@@ -92,6 +92,8 @@ class ModalHarness:
                 return result
         return None
 
+    async def show_modal(self, fragments_fn, key_fn, *, exclusive=False):
+        return self.show_modal_sync(fragments_fn, key_fn, exclusive=exclusive)
 
 
 
@@ -185,7 +187,8 @@ class ModalHarness:
 
 
 
-def test_api_command_reports_an_incompatible_builtin_tools_configuration_without_clearing_it(tmp_path):
+
+async def test_api_command_reports_an_incompatible_builtin_tools_configuration_without_clearing_it(tmp_path):
     """Switching /api reports inactive builtin tools and never rewrites provider config."""
     command_loop = loop(tmp_path)
     provider_config = command_loop.session.config.provider
@@ -195,7 +198,7 @@ def test_api_command_reports_an_incompatible_builtin_tools_configuration_without
     provider_config.api = "responses"
     provider_config.builtin_tools = ({"type": "web_search"}, {"type": "web_extractor"})
 
-    assert api(command_loop, "chat") == "Set provider.api = chat (wire: chat); builtin_tools inactive on chat"
+    assert await api(command_loop, "chat") == "Set provider.api = chat (wire: chat); builtin_tools inactive on chat"
     # The requested API value is applied and the provider configuration is left intact.
     assert provider_config.api == "chat"
     assert provider_config.builtin_tools == ({"type": "web_search"}, {"type": "web_extractor"})
@@ -204,11 +207,11 @@ def test_api_command_reports_an_incompatible_builtin_tools_configuration_without
     assert ModelClient(command_loop.session).builtin_tools() == []
 
     # Switching back restores the working Responses configuration without erasing it.
-    assert api(command_loop, "responses") == "Set provider.api = responses (wire: responses)"
+    assert await api(command_loop, "responses") == "Set provider.api = responses (wire: responses)"
     assert provider_config.builtin_tools == ({"type": "web_search"}, {"type": "web_extractor"})
 
 
-def test_api_command_reports_when_no_wire_accepts_the_configured_builtin_tools(tmp_path):
+async def test_api_command_reports_when_no_wire_accepts_the_configured_builtin_tools(tmp_path):
     """DeepSeek has no provider-side tools channel, so the shared config stays inactive."""
     command_loop = loop(tmp_path)
     provider_config = command_loop.session.config.provider
@@ -217,11 +220,11 @@ def test_api_command_reports_when_no_wire_accepts_the_configured_builtin_tools(t
     provider_config.key = "sk-test"
     provider_config.builtin_tools = ({"type": "web_search"},)
 
-    assert api(command_loop, "chat") == "Set provider.api = chat (wire: chat); builtin_tools inactive on chat"
+    assert await api(command_loop, "chat") == "Set provider.api = chat (wire: chat); builtin_tools inactive on chat"
     assert provider_config.builtin_tools == ({"type": "web_search"},)
 
 
-def test_config_distinguishes_configured_and_active_builtin_tools(tmp_path):
+async def test_config_distinguishes_configured_and_active_builtin_tools(tmp_path):
     command_loop = loop(tmp_path)
     provider_config = command_loop.session.config.provider
     provider_config.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -238,7 +241,7 @@ def test_config_distinguishes_configured_and_active_builtin_tools(tmp_path):
     assert "provider.resolved_builtin_tools: active: web_search, web_extractor" in active
 
 
-def test_api_command_uses_the_same_entry_policy_as_the_request_boundary(tmp_path):
+async def test_api_command_uses_the_same_entry_policy_as_the_request_boundary(tmp_path):
     """A valid wire with an unsupported entry is reported immediately, not only on send."""
     command_loop = loop(tmp_path)
     provider_config = command_loop.session.config.provider
@@ -247,7 +250,7 @@ def test_api_command_uses_the_same_entry_policy_as_the_request_boundary(tmp_path
     provider_config.key = "sk-test"
     provider_config.builtin_tools = ({"type": "code_interpreter"},)
 
-    assert api(command_loop, "responses") == "Set provider.api = responses (wire: responses); unsupported builtin_tools: code_interpreter"
+    assert await api(command_loop, "responses") == "Set provider.api = responses (wire: responses); unsupported builtin_tools: code_interpreter"
     with pytest.raises(ModelError):
         ModelClient(command_loop.session).builtin_tools()
 
@@ -282,7 +285,6 @@ def test_api_command_uses_the_same_entry_policy_as_the_request_boundary(tmp_path
 
 
 # --- /worker provider cascade: the no-arg picker flows provider -> model -> reasoning. ---
-
 
 
 

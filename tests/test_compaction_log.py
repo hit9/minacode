@@ -47,7 +47,7 @@ def store(session, **fields) -> HistorySegment:
 # --- the record -------------------------------------------------------------------------------
 
 
-def test_compaction_records_what_it_evicted(tmp_path):
+async def test_compaction_records_what_it_evicted(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
     compacted = [
@@ -67,7 +67,7 @@ def test_compaction_records_what_it_evicted(tmp_path):
     assert segment.summary == "found the off-by-one"
 
 
-def test_turn_compaction_and_summarizer_failure_are_distinguishable(tmp_path):
+async def test_turn_compaction_and_summarizer_failure_are_distinguishable(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
     turn = [{"role": "user", "content": "keep"}]
@@ -85,7 +85,7 @@ def test_turn_compaction_and_summarizer_failure_are_distinguishable(tmp_path):
     assert segment.fallback is True  # no summary data: deterministic trim, the lossiest case
 
 
-def test_manual_compaction_is_recorded_as_manual(tmp_path):
+async def test_manual_compaction_is_recorded_as_manual(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
 
@@ -94,7 +94,7 @@ def test_manual_compaction_is_recorded_as_manual(tmp_path):
     assert s.history[0].trigger == "manual"
 
 
-def test_earlier_summaries_survive_later_compactions(tmp_path):
+async def test_earlier_summaries_survive_later_compactions(tmp_path):
     # The live checkpoint carries only the newest summary; the segments are what make the earlier
     # ones reviewable at all.
     s = session(tmp_path)
@@ -109,7 +109,7 @@ def test_earlier_summaries_survive_later_compactions(tmp_path):
 # --- persistence ------------------------------------------------------------------------------
 
 
-def test_segment_metadata_survives_a_snapshot_round_trip(tmp_path):
+async def test_segment_metadata_survives_a_snapshot_round_trip(tmp_path):
     s = session(tmp_path)
     original = store(s, fallback=True, scope="turn", trigger="manual")
     blobs: dict[str, str] = {}
@@ -120,7 +120,7 @@ def test_segment_metadata_survives_a_snapshot_round_trip(tmp_path):
     assert restored == original
 
 
-def test_a_snapshot_written_before_the_metadata_still_loads():
+async def test_a_snapshot_written_before_the_metadata_still_loads():
     legacy = {"key": "seg.1", "title": "older session", "blob": "b1"}
 
     restored = SessionSnapshotCodec.history([legacy], {"b1": "evicted text"})[0]
@@ -192,11 +192,14 @@ class Modal:
         self.fragments, self.key = fragments_fn, key_fn
         self.exclusive = kwargs.get("exclusive", False)
 
+    async def show_modal(self, fragments_fn, key_fn, **kwargs):
+        return self.show_modal_sync(fragments_fn, key_fn, **kwargs)
+
     def text(self) -> str:
         return "".join(fragment for _, fragment in self.fragments())
 
 
-def viewer(tmp_path, count=3):
+async def viewer(tmp_path, count=3):
     s = session(tmp_path)
     s.state.compaction_count = count
     for index in range(count):
@@ -204,12 +207,12 @@ def viewer(tmp_path, count=3):
     lp = loop(s)
     modal = Modal()
     lp.tui = modal
-    compaction_log_viewer(lp)
+    await compaction_log_viewer(lp)
     return modal
 
 
-def test_viewer_lists_segments_newest_first(tmp_path):
-    modal = viewer(tmp_path)
+async def test_viewer_lists_segments_newest_first(tmp_path):
+    modal = await viewer(tmp_path)
 
     text = modal.text()
     assert modal.exclusive is True  # full-screen, like the diff viewer
@@ -219,8 +222,8 @@ def test_viewer_lists_segments_newest_first(tmp_path):
     assert "[list]" in text and "[1/3]" in text
 
 
-def test_viewer_opens_a_segment_and_scrolls_back_to_the_list(tmp_path):
-    modal = viewer(tmp_path)
+async def test_viewer_opens_a_segment_and_scrolls_back_to_the_list(tmp_path):
+    modal = await viewer(tmp_path)
 
     modal.key("down", "")  # select seg.2
     modal.key("enter", "")
@@ -234,7 +237,7 @@ def test_viewer_opens_a_segment_and_scrolls_back_to_the_list(tmp_path):
     assert "summary 2" not in modal.text()
 
 
-def open_first(tmp_path, **fields):
+async def open_first(tmp_path, **fields):
     """The opened first segment, rendered on a terminal tall enough to hold the whole detail."""
     s = session(tmp_path)
     s.state.compaction_count = 1
@@ -243,13 +246,13 @@ def open_first(tmp_path, **fields):
     modal = Modal()
     lp.tui = modal
     with mock.patch.object(modals.shutil, "get_terminal_size", lambda *args: os.terminal_size((120, 200))):
-        compaction_log_viewer(lp)
+        await compaction_log_viewer(lp)
         modal.key("enter", "")
         return modal.text()
 
 
-def test_viewer_detail_says_what_happened_in_plain_words(tmp_path):
-    text = open_first(tmp_path, messages=96, summary="reviewed the approval flow")
+async def test_viewer_detail_says_what_happened_in_plain_words(tmp_path):
+    text = await open_first(tmp_path, messages=96, summary="reviewed the approval flow")
 
     assert "Compacted automatically, dropping earlier conversation · 96 messages" in text
     assert "reviewed the approval flow" in text
@@ -258,34 +261,34 @@ def test_viewer_detail_says_what_happened_in_plain_words(tmp_path):
         assert jargon not in text
 
 
-def test_viewer_detail_warns_when_the_summarizer_failed(tmp_path):
-    text = open_first(tmp_path, fallback=True, summary="")
+async def test_viewer_detail_warns_when_the_summarizer_failed(tmp_path):
+    text = await open_first(tmp_path, fallback=True, summary="")
 
     assert "Summarizing failed" in text
     assert "(none recorded)" in text
 
 
-def test_viewer_detail_explains_a_segment_older_than_the_log(tmp_path):
-    text = open_first(tmp_path, created_at="", scope="", trigger="", messages=0, summary="")
+async def test_viewer_detail_explains_a_segment_older_than_the_log(tmp_path):
+    text = await open_first(tmp_path, created_at="", scope="", trigger="", messages=0, summary="")
 
     # Missing detail is the record's age, not a failure of this compaction.
     assert "Compacted before wizolt kept these details" in text
     assert "predates the log" in text
 
 
-def test_viewer_closes_from_the_list(tmp_path):
-    modal = viewer(tmp_path)
+async def test_viewer_closes_from_the_list(tmp_path):
+    modal = await viewer(tmp_path)
 
     assert modal.key("escape", "") is None
     assert modal.key("q", "") is None
 
 
-def test_viewer_reports_an_empty_store(tmp_path):
+async def test_viewer_reports_an_empty_store(tmp_path):
     s = session(tmp_path)
     lp = loop(s)
     modal = Modal()
     lp.tui = modal
-    compaction_log_viewer(lp)
+    await compaction_log_viewer(lp)
 
     assert "No compaction has stored a segment yet" in modal.text()
     assert modal.key("enter", "") is not None  # nothing to open, and it does not crash
@@ -295,7 +298,7 @@ def test_viewer_reports_an_empty_store(tmp_path):
 # --- discoverability --------------------------------------------------------------------------
 
 
-def test_compact_log_is_documented_and_not_queue_safe():
+async def test_compact_log_is_documented_and_not_queue_safe():
     assert "/compact log" in CommandLoop.HELP
     # Reading the log is harmless, but /compact itself rewrites context: the registry is per
     # command, so the whole command stays out of the mid-turn allowlist.

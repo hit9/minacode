@@ -27,6 +27,13 @@ from wizolt.session import Session, SessionEntry, SessionSnapshotStore
 from wizolt.tui import TuiApp
 
 
+def async_callable(fn):
+    async def call(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return call
+
+
 async def test_exit_command_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
@@ -62,21 +69,21 @@ async def test_resume_is_an_alias_for_sessions(tmp_path):
     assert emitted == ["No saved sessions yet."]
     assert "/resume" in CommandLoop.COMMANDS
 
-def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
+async def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert sessions_command(loop, "") == "No saved sessions yet."
+    assert await sessions_command(loop, "") == "No saved sessions yet."
 
     older = stored_session(tmp_path, "sort the picker by date")
     s.messages.append({"role": "user", "content": "current work"})
     s.save_snapshot()
-    listed = sessions_command(loop, "")
+    listed = await sessions_command(loop, "")
 
     assert older.uid in listed and "sort the picker by date" in listed
     assert s.uid in listed and "current" in listed
-    assert sessions_command(loop, "nonsense") == "Usage: /sessions [all]"
+    assert await sessions_command(loop, "nonsense") == "Usage: /sessions [all]"
     assert loop.resume_request == ""
 
 async def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path, monkeypatch):
@@ -88,7 +95,7 @@ async def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_pat
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     loop.tui = TuiApp()
     loop.interactive_input = True
-    monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: target.uid)
+    monkeypatch.setattr(commands_mod, "choice_application", async_callable(lambda _loop, *args, **kwargs: target.uid))
 
     handled, exit_now = await loop.command("/sessions")
 
@@ -150,7 +157,7 @@ async def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatc
         other.save_snapshot()
 
     captured: dict[str, dict[str, str]] = {}
-    monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: captured.update(labels=args[2]) or None)
+    monkeypatch.setattr(commands_mod, "choice_application", async_callable(lambda _loop, *args, **kwargs: captured.update(labels=args[2]) or None))
 
     assert await loop.command("/sessions") == (True, False)
     labels = list(captured["labels"].values())
@@ -174,7 +181,7 @@ async def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(t
     loop.tui = TuiApp()
     loop.interactive_input = True
     captured: dict[str, object] = {}
-    monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: captured.update(args=args, kwargs=kwargs) or target.uid)
+    monkeypatch.setattr(commands_mod, "choice_application", async_callable(lambda _loop, *args, **kwargs: captured.update(args=args, kwargs=kwargs) or target.uid))
 
     assert await loop.command("/sessions") == (True, True)
     assert captured["kwargs"]["exclusive"] is True

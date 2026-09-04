@@ -39,7 +39,7 @@ def _modals(results):
     return show_modal
 
 
-def test_choice_application_expands_escaped_preview_newlines(tmp_path):
+async def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     output = []
     loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
     loop.interactive_input = True
@@ -50,9 +50,12 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
             rendered.extend(fragments_fn())
             return key_fn("enter", "")
 
+        async def show_modal(self, fragments_fn, key_fn, exclusive=False):
+            return self.show_modal_sync(fragments_fn, key_fn, exclusive)
+
     loop.tui = Modal()
 
-    result = choice_application(
+    result = await choice_application(
         loop,
         "Select:",
         ("A", "B"),
@@ -175,14 +178,14 @@ async def test_ask_escape_cancels_the_whole_batch(tmp_path):
     result = await question_interaction(loop, [AskSpec("One?"), AskSpec("Two?")])
     assert result == [DISMISSED, DISMISSED]
 
-def test_elapsed_since_uses_whole_seconds(monkeypatch):
+async def test_elapsed_since_uses_whole_seconds(monkeypatch):
     monkeypatch.setattr(time, "monotonic", lambda: 104.9)
     assert Text.elapsed_since(100.0) == "4s"
 
     monkeypatch.setattr(time, "monotonic", lambda: 162.9)
     assert Text.elapsed_since(100.0) == "1m02s"
 
-def test_bash_live_start_pauses_standalone_status(tmp_path):
+async def test_bash_live_start_pauses_standalone_status(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     loop.ui.color = True
     loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
@@ -198,7 +201,7 @@ def test_bash_live_start_pauses_standalone_status(tmp_path):
     assert loop.live_status_paused is False
     assert loop.status_bar.thread is not None
 
-def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
+async def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
     output = []
     loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), output_fn=output.append)
 
@@ -207,7 +210,7 @@ def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
 
     assert output == ["  First line.\n  Second line.", "Done.\nFinal detail."]
 
-def test_colored_assistant_and_tool_blocks_each_start_with_one_blank_line(tmp_path):
+async def test_colored_assistant_and_tool_blocks_each_start_with_one_blank_line(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     loop.ui.color = True
     loop.ui.emit_phase_rule = lambda: None  # the narration's opening rule is this test's noise
@@ -235,7 +238,7 @@ def _colored_loop(tmp_path):
     return loop
 
 
-def test_interim_narration_closes_with_a_phase_rule_when_far_from_last_rule(tmp_path):
+async def test_interim_narration_closes_with_a_phase_rule_when_far_from_last_rule(tmp_path):
     """A turn's interim narration is closed by the same full-width rule the turn ends with,
     minus the label, provided the rule would not land too close to the one above it. The blank
     line and the narration's own rows count toward the distance."""
@@ -251,7 +254,7 @@ def test_interim_narration_closes_with_a_phase_rule_when_far_from_last_rule(tmp_
     assert rules == [1]
 
 
-def test_user_turn_opens_with_a_phase_rule(tmp_path):
+async def test_user_turn_opens_with_a_phase_rule(tmp_path):
     """The turn's opening rule sits under the user's message and always draws: the user's
     message is the top boundary of the turn, so every later rule measures its distance from it
     rather than the first narration being special-cased."""
@@ -265,7 +268,7 @@ def test_user_turn_opens_with_a_phase_rule(tmp_path):
     assert rules == [1]
 
 
-def test_user_turn_rule_restarts_the_silent_batch_count(tmp_path):
+async def test_user_turn_rule_restarts_the_silent_batch_count(tmp_path):
     loop = _colored_loop(tmp_path)
     loop._silent_batches = 3
 
@@ -274,7 +277,7 @@ def test_user_turn_rule_restarts_the_silent_batch_count(tmp_path):
     assert loop._silent_batches == 0
 
 
-def test_interim_narration_skips_the_rule_when_too_close_to_the_last_one(tmp_path):
+async def test_interim_narration_skips_the_rule_when_too_close_to_the_last_one(tmp_path):
     """The agent saying two things in quick succession is one phase, not two: a rule that would
     land within MIN_ROWS_BETWEEN_RULES of the one above it is skipped, so the transcript does not
     collect a row of dashes for every sentence."""
@@ -288,7 +291,7 @@ def test_interim_narration_skips_the_rule_when_too_close_to_the_last_one(tmp_pat
     assert rules == []
 
 
-def test_final_answer_takes_no_phase_rule(tmp_path):
+async def test_final_answer_takes_no_phase_rule(tmp_path):
     """The turn-end rule already closes the turn, so the answer must not add a second rule of its
     own -- two rules in a row would read as a box."""
     loop = _colored_loop(tmp_path)
@@ -301,7 +304,7 @@ def test_final_answer_takes_no_phase_rule(tmp_path):
     assert rules == []
 
 
-def test_tool_batch_closes_a_long_silent_run_with_a_phase_rule(tmp_path):
+async def test_tool_batch_closes_a_long_silent_run_with_a_phase_rule(tmp_path):
     """While the agent works in silence its calls run together; a stretch of silent tool
     batches -- the model never saying anything back -- closes with the same seam, fired after
     the batch's output is out so a batch is never cut in half."""
@@ -315,7 +318,7 @@ def test_tool_batch_closes_a_long_silent_run_with_a_phase_rule(tmp_path):
     assert rules == [1]
 
 
-def test_tool_batch_keeps_a_short_silent_run_together(tmp_path):
+async def test_tool_batch_keeps_a_short_silent_run_together(tmp_path):
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
@@ -326,7 +329,7 @@ def test_tool_batch_keeps_a_short_silent_run_together(tmp_path):
     assert rules == []
 
 
-def test_a_voiced_batch_is_not_silent(tmp_path):
+async def test_a_voiced_batch_is_not_silent(tmp_path):
     """A batch that carried narration reports through the same hook but does not count
     toward the silent run: the agent said something, so the seam is not needed yet."""
     loop = _colored_loop(tmp_path)
@@ -340,7 +343,7 @@ def test_a_voiced_batch_is_not_silent(tmp_path):
     assert loop._silent_batches == loop.TOOL_RUN_RULE_BATCHES - 1
 
 
-def test_engine_routes_the_answer_and_batch_end_to_the_loop(tmp_path):
+async def test_engine_routes_the_answer_and_batch_end_to_the_loop(tmp_path):
     """The engine's final answer and batch-end facts are wired to the loop's presentation hooks:
     the answer goes to the no-rule path, and each tool batch reports its end."""
     loop = _colored_loop(tmp_path)
@@ -349,7 +352,7 @@ def test_engine_routes_the_answer_and_batch_end_to_the_loop(tmp_path):
     assert loop.agent.on_tool_batch.__func__ is CommandLoop.tool_batch_output
 
 
-def test_phase_rule_renders_as_an_unlabelled_full_width_solid_rule(tmp_path):
+async def test_phase_rule_renders_as_an_unlabelled_full_width_solid_rule(tmp_path):
     """The phase rule is the turn-end rule's line with the label removed: the same gray, the same
     solid dash, edge to edge, and no text of its own -- the narration it closes is the label."""
     loop = _colored_loop(tmp_path)
@@ -365,7 +368,7 @@ def test_phase_rule_renders_as_an_unlabelled_full_width_solid_rule(tmp_path):
     assert loop.ui.rows_since_rule == 0
 
 
-def test_emit_counts_rendered_rows_toward_rule_distance(tmp_path):
+async def test_emit_counts_rendered_rows_toward_rule_distance(tmp_path):
     """The distance between rules is measured in rendered rows, not in blocks: one Bash call with
     its output goes further than four Reads, and a wrapped block counts what it actually took."""
     loop = _colored_loop(tmp_path)
@@ -376,7 +379,7 @@ def test_emit_counts_rendered_rows_toward_rule_distance(tmp_path):
     assert loop.ui.rows_since_rule == 3
 
 
-def test_rule_due_reports_whether_a_rule_would_land_far_enough(tmp_path):
+async def test_rule_due_reports_whether_a_rule_would_land_far_enough(tmp_path):
     """The distance query is the one place a phase rule's spacing is judged: color off never
     draws (there are no rules to be close to), and the threshold is inclusive."""
     loop = _colored_loop(tmp_path)
@@ -387,7 +390,7 @@ def test_rule_due_reports_whether_a_rule_would_land_far_enough(tmp_path):
     assert not loop.ui.rule_due(loop.MIN_ROWS_BETWEEN_RULES)
 
 
-def test_turn_end_rule_resets_rule_distance(tmp_path):
+async def test_turn_end_rule_resets_rule_distance(tmp_path):
     """The turn-end rule is a solid rule like any other, so the distance counter starts over at
     the close of a turn rather than carrying the whole turn's length into the next one."""
     loop = _colored_loop(tmp_path)
@@ -398,7 +401,7 @@ def test_turn_end_rule_resets_rule_distance(tmp_path):
     assert loop.ui.rows_since_rule == 0
 
 
-def test_worker_interim_output_gets_the_same_phase_rule(tmp_path):
+async def test_worker_interim_output_gets_the_same_phase_rule(tmp_path):
     """A worker's interim text is an interim reply like any other; it closes with the same rule,
     through the same narration path the main agent uses."""
     loop = _colored_loop(tmp_path)
@@ -411,7 +414,7 @@ def test_worker_interim_output_gets_the_same_phase_rule(tmp_path):
     assert rules == [1]
 
 
-def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
+async def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
     """End to end through the engine: the turn opens with the user's rule, every interim
     narration closes with one once it is far enough from the rule above, a run of silent tool
     batches closes with one too, and the final answer takes none. Every tool batch reports its
@@ -445,7 +448,7 @@ def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
     loop.agent.model = FakeModel()
 
     loop.user_turn_rule()  # the turn's opening rule, drawn under the user's message
-    assert loop.agent.run_sync("x") == "改完了。"
+    assert await loop.agent.run("x") == "改完了。"
 
     assert len(rules) == 3  # user rule, the second narration's rule, the silent run's rule
     assert rules[0] == 0  # the user's rule always draws; the first narration lands too close to it and is skipped
@@ -454,7 +457,7 @@ def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
     assert silences == [False, False, True, True, True, True]  # narration batches voiced, the rest silent
 
 
-def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_path):
+async def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_path):
     """A resumed session replays its turns with the same phase rules the live run drew: the
     user's message opens each turn with a rule, interim narration closes with one once it is
     far enough from the rule above, and a silent run of tool batches closes with the batch
