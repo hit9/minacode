@@ -70,14 +70,6 @@ touched.
 
 <div class="term-shot" role="img" aria-label="The delegation bracket: a full-width yellow worker start rule naming the worker's provider, model, and order title, a few worker tool lines beneath it, and a yellow worker done rule with step count, elapsed time, token counts, and touched files."><span class="fs-worker">──── worker start · deepseek/deepseek-v4-flash · Review the parser refactor ────</span><span class="fs-tool">  ├ Read wizolt/loop.py</span><span class="fs-tool">  ├ Read tests/test_edit_tool.py</span><span class="fs-tool">  └ Bash uv run pytest tests/ -q</span><span class="fs-worker">──── worker done · steps 7 · 43.2s · 12.4K in / 1.1K out · wizolt/loop.py, tests/ ────</span></div>
 
-### Status bar while delegating
-
-While the worker runs, the status bar swaps the parent's row for the worker's: a `[worker]`
-marker, then the worker's provider and model, its reasoning effort, and its context fill with
-cache ratio.
-
-<div class="term-shot" role="img" aria-label="The status bar while a delegation runs: a yellow [worker] marker, then the worker's provider and model, its reasoning effort, and its context fill with cache ratio."><span><span class="fs-i fs-dim">delegating </span><span class="fs-i sb-worker">[worker]</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-warn">deepseek/deepseek-v4-flash</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">medium</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 41% · cache 95%</span></span></div>
-
 ### The send approval brief
 
 Every `Delegate send` asks for approval, even under `yolo` — the confirmation prints the title, a

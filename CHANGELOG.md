@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- The status bar now keeps one static, semantically colored layout while work is running:
+  `[yolo] model · level | mcp N · skills N | ctx N% · cache N% | index*`. Its facts still
+  refresh, but it no longer sweeps, swaps to worker or compaction details, or starts a dedicated
+  repaint thread in the simple frontend.
 - The working divider now leaves a blank row above queued follow-up inputs, so the queue reads
   as its own region below the boundary instead of a list glued to the divider's label.
 - The `Ask` modal opens with a blank row above the question, matching every other selector, so

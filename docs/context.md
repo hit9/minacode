@@ -61,13 +61,6 @@ newest — and `/compact log seg.N` prints that summary without the viewer.
 Neither form prints the stored excerpt — that is the agent's to retrieve — and a pass that finds
 nothing to evict stores no segment at all, so the compaction count can exceed the segment count.
 
-While a summary is running, the status bar names the entry doing it — `[compaction]`, then that
-entry's model and effort — the same way it names an in-flight [worker](worker.md). The row goes
-back to the conversation's own model when the summary lands, and does not change at all when
-compaction runs on the model already shown.
-
-<div class="term-shot" role="img" aria-label="The status bar while a summary runs: a yellow [compaction] marker, then the entry and model serving the summary, its reasoning effort, and the conversation's context fill with cache ratio."><span><span class="fs-i fs-dim">compacting </span><span class="fs-i sb-ctx">[compaction]</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-warn">deepseek/deepseek-v4-flash</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">off</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 41% · cache 95%</span></span></div>
-
 ### When a summary does not arrive
 
 Compaction always makes room, even when the summary request fails: the same messages leave the

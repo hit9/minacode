@@ -305,8 +305,8 @@ Two things to check when picking a summarizer:
 - **Its `response_timeout` applies to the summary.** A slow summarizer holds up the turn for that
   long before giving up. Lower it on that entry if you would rather trim early than wait.
 
-`/config` shows the effective `compaction.*` values, the status bar names the entry while a
-summary is in flight, and `/compact log` records which model produced each stored segment. Summary
+`/config` shows the effective `compaction.*` values, and `/compact log` records which model
+produced each stored segment. Summary
 tokens are counted apart from the conversation, on their own `compaction usage` row in `/status`,
 so each row can be read against one model's price.
 

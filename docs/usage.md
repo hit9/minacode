@@ -77,21 +77,13 @@ a separate fixed-size snapshot.
 
 ## Status bar
 
-A single line beneath the prompt summarizes the runtime: the active provider and model, the
-reasoning level, context fill with the latest request's cache ratio as `ctx 23% · cache 98%`,
-the code index state, and any background jobs. MCP and skill counts and an update notice appear
-when relevant.
+A single line beneath the prompt summarizes the session in a fixed order:
+`[yolo] provider/model · level | mcp N · skills N | ctx N% · cache N% | index*`.
+`[yolo]` appears only when enabled, and the index suffix reflects its current state.
 
-The cache ratio fills in after the first request and refreshes with each response. `/status`
-reports the same figures for the whole session.
-
-While the agent works, the role colors give way to a blue-to-purple sweep that scrolls
-across the line, and the live counters join it: a retry or attempt notice, and the
-`step N/M` counter once the turn reaches the final fifth of `max_agent_steps`, signaling
-that the turn is about to be cut off.
-
-A `[compaction]` marker leads the line while a summary runs, so the pause reads as compaction
-rather than as a slow reply.
+The role colors stay still while the values remain live. The context and cache figures refresh
+after requests, and MCP, skill, and index changes appear on the next screen redraw. `/status`
+reports the same session figures in more detail.
 
 The working divider above the prompt names the current phase — `thinking`, `responding`, or
 `web search` while a [provider-side tool](tools.md#provider-side-tools) runs inside the request —
@@ -99,7 +91,7 @@ with the time spent so far beside it, and an estimated output speed while text i
 `responding (12s · ↓ 48 tok/s)`. The `↓` marks the speed as the model's incoming stream; it is
 still an estimate, and it disappears between requests and on providers that do not stream.
 
-<div class="term-shot" role="img" aria-label="The status bar in two states. At rest: provider and model, reasoning, context fill with the cache ratio, and index, each in its role color. While working: the same line rendered as a blue-to-purple sweep with a bright band, plus a step counter near the cap."><span><span class="fs-i fs-dim">idle    </span><span class="fs-i sb-base">dashscope/qwen3.7-plus</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">high</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 23% · cache 98%</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-index">index ✓</span></span><span><span class="fs-i fs-dim">working </span><span class="fs-i sb-sweep-a">dashscope/qwen3.7-plus | high | </span><span class="fs-i sb-sweep-hi">ctx 41% · cache 95%</span><span class="fs-i sb-sweep-b"> | index ✓ | step 320/400</span></span></div>
+<div class="term-shot" role="img" aria-label="A static, semantically colored status bar: yolo mode, provider and model with reasoning level, MCP and skill counts, context and cache percentages, then the index state."><span><span class="fs-i sb-yolo">[yolo] </span><span class="fs-i sb-base">dashscope/qwen3.7-plus</span><span class="fs-i sb-sep"> · </span><span class="fs-i sb-reason">high</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-mcp">mcp 2 · skills 3</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 23% · cache 98%</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-index">index✓</span></span></div>
 
 ## Quick hints
 
