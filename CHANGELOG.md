@@ -82,6 +82,14 @@
 
 ### Fixed
 
+- Ctrl-C in the `/mcp` manager now cancels an in-progress connection immediately instead of
+  waiting for the server's full timeout.
+- Cancelling a non-TTY run no longer leaves an injected blocking input callback holding
+  `asyncio.run()` open, and inputs submitted around a turn boundary retain their original order.
+- A saved-session preview that becomes unreadable is reported inside the picker instead of
+  surfacing as an unhandled task exception.
+- `Read` and `Recall` accept line-range endpoints that a provider serialized as decimal strings,
+  while malformed, signed, boolean, and fractional endpoints remain rejected.
 - Interactive selectors and read-only viewers no longer block the runtime event loop while waiting
   for a key. This fixes hangs in `/provider`, `/model`, `/worker`, `/sessions`, `/diff`, compaction
   history, and the approval `v`/`c` side trips.
