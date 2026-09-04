@@ -2,10 +2,10 @@
 
 Invoked through the ``wizolt`` console script or ``python -m wizolt``.
 
-Deliberately imports nothing from the wizolt package at module level: argparse and the early
-maintenance exits (`--version`, `update`) should answer before the interactive CLI — prompt_toolkit,
-the tools, the TUI, the session machinery — is imported, and a small startup spinner covers that
-import instead of a blank terminal. The interactive-CLI names `main` needs are reached
+Deliberately imports nothing from the wizolt package at module level: argparse, help, version, and
+config initialization should answer before the interactive CLI — prompt_toolkit, the tools, the
+TUI, the session machinery — is imported, and a small startup spinner covers that import instead
+of a blank terminal. The interactive-CLI names `main` needs are reached
 through the lazy `_cli` namespace below: reading `_cli.Session` imports it on first use and caches
 it on this module, so tests can keep substituting fakes here without importing wizolt at module
 load time.
@@ -159,7 +159,8 @@ def main(argv: list[str] | None = None) -> int:
     if sys.platform == "win32":
         print("Error: wizolt does not support native Windows; use WSL instead.", file=sys.stderr)
         return 1
-    # Maintenance exits answer before anything heavy — the interactive CLI, the sweep — is loaded.
+    # Cheap exits answer before the interactive CLI and spinner are loaded. The explicit update
+    # command loads its HTTP/update implementation here, but still never starts a session.
     if args.version:
         print(_cli.__version__)
         return 0
