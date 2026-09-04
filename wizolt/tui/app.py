@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import os
 import shlex
-import subprocess
 import tempfile
 import threading
 import time
@@ -17,6 +16,7 @@ from typing import Any, ClassVar
 
 from prompt_toolkit import search as pt_search
 from prompt_toolkit.application import Application, create_app_session, run_in_terminal
+from prompt_toolkit.application.run_in_terminal import in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer
 from prompt_toolkit.document import Document
@@ -41,6 +41,7 @@ from wizolt.base import (
     LogEdge,
     WizoltError,
     fail_if_running_loop,
+    run_blocking,
 )
 from wizolt.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
 from wizolt.mentions import FilePick, MentionSpan, active_mention, encode_file_mention, scan_mentions
@@ -56,6 +57,32 @@ class TuiModal:
     # The result future, created by `show_modal` on the loop that opened it. Every modal is opened
     # and awaited on the application's own loop, so there is no second, thread-facing ending.
     future: Any = None
+
+
+@dataclass(frozen=True)
+class _EditorTempFile:
+    """The scratch file an external editor edits, and the three blocking steps around it.
+
+    One adapter rather than three scattered calls: creating, reading back, and unlinking are the
+    only filesystem work in the edit, and keeping them together is what lets the caller push all
+    of it through one blocking boundary while the editor process itself stays native asyncio."""
+
+    path: str
+
+    @classmethod
+    def create(cls, text: str) -> _EditorTempFile:
+        fd, path = tempfile.mkstemp(prefix="wizolt-input-", suffix=".md")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return cls(path)
+
+    def read(self) -> str:
+        with open(self.path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def remove(self) -> None:
+        with contextlib.suppress(OSError):
+            os.unlink(self.path)
 
 
 @dataclass(frozen=True)
@@ -1347,6 +1374,9 @@ class TuiApp:
     # read-only reference context that Ctrl-X Ctrl-E appends below it. Everything from this
     # line down is stripped before the message is sent.
     EDITOR_CONTEXT_MARKER = "# ------------------------ >8 ------------------------"
+    # How long a terminating editor is given to save and exit before it is killed. Short: the
+    # application is already unwinding and wants its terminal back.
+    EDITOR_TERM_GRACE: ClassVar[float] = 2.0
 
     @classmethod
     def _compose_editor_text(cls, draft: str, context: str) -> tuple[str, str]:
@@ -1381,36 +1411,67 @@ class TuiApp:
             text = text.split(marker, 1)[0]
         return text.rstrip("\n")
 
-    def _edit_text_in_editor(self, text: str) -> str | None:
-        """Run the editor on `text` via a temp file and return the edited content, or None if the
-        editor could not launch or exited non-zero. Runs off the event loop, inside run_in_terminal."""
-        fd, path = tempfile.mkstemp(prefix="wizolt-input-", suffix=".md")
+    async def _edit_text_in_editor(self, text: str) -> str | None:
+        """Run the editor on `text` in a temp file and return the edited content, or None if the
+        editor could not launch or exited non-zero.
+
+        The process is the runtime's own child, so cancelling this ends the editor rather than
+        leaving it attached to a terminal the application is about to take back. Every filesystem
+        step goes through `_EditorTempFile` on a worker -- creating, writing, reading back and
+        unlinking are all blocking calls -- while the process itself stays native asyncio."""
+
+        temp = await run_blocking(lambda: _EditorTempFile.create(text))
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(text)
             try:
-                completed = subprocess.run([*self.editor_command(), path], check=False)
+                process = await asyncio.create_subprocess_exec(*self.editor_command(), temp.path)
             except OSError:
                 return None
-            if completed.returncode != 0:
-                return None
-            with open(path, encoding="utf-8") as handle:
-                return handle.read()
+            code = await self._await_editor(process)
+            # Only a clean exit means "this is what I want sent": :cq and a crashed editor both
+            # leave the draft alone, and the file is not read at all.
+            return await run_blocking(temp.read) if code == 0 else None
         finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+            # Cancellation must not leak the file. `run_blocking` is what makes that true: the
+            # unlink is awaited to quiescence even though the caller is already unwinding.
+            await run_blocking(temp.remove)
+
+    async def _await_editor(self, process: asyncio.subprocess.Process) -> int:
+        """Wait for the editor, and never leave it running if the wait is cancelled."""
+        try:
+            return await process.wait()
+        except asyncio.CancelledError:
+            await self._end_editor(process)
+            raise
+
+    async def _end_editor(self, process: asyncio.subprocess.Process) -> None:
+        """TERM, a short grace period, then KILL -- and reap it either way.
+
+        Shielded waits: this runs while a CancelledError is already propagating, and abandoning the
+        wait here is exactly what would leave a zombie editor holding the terminal."""
+
+        if process.returncode is not None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            process.terminate()
+        try:
+            await asyncio.wait_for(asyncio.shield(process.wait()), self.EDITOR_TERM_GRACE)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await asyncio.shield(process.wait())
 
     async def _run_input_editor(self) -> None:
-        # `run_in_terminal` suspends the app and restores it afterward (the same primitive
+        # `in_terminal` suspends the app and restores it afterward (the same primitive
         # prompt_toolkit uses for its own editor support), so a full-screen editor gets a clean
-        # terminal. A non-zero exit or a launch failure leaves the input untouched. The editor
-        # also receives the agent's recent reply below a scissors line for reference (the
-        # full-screen editor hides the scrollback); that context is stripped back out on return.
+        # terminal -- and it is the asynchronous form, so the editor is awaited on this loop
+        # instead of parking a worker on a blocking wait. A non-zero exit or a launch failure
+        # leaves the input untouched. The editor also receives the agent's recent reply below a
+        # scissors line for reference (the full-screen editor hides the scrollback); that context
+        # is stripped back out on return.
         original = UserInput(self.input_buffer.text, self.input_images).original_text()
         composed, marker = self._compose_editor_text(original, self.editor_context_fn())
-        edited = await run_in_terminal(lambda: self._edit_text_in_editor(composed), in_executor=True)
+        async with in_terminal():
+            edited = await self._edit_text_in_editor(composed)
         if edited is None:
             return
         edited = self._strip_editor_context(edited, marker)

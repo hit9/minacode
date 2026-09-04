@@ -1,4 +1,8 @@
 """editor and theme (split from tests/test_ui_render.py)."""
+import asyncio
+import os
+import pathlib
+import signal
 import sys
 
 import pytest
@@ -7,6 +11,7 @@ from rich.console import Console
 from tui_harness import loop
 
 import wizolt.render as render_module
+import wizolt.tui.app as app_module
 from wizolt.base import (
     LogBlock,
     LogEdge,
@@ -36,27 +41,127 @@ def test_editor_command_prefers_visual_then_editor_then_vim(monkeypatch):
     monkeypatch.setenv("VISUAL", "nvim")
     assert TuiApp.editor_command() == ["nvim"]
 
-def test_edit_text_in_editor_roundtrips_edited_content(tmp_path, monkeypatch):
-    # A fake $EDITOR that appends a marker to whatever file it is given.
+def fake_editor(tmp_path, monkeypatch, script: str) -> pathlib.Path:
+    """Install a shell script as $EDITOR. `$1` is the temp file the editor is handed."""
     editor = tmp_path / "fake_editor.sh"
-    editor.write_text('#!/bin/sh\nprintf " EDITED" >> "$1"\n')
+    editor.write_text("#!/bin/sh\n" + script)
     editor.chmod(0o755)
     monkeypatch.setenv("EDITOR", str(editor))
     monkeypatch.delenv("VISUAL", raising=False)
+    return editor
 
-    assert TuiApp()._edit_text_in_editor("hello") == "hello EDITED"
+async def test_edit_text_in_editor_roundtrips_edited_content(tmp_path, monkeypatch):
+    # A fake $EDITOR that appends a marker to whatever file it is given.
+    fake_editor(tmp_path, monkeypatch, 'printf " EDITED" >> "$1"\n')
 
-def test_edit_text_in_editor_leaves_input_untouched_when_editor_missing(monkeypatch):
+    assert await TuiApp()._edit_text_in_editor("hello") == "hello EDITED"
+
+async def test_edit_text_in_editor_leaves_input_untouched_when_editor_missing(monkeypatch):
     monkeypatch.setenv("EDITOR", "definitely-not-an-editor-binary")
     monkeypatch.delenv("VISUAL", raising=False)
 
-    assert TuiApp()._edit_text_in_editor("hello") is None
+    assert await TuiApp()._edit_text_in_editor("hello") is None
 
-def test_edit_text_in_editor_leaves_input_untouched_on_nonzero_exit(monkeypatch):
-    monkeypatch.setenv("EDITOR", "false")
+async def test_edit_text_in_editor_leaves_input_untouched_on_nonzero_exit(tmp_path, monkeypatch):
+    """A non-zero exit (`:cq`, a crash) means "throw this away": the file is not even read."""
+    fake_editor(tmp_path, monkeypatch, 'printf " EDITED" >> "$1"\nexit 3\n')
+
+    assert await TuiApp()._edit_text_in_editor("hello") is None
+
+async def test_edit_text_in_editor_removes_its_temp_file(tmp_path, monkeypatch):
+    seen = tmp_path / "seen-path"
+    fake_editor(tmp_path, monkeypatch, f'printf "%s" "$1" > {seen}\n')
+
+    await TuiApp()._edit_text_in_editor("hello")
+
+    assert not os.path.exists(seen.read_text())
+
+async def test_a_missing_editor_still_removes_its_temp_file(tmp_path, monkeypatch):
+    """The launch failed after the file existed; `finally` is what keeps /tmp from filling up."""
+    monkeypatch.setenv("EDITOR", "definitely-not-an-editor-binary")
     monkeypatch.delenv("VISUAL", raising=False)
+    created: list = []
+    real_create = app_module._EditorTempFile.create
+    monkeypatch.setattr(app_module._EditorTempFile, "create", classmethod(lambda cls, text: created.append(real_create(text)) or created[-1]))
 
-    assert TuiApp()._edit_text_in_editor("hello") is None
+    assert await TuiApp()._edit_text_in_editor("hello") is None
+
+    assert created and not os.path.exists(created[0].path)
+
+async def test_cancelling_the_editor_terminates_reaps_and_cleans_up(tmp_path, monkeypatch):
+    """Cancellation ends the editor rather than leaving it holding the terminal.
+
+    It is not enough for the awaiting task to go away: the child is the runtime's own, so it is
+    signalled, waited for, and its scratch file removed before the cancellation is reported."""
+    started = tmp_path / "started"
+    fake_editor(tmp_path, monkeypatch, f'touch {started}\nsleep 30\n')
+    created: list = []
+    real_create = app_module._EditorTempFile.create
+    monkeypatch.setattr(app_module._EditorTempFile, "create", classmethod(lambda cls, text: created.append(real_create(text)) or created[-1]))
+    app = TuiApp()
+    processes: list = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def record(*argv, **kwargs):
+        process = await real_exec(*argv, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", record)
+
+    edit = asyncio.ensure_future(app._edit_text_in_editor("hello"))
+    while not started.exists():
+        await asyncio.sleep(0.01)
+    edit.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await edit
+
+    assert processes and processes[0].returncode is not None  # signalled and reaped, not orphaned
+    assert created and not os.path.exists(created[0].path)
+
+async def test_an_editor_that_ignores_term_is_killed_after_the_grace_period(tmp_path, monkeypatch):
+    """TERM first, because a real editor may want to save; KILL because it may also never leave."""
+    started = tmp_path / "started"
+    fake_editor(tmp_path, monkeypatch, f"trap '' TERM\ntouch {started}\nsleep 30\n")
+    app = TuiApp()
+    monkeypatch.setattr(TuiApp, "EDITOR_TERM_GRACE", 0.2)
+    processes: list = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def record(*argv, **kwargs):
+        process = await real_exec(*argv, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", record)
+
+    edit = asyncio.ensure_future(app._edit_text_in_editor("hello"))
+    while not started.exists():
+        await asyncio.sleep(0.01)
+    edit.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await edit
+
+    assert processes[0].returncode == -signal.SIGKILL
+
+async def test_the_loop_keeps_running_while_the_editor_is_open(tmp_path, monkeypatch):
+    """The editor is awaited, not waited on: a heartbeat task still advances while it is up."""
+    fake_editor(tmp_path, monkeypatch, "sleep 0.3\n")
+    beats = 0
+
+    async def heartbeat():
+        nonlocal beats
+        while True:
+            beats += 1
+            await asyncio.sleep(0.01)
+
+    pulse = asyncio.ensure_future(heartbeat())
+    await TuiApp()._edit_text_in_editor("hello")
+    pulse.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pulse
+
+    assert beats > 5
 
 def test_editor_text_compose_and_strip_roundtrip():
     # The editor receives the draft plus the agent's reply below a scissors line; stripping

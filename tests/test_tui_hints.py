@@ -265,11 +265,10 @@ def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
     app.quick_hint_focus = 0
     app._pick_quick_hint(app.input_buffer)
 
-    async def edit_in_terminal(callback, *, in_executor):
-        del callback, in_executor
+    async def edited(_text):
         return "edited text"
 
-    monkeypatch.setattr("wizolt.tui.app.run_in_terminal", edit_in_terminal)
+    monkeypatch.setattr(app, "_edit_text_in_editor", edited)
     asyncio.run(app._run_input_editor())
 
     assert app.input_buffer.text == "edited text"
