@@ -255,16 +255,15 @@ class ChoiceViewState:
         suffix = (" /" + self.query) if self.query else ""
         if self.query and not self.searching:
             suffix += " (filtered)"
-        # The modal opens inline under whatever was printed last, and a title butted straight
-        # against it reads as another line of that output rather than as a new thing asking. The
-        # break after the header separates it from the rows, so the title reads as a title instead
-        # of as the first item of the list under it. The title takes the same two-column indent as
-        # everything else in the modal and everything a command prints; it was the one line at
-        # column zero.
+        # The break after the header separates it from the rows, so the title reads as a title
+        # instead of as the first item of the list under it. The title takes the same two-column
+        # indent as everything else in the modal and everything a command prints; it was the one
+        # line at column zero.
         #
-        # A caller that draws its own header passes no title and gets no leading break, keeping
-        # this line for the search suffix alone.
-        parts: StyleAndTextTuples = [("", "\n")] if title else []
+        # The gap between the modal and whatever was printed above it is the container's job
+        # (TuiApp's modal_region draws it for every non-exclusive modal), not this view's, so no
+        # view hard-codes its own leading break.
+        parts: StyleAndTextTuples = []
         parts += [
             ("class:choice.title", ("  " + title if title else "") + suffix + "\n"),
             ("class:choice.disabled", "  j/k move, / search, Esc/q back/cancel\n"),
@@ -428,11 +427,9 @@ class AskViewState:
         preview stacks below the options. The caller caps max_height to the terminal's rows minus
         the reserved chrome (status bar, input row, gaps)."""
         page = self.pages[self.active]
-        # The modal opens inline under the activity region, and a question butted straight against
-        # it reads as another line of that output rather than as a new thing asking. The same
-        # leading break every other modal draws keeps the question standing on its own.
+        # The gap between the modal and the activity region above it is the container's job
+        # (TuiApp's modal_region), matching every other non-exclusive modal.
         parts: StyleAndTextTuples = [
-            ("", "\n"),
             ("class:choice.title", f"({self.active + 1}/{len(self.specs)}) {self.specs[self.active].question}\n"),
             ("", "\n"),
         ]
@@ -462,14 +459,17 @@ class AskViewState:
                 preview_rows = self._preview_rows(preview, max(10, width - 4))
                 body.append([("class:choice.disabled", "  " + "─" * max(10, width - 4))])
                 body.extend([("class:choice.preview", "  │ "), *row] for row in preview_rows)
-        # The leading break, the title's own blank line, and the footer's each cost a row (3
-        # extra rows in the budget), so a page that fills the modal never pushes the title off.
-        budget = max_height - 5 - (1 if self.notes_mode or self.notes.get(self.active) else 0)
-        if page.searching:
-            budget -= 1
+        # The title's blank line, the footer's, and any notes/searching row are fixed chrome; a
+        # page that cannot fit them leaves no room for option rows. Clamped at zero so a very
+        # short terminal drops the rows instead of slicing the list from the end.
+        fixed = 4 + (1 if self.notes_mode or self.notes.get(self.active) else 0) + (1 if page.searching else 0)
+        budget = max(0, max_height - fixed)
         if len(body) > budget:
-            overflow = len(body) - budget + 1
-            body = body[: budget - 1] + [[("class:choice.disabled", f"  … {overflow} more lines")]]
+            if budget <= 0:
+                body = []
+            else:
+                overflow = len(body) - budget + 1
+                body = body[: budget - 1] + [[("class:choice.disabled", f"  … {overflow} more lines")]]
         for row in body:
             parts.extend((*row, ("", "\n")))
         if page.searching:

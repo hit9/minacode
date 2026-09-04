@@ -507,9 +507,10 @@ class UiPrinter:
         if compact:
             # Rich markdown pads a blank line after every heading plus a whitespace row above and
             # below each table box; /status wants the heading tight against its table, so drop
-            # every line that carries no visible characters.
+            # internal blank lines -- but keep one blank row at each boundary so the command's
+            # output does not butt straight against the transcript above it or the prompt below.
             lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
-            cleaned = "\n".join(lines) + "\n"
+            cleaned = "\n" + "\n".join(lines) + "\n"
         self.rows_since_rule += cleaned.count("\n")
         if self._batch_parts is not None:
             self._batch_parts.append(ANSI(cleaned))
@@ -536,7 +537,9 @@ class UiPrinter:
             return
         self.rows_since_rule = 0
         width = shutil.get_terminal_size((80, 20)).columns
-        fragments = FormattedText([("ansibrightblack", "─" * width + "\n")])
+        # A blank row below keeps the rule off whatever follows it (narration, tool output); the
+        # callers already draw the blank row above, so the two seams land once each.
+        fragments = FormattedText([("ansibrightblack", "─" * width + "\n"), ("", "\n")])
         if self._batch_parts is not None:
             self._batch_parts.append(fragments)
             return

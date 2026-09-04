@@ -123,7 +123,7 @@ def test_choice_view_state_fragments_preserve_headers_and_preview():
     assert "  │ first\n  │ second\n" in rendered
 
 
-def test_emit_answer_compact_drops_invisible_lines(monkeypatch):
+def test_emit_answer_compact_keeps_boundary_blank_rows(monkeypatch):
     out = []
     monkeypatch.setattr(render_module, "print_formatted_text", lambda text, **kwargs: out.append(getattr(text, "value", str(text))))
     ui = UiPrinter(output_fn=lambda text: None)
@@ -131,7 +131,9 @@ def test_emit_answer_compact_drops_invisible_lines(monkeypatch):
     ui.emit_answer("### Parent\n| status | value |\n| --- | --- |\n| model | `x` |\n", rule=False, compact=True)
     rendered = out[0]
     visible = [line for line in rendered.split("\n") if UiPrinter.SGR_RE.sub("", line).strip()]
-    assert rendered.split("\n") == visible + [""]  # no blank or box-padding lines survive
+    # One blank row at each boundary keeps the command off the transcript above and the prompt
+    # below; every internal Rich padding row is gone.
+    assert rendered.split("\n") == ["", *visible, ""]
     assert "Parent" in rendered and "model" in rendered
 
 
@@ -151,10 +153,9 @@ def _rows(fragments):
 def test_ask_view_side_by_side_joins_option_and_preview_rows():
     state = _ask_state()
     rows = _rows(state.fragments(width=120, max_height=30))
-    # A leading blank row lifts the modal off whatever the activity region printed above it.
-    assert rows[0] == ""
-    assert rows[1] == "(1/2) Which shape?"
-    assert rows[2] == ""  # blank line under the title
+    # The gap above the modal is the container's job (modal_region), not this view's.
+    assert rows[0] == "(1/2) Which shape?"
+    assert rows[1] == ""  # blank line under the title
     assert rows[-2] == ""  # blank line above the key legend
     # The selected option's label and its rich preview land on the same rendered row.
     pair = next(row for row in rows if "Flat" in row and "flat table" in row)
@@ -181,6 +182,17 @@ def test_ask_view_truncates_overflow_with_more_lines():
     rows = _rows(state.fragments(width=120, max_height=8))
     assert len(rows) <= 8
     assert any("more lines" in row for row in rows)
+
+
+def test_ask_view_short_terminal_drops_rows_never_slices_from_the_end():
+    """A pane too short for the title, footer, and gaps must drop the option rows, not slice the
+    body from the end (a negative budget sliced `body[:-n]` and rendered nearly every row)."""
+    preview = "\n".join(f"line {i}" for i in range(40))
+    state = AskViewState.build([AskSpec("Q?", choices=["A"], previews=[preview])])
+    for height in (3, 4, 5, 6):
+        rows = _rows(state.fragments(width=120, max_height=height))
+        assert len(rows) <= max(height, 4)
+    assert len(_rows(state.fragments(width=120, max_height=5))) == 5
 
 
 def test_ask_view_preview_renders_rich_styles():

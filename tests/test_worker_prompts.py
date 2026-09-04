@@ -1,4 +1,5 @@
 """worker prompts (split from tests/test_worker_handoff.py)."""
+
 import os
 import time
 
@@ -25,6 +26,7 @@ def test_tool_names_filter_resolved_schemas_and_keep_registry_order(tmp_path):
     assert unfiltered == plain
     assert "Read" in unfiltered and "Edit" in unfiltered and "Bash" in unfiltered
 
+
 async def test_system_prompt_comes_from_session(tmp_path):
     _, system = await _requested_system(tmp_path, custom="CUSTOM WORKER ROLE")
     assert system == "CUSTOM WORKER ROLE"
@@ -32,10 +34,12 @@ async def test_system_prompt_comes_from_session(tmp_path):
     _, parent_system = await _requested_system(tmp_path)
     assert parent_system == SYSTEM_PROMPT.strip()
 
+
 async def test_system_prompt_default_matches_prompts_module(tmp_path):
     _, system = await _requested_system(tmp_path)
     assert system == SYSTEM_PROMPT.strip()
     assert ContextManager(session(tmp_path)).model_messages(SYSTEM_PROMPT)[0]["content"] == SYSTEM_PROMPT.strip()
+
 
 async def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
     from wizolt.session import Session, SessionSnapshotStore
@@ -55,6 +59,7 @@ async def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
     assert any(entry.uid == parent.uid for entry in entries)
     # `-c` still resolves to the parent even though the worker log is newer on disk.
     assert SessionSnapshotStore.latest_uid(parent.config.data_dir, cwd=str(tmp_path)) == parent.uid
+
 
 async def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tmp_path, monkeypatch):
     from wizolt.session import Session, SessionSnapshotStore
@@ -86,6 +91,7 @@ async def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tm
     assert not os.path.isfile(parent_path)
     assert not os.path.isfile(worker_path)
 
+
 def test_delegate_registration_gates(tmp_path):
     from wizolt.session import Session
 
@@ -113,6 +119,7 @@ def test_delegate_registration_gates(tmp_path):
     on.settings.worker = True
     assert "Delegate" in names(on)
 
+
 def test_worker_config_parsing_and_validation(tmp_path):
     from wizolt.base import ConfigError
     from wizolt.config import (
@@ -126,6 +133,7 @@ def test_worker_config_parsing_and_validation(tmp_path):
     assert RuntimeSettings.from_dict({}).worker is False
     with pytest.raises(ConfigError, match="worker.provider"):
         Config.from_dict({"worker": {"provider": "nope"}})
+
 
 async def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):
     from wizolt.session import Session, SessionSnapshotStore
@@ -145,6 +153,7 @@ async def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):
     resolved_worker = SessionSnapshotStore.resolve_uid(worker.uid, parent.config.data_dir, str(tmp_path))
     assert resolved_worker == worker.uid  # explicit full uid still works, by design
 
+
 def test_worker_prompt_shares_language_and_secret_rules_with_parent():
     from wizolt.prompts import LANGUAGE_RULES, SECRET_RULES, SYSTEM_PROMPT, WORKER_PROMPT
 
@@ -152,6 +161,7 @@ def test_worker_prompt_shares_language_and_secret_rules_with_parent():
     assert LANGUAGE_RULES in WORKER_PROMPT
     assert SECRET_RULES in SYSTEM_PROMPT
     assert SECRET_RULES in WORKER_PROMPT
+
 
 def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
     from wizolt.prompts import SYSTEM_PROMPT, WORKER_PROMPT
@@ -161,6 +171,7 @@ def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
     assert "You write for the delegator" in WORKER_PROMPT and "You write for the delegator" not in SYSTEM_PROMPT
     for unavailable in ("Ask", "NextHints"):
         assert unavailable not in WORKER_PROMPT
+
 
 def test_prompts_never_name_tools_outside_their_toolset():
     import re
@@ -196,9 +207,10 @@ def test_worker_schemas_include_viewimage_and_toolscript(tmp_path):
     for excluded in ("Ask", "NextHints", "Delegate"):
         assert excluded not in resolved
 
+
 def test_system_prompt_stable_across_refactors():
     import hashlib
 
     from wizolt.prompts import SYSTEM_PROMPT
 
-    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "09d73521dfe3514b4f894f7188aa0b2b304a6baa90431976d5cbf2ad975129e7"
+    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "070e9ea3edbb27f82861c26af3ea425f9ac919c5fad005b42e6a8961a883437a"

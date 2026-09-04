@@ -1188,7 +1188,16 @@ class TuiApp:
             filter=~modal_active,
         )
         modal_region = ConditionalContainer(
-            HSplit([self.modal_window, Window(height=1, dont_extend_height=True)]),
+            # One blank row above and below the modal: the container owns the vertical gap, so
+            # the views inside (Ask, choice selectors, the tool-output browser) render only
+            # their own content and never hard-code a leading break.
+            HSplit(
+                [
+                    Window(height=1, dont_extend_height=True),
+                    self.modal_window,
+                    Window(height=1, dont_extend_height=True),
+                ]
+            ),
             filter=modal_active & ~exclusive_active,
         )
         self.status_window = self._status_bar_window(dont_extend_height=True)

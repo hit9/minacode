@@ -34,8 +34,8 @@ async def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_op
         await tool_output_viewer(command_loop)
 
     listing = "".join(value for _, value in modal.frames[0])
-    assert listing.startswith("\n──── Tool output · latest 12 ")
-    assert get_cwidth(listing.splitlines()[1]) == 48
+    assert listing.startswith("──── Tool output · latest 12 ")
+    assert get_cwidth(listing.splitlines()[0]) == 48
     assert "command-11" in listing and "command-2" in listing
     # A twenty-row terminal draws ten of the twelve: the rest are a scroll away, not dropped, and
     # the counter is what says so. `true` printed nothing and is not an entry at all.
@@ -87,7 +87,7 @@ async def test_tool_output_browser_lists_past_the_old_fifty_entry_cap(tmp_path, 
         await tool_output_viewer(command_loop)
 
     listing = "".join(value for _, value in modal.frames[0])
-    assert listing.startswith("\n──── Tool output · latest 55 ")
+    assert listing.startswith("──── Tool output · latest 55 ")
     assert "showing 1-10 of 55" in listing
     assert "Bash printf 54" in listing  # the newest is in view
 
@@ -108,7 +108,7 @@ async def test_tool_output_browser_keeps_every_stored_record_with_a_running_scri
         await tool_output_viewer(command_loop)
 
     listing = "".join(value for _, value in modal.frames[0])
-    assert listing.startswith("\n──── Tool output · latest 401 ")
+    assert listing.startswith("──── Tool output · latest 401 ")
     assert "showing 1-10 of 401" in listing
     assert "ToolScript" in listing  # the running script's live entry is listed too
 

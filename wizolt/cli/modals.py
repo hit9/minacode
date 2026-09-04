@@ -550,7 +550,9 @@ async def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state
         rule_width = max(20, min(72, cols - 2))
         lead = "──── "
         trail = " " + "─" * max(3, rule_width - get_cwidth(lead + label) - 1)
-        return [("", "\n"), ("class:choice.disabled", lead + label + trail + "\n")]
+        # The modal's container already draws a blank row above the modal, so the rule carries no
+        # leading break of its own.
+        return [("class:choice.disabled", lead + label + trail + "\n")]
 
     def fragments() -> StyleAndTextTuples:
         list_fragments = state.fragments("", label_fn=lambda choice: parts.get(choice, []))

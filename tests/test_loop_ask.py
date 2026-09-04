@@ -1,4 +1,5 @@
 """loop ask (split from tests/test_loop_commands.py)."""
+
 import json
 import time
 from types import SimpleNamespace
@@ -67,6 +68,7 @@ async def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     assert previews == ["  │ one\n", "  │ two\n"]
     assert all("\\n" not in text for _, text in rendered)
 
+
 async def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     """A free-text page drops out of the modal to the shared input row; the answer flows into
     the batch and the modal reopens (ASK_DONE ends it)."""
@@ -83,6 +85,7 @@ async def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     assert await question_interaction(loop, [AskSpec("Pick?", choices=["A"], previews=["preview"])]) == ["typed answer"]
     assert prompts == ["\nPick?"]  # one shared-input prompt, the question spelled out again
 
+
 async def test_ask_free_text_empty_answer_is_kept(tmp_path):
     """An explicitly empty free-text answer is a legal answer: the batch must return [""] and
     never fall back to the question text (which is only the placeholder for unanswered pages)."""
@@ -96,6 +99,7 @@ async def test_ask_free_text_empty_answer_is_kept(tmp_path):
     )
 
     assert await question_interaction(loop, [AskSpec("Pick?")]) == [""]
+
 
 async def test_ask_free_text_on_last_question_submits_without_reentering_modal(tmp_path):
     """A free-text answer to the final question completes the batch right after the shared input
@@ -115,6 +119,7 @@ async def test_ask_free_text_on_last_question_submits_without_reentering_modal(t
     assert await question_interaction(loop, [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"])]) == ["A", "typed"]
     assert len(calls) == 1
 
+
 async def test_ask_without_choices_uses_shared_tui_input(tmp_path):
     """A question without choices is a single Type-freely page; Enter drops to the shared row."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
@@ -129,6 +134,7 @@ async def test_ask_without_choices_uses_shared_tui_input(tmp_path):
     assert await question_interaction(loop, [AskSpec("Explain the issue")]) == ["typed answer"]
     assert prompts == ["\nExplain the issue"]
 
+
 async def test_ask_headless_keeps_plain_per_question_prompts(tmp_path):
     """Without a TUI the batch falls back to one read_input per question, in order."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
@@ -138,10 +144,12 @@ async def test_ask_headless_keeps_plain_per_question_prompts(tmp_path):
     assert await question_interaction(loop, [AskSpec("One?"), AskSpec("Two?", choices=["A"])]) == ["answer", "answer"]
     assert prompts == ["\nOne?", "\nTwo?"]
 
+
 async def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path, monkeypatch):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     emitted = []
     loop.emit = lambda text="", indent=0: emitted.append(text)
+
     async def answered(_loop, _specs):
         return ["B"]
 
@@ -149,6 +157,7 @@ async def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path, monkeypa
 
     assert await modals_mod.question_interaction(loop, [AskSpec("Which?", choices=["A", "B"])]) == ["B"]
     assert emitted == []
+
 
 async def test_ask_notes_flow_into_the_answer(tmp_path):
     """A note entered on a page (`n`, text, Enter) is appended to that question's answer."""
@@ -166,6 +175,7 @@ async def test_ask_notes_flow_into_the_answer(tmp_path):
 
     assert await question_interaction(loop, [AskSpec("Q?", choices=["A"], recommended=0)]) == ["A\n\nUser notes: keep the header"]
 
+
 async def test_ask_escape_cancels_the_whole_batch(tmp_path):
     """Esc on any page cancels every question with the DISMISSED marker."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
@@ -175,12 +185,14 @@ async def test_ask_escape_cancels_the_whole_batch(tmp_path):
     result = await question_interaction(loop, [AskSpec("One?"), AskSpec("Two?")])
     assert result == [DISMISSED, DISMISSED]
 
+
 async def test_elapsed_since_uses_whole_seconds(monkeypatch):
     monkeypatch.setattr(time, "monotonic", lambda: 104.9)
     assert Text.elapsed_since(100.0) == "4s"
 
     monkeypatch.setattr(time, "monotonic", lambda: 162.9)
     assert Text.elapsed_since(100.0) == "1m02s"
+
 
 async def test_bash_live_start_pauses_standalone_status(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
@@ -198,6 +210,7 @@ async def test_bash_live_start_pauses_standalone_status(tmp_path):
     assert loop.live_status_paused is False
     assert loop.status_bar.thread is not None
 
+
 async def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
     output = []
     loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), output_fn=output.append)
@@ -206,6 +219,7 @@ async def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
     loop.ui.emit_answer("Done.\nFinal detail.")
 
     assert output == ["  First line.\n  Second line.", "Done.\nFinal detail."]
+
 
 async def test_colored_assistant_and_tool_blocks_each_start_with_one_blank_line(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
@@ -358,9 +372,11 @@ async def test_phase_rule_renders_as_an_unlabelled_full_width_solid_rule(tmp_pat
 
     loop.ui.emit_phase_rule()
 
-    assert [style for style, _ in frags[0]] == ["ansibrightblack"]
+    # The dash line, then a blank row that lifts the rule off whatever follows it (the callers
+    # draw the blank row above, so each seam lands once).
+    assert [style for style, _ in frags[0]] == ["ansibrightblack", ""]
     text = "".join(fragment for _, fragment in frags[0])
-    assert text.endswith("\n")
+    assert text.endswith("\n\n")
     assert set(text) <= {"─", "\n"}
     assert loop.ui.rows_since_rule == 0
 

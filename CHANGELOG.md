@@ -8,6 +8,13 @@
   as its own region below the boundary instead of a list glued to the divider's label.
 - The `Ask` modal opens with a blank row above the question, matching every other selector, so
   the question no longer butts straight against the activity region above it.
+- A very short pane no longer makes the `Ask` modal render nearly every option: when the title,
+  footer, and gaps leave no room for the rows, the rows are dropped instead of the list being
+  sliced from the end.
+- Phase rules and `/status`-style compact command output keep one blank row at each boundary, so
+  the transcript's seams and a command's table no longer butt straight against what follows them.
+- The agent prompt now asks for a blank line between Markdown blocks (paragraphs, lists,
+  headings, code fences), avoiding dense stacking and over-sectioning.
 - `Edit` tolerates a provider omitting `op` only when `source`, `start`, `end`, and explicit
   replacement content make `replace` unambiguous; incomplete create/delete shapes remain errors.
 - A rejected multi-range `Edit` now returns one fresh editable view covering every requested range,
