@@ -306,3 +306,83 @@ def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
         agent.run("stop after the tool")
 
     assert agent.model.calls == 1
+
+
+def test_interrupted_turn_settles_once_and_matches_every_visible_tool_call(tmp_path):
+    """One settlement per interrupted turn: one marker, and exactly one result per emitted call.
+
+    Two calls in the batch make the count observable -- a settlement that ran twice would append a
+    second marker or a second result for a call already answered, and either shape is rejected by
+    every provider on the next request."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class Model:
+        def request(self, messages, tools=None):
+            return {}, [call("Read", [{"path": "a", "ranges": [[0, 0]]}]), call("Recall", [{"key": "tr.1"}])], ""
+
+        def cancel(self):
+            pass
+
+    class Tools:
+        def run(self, calls, batch_suffix=""):
+            agent.cancel()
+            return []
+
+        def cancel(self):
+            pass
+
+    agent.model = Model()
+    agent.tools = Tools()
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("two calls")
+
+    assert [message["content"] for message in s.messages if message["content"] == INTERRUPT_MARKER] == [INTERRUPT_MARKER]
+    answered = [message["tool_call_id"] for message in s.messages if message.get("role") == "tool"]
+    assert sorted(answered) == ["Read-id", "Recall-id"]
+    assert len(answered) == len(set(answered))
+
+
+def test_accepted_request_acknowledges_its_queued_follow_up(tmp_path):
+    """A request the provider accepted carries its claimed follow-up into history and drops it
+    from the queue; nothing re-sends it on the next turn."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
+    s.enqueue_user_input("follow up")
+
+    class Model:
+        def request(self, messages, tools=None):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+        def cancel(self):
+            pass
+
+    agent.model = Model()
+    assert agent.run("first") == "done"
+    assert s.pending_user_inputs == []
+    assert any("follow up" in str(message.get("content") or "") for message in s.messages)
+
+
+def test_interrupt_releases_a_claimed_queued_follow_up(tmp_path):
+    """A turn interrupted before its request was accepted returns the claim: the follow-up stays
+    queued and no longer counts as in flight, so the next turn may claim it again."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
+    s.enqueue_user_input("follow up")
+
+    class Model:
+        def request(self, messages, tools=None):
+            raise KeyboardInterrupt
+
+        def cancel(self):
+            pass
+
+    agent.model = Model()
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("first")
+
+    assert [item.text for item in s.pending_user_inputs] == ["follow up"]
+    assert not s.has_inflight_user_inputs()

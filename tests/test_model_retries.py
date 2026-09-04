@@ -903,3 +903,35 @@ def test_compaction_echo_guard_leaves_real_summaries_alone(tmp_path):
     assert not compaction.Compactor.echoes_source("用户要求收尾 Part B。已核对 `_run_workflow` 的调用点，新参数补齐；lint 与 pyright 尚未运行，是下一步。", source)
     assert not compaction.Compactor.echoes_source("short", source)  # below the length floor
     assert not compaction.Compactor.echoes_source("a" * 200, "")  # nothing to copy from
+
+
+def test_whole_turn_cancellation_and_resend_are_distinct_dispositions(tmp_path):
+    """Both end the in-flight attempt, but only /resend re-enters the request loop.
+
+    Whole-turn cancellation ends the turn and must never be read as a retry, so the disposition is
+    carried by the explicit retry request rather than inferred from an interrupted attempt. The
+    flag is consumed exactly once: a second interrupted attempt with nothing requested cancels."""
+    s = _session(tmp_path)
+    model = ModelClient(s)
+    attempts = []
+
+    def interrupted(messages, tools=None, **kwargs):
+        attempts.append(messages)
+        raise KeyboardInterrupt
+
+    model.api_request = interrupted
+
+    with pytest.raises(KeyboardInterrupt):
+        model.request([{"role": "user", "content": "hi"}], [])
+    assert len(attempts) == 1
+    assert not s.state.manual_model_retry_requested
+
+    s.state.manual_model_retry_requested = True
+    with pytest.raises(ModelRequestRetry):
+        model.request([{"role": "user", "content": "hi"}], [])
+    assert len(attempts) == 2
+    assert not s.state.manual_model_retry_requested  # consumed by the retry it produced
+
+    with pytest.raises(KeyboardInterrupt):
+        model.request([{"role": "user", "content": "hi"}], [])
+    assert len(attempts) == 3

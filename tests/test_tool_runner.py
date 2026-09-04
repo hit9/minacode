@@ -1,7 +1,11 @@
 """tool runner (split from tests/test_agent_turn.py)."""
 
+import threading
+import time
+
 from agent_harness import call, session
 
+from wizolt.base import ToolCall
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
 from wizolt.tools import toolblocks, tooloutput
@@ -97,3 +101,84 @@ def test_replayed_delegate_keeps_its_call_line(tmp_path):
     # Live, a wired rule still takes the root away: the rule is the call line there.
     live = str(toolblocks.finish_display(s, delegate, "tr.7", "", failed=False, worker_rule=lambda text: None))
     assert "[worker]" not in live
+
+
+def test_read_only_batch_keeps_model_order_and_honors_the_concurrency_cap(tmp_path):
+    """Independent read-only calls overlap, but never more than max_parallel_tools at once, and
+    their results are published in the order the model emitted them rather than completion order."""
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / f"{name}.txt").write_text(name + "\n", encoding="utf-8")
+    s = session(tmp_path)
+    s.settings.max_parallel_tools = 2
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    lock = threading.Lock()
+    live = peak = 0
+    execute = runner.execute_readonly
+
+    def traced(call):  # the runner's own parameter name; the module-level `call` helper is unused here
+        nonlocal live, peak
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        try:
+            time.sleep(0.02)  # long enough for the cap to be observable, short enough for CI
+            return execute(call)
+        finally:
+            with lock:
+                live -= 1
+
+    runner.execute_readonly = traced
+    calls = [ToolCall(f"r{index}", "Read", [{"path": f"{name}.txt"}]) for index, name in enumerate("abcd")]
+    messages = runner.run(calls)
+
+    assert [message["tool_call_id"] for message in messages] == ["r0", "r1", "r2", "r3"]
+    assert peak == 2
+
+
+def test_one_failing_read_only_call_leaves_its_siblings_alone(tmp_path):
+    """A failure is converted at that call's own result boundary: the batch still returns one
+    matched result per call, and the healthy siblings keep their output."""
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("beta\n", encoding="utf-8")
+    s = session(tmp_path)
+    s.settings.max_parallel_tools = 4
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    calls = [
+        ToolCall("ok1", "Read", [{"path": "a.txt"}]),
+        ToolCall("bad", "Read", [{"path": "missing.txt"}]),
+        ToolCall("ok2", "Read", [{"path": "b.txt"}]),
+    ]
+    contents = {message["tool_call_id"]: str(message["content"]) for message in runner.run(calls)}
+
+    assert list(contents) == ["ok1", "bad", "ok2"]
+    assert "alpha" in contents["ok1"]
+    assert "beta" in contents["ok2"]
+    assert "status: failed" in contents["bad"]
+
+
+def test_edit_barrier_splits_a_batch_and_serializes_its_mutations(tmp_path):
+    """Edits plan together and run serially; a mutating non-Edit call is a barrier that ends the
+    edit segment, so the file the later edit resolves against is the one the earlier edit left."""
+    (tmp_path / "a.txt").write_text("one\n", encoding="utf-8")
+    s = session(tmp_path)
+    s.settings.max_parallel_tools = 4
+    s.settings.yolo = True
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    calls = [
+        ToolCall("e1", "Edit", ["b.txt", "", [{"op": "create", "content": "two\n"}]]),
+        ToolCall("e2", "Edit", ["c.txt", "", [{"op": "create", "content": "three\n"}]]),
+    ]
+    assert runner.edit_segment_end(calls, 0) == 2  # edits plan and run as one segment
+    assert runner.parallel_segment_end(calls, 0) == 0  # Edit never joins a parallel segment
+
+    messages = runner.run(calls)
+    assert [message["tool_call_id"] for message in messages] == ["e1", "e2"]
+    assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "two\n"
+    assert (tmp_path / "c.txt").read_text(encoding="utf-8") == "three\n"
+
+    barrier = [calls[0], ToolCall("b1", "Bash", [":"])]
+    assert runner.edit_barrier(barrier[1])  # a mutating non-Edit call ends the edit segment
+    assert runner.edit_segment_end(barrier, 0) == 1
