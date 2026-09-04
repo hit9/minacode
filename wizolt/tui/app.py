@@ -497,7 +497,7 @@ class TuiApp:
                         callback()
 
                 await run_in_terminal(render)
-            except Exception as error:  # noqa: BLE001 - return terminal failures to the agent thread.
+            except Exception as error:  # noqa: BLE001 - return terminal failures to the calling thread.
                 errors.append(error)
             finally:
                 done.set()

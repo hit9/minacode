@@ -274,8 +274,8 @@ class UiPrinter:
         self._scrollback_parts: list[FormattedText | ANSI] = []
         self._scrollback_scheduled = False
         self._scrollback_generation = 0
-        # Parts/scheduling state are touched from the app loop and the agent thread (enqueue and
-        # drain on direct prints/shutdown), so all access goes through this lock.
+        # Parts/scheduling state are touched from the app loop and late synchronous fallback
+        # callers during shutdown, so all access goes through this lock.
         self._scrollback_lock = threading.Lock()
         # Rendered rows since the last full-width rule was drawn. Read by the loop to decide
         # whether a new rule would land too close to the one above it to be worth drawing.

@@ -28,10 +28,10 @@ if TYPE_CHECKING:
 
 
 class _TurnCancelled(Exception):
-    """A turn that settled after cancellation, carried out past its own `asyncio.run`.
+    """A child turn that settled after cancellation, carried back to the runtime task.
 
-    CancelledError cannot cross that boundary as itself -- `asyncio.run` treats it as the runner
-    being torn down -- and the runtime needs to tell a cancelled turn apart from a failed one."""
+    CancelledError cannot cross that task boundary as itself -- the runtime would read it as its
+    own cancellation -- so this distinguishes a cancelled turn from a failed runtime."""
 
 
 @dataclass(frozen=True)
@@ -145,8 +145,8 @@ class TuiRuntime:
 
     def __init__(self, command_loop: CommandLoop):
         self.loop = command_loop
-        # Submitted user input, on the runtime loop. TUI callbacks run there too, so they enqueue
-        # directly; anything arriving from another thread schedules the put instead.
+        # Submitted user input, on the runtime loop. TUI callbacks run there too, so one FIFO can
+        # order idle input with follow-ups accepted while a turn is finishing.
         self.pending: asyncio.Queue[UserInput] = asyncio.Queue()
         # Work a prompt-toolkit callback accepted but must not do inline: queueing an input and
         # persisting it. One FIFO and one consumer, because submit order is the persistence order
