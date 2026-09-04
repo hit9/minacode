@@ -37,12 +37,14 @@ class VisionObserver:
         provider = self.model.session.config.providers[entry_name]
         if missing := provider.missing_fields():
             raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
+        image_inputs = self.model.session.images
+        payloads = await image_inputs.payloads_for(images)
         messages = [
             {"role": "system", "content": VISION_OBSERVE_PROMPT},
             {
                 "role": "user",
-                "content": self.model.session.images.vision_content(
-                    images, self.model.session.policy.resolve(provider).api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION
+                "content": image_inputs.vision_content(
+                    images, self.model.session.policy.resolve(provider).api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION, payloads=payloads
                 ),
             },
         ]

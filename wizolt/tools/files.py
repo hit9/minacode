@@ -214,7 +214,7 @@ class ViewImageTool(Tool):
     async def call(self) -> str:
         path = self.path()
         try:
-            self.image = self.session.images.load(path, source_text=self.session.relpath(path))
+            self.image = await self.session.images.load(path, source_text=self.session.relpath(path))
         except ModelError as error:
             raise ToolError(str(error)) from error
         header = self._header(path)

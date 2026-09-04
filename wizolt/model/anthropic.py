@@ -43,6 +43,7 @@ def anthropic_params(
     apply_request: Callable[[Json, ProviderConfig, ResolvedProvider], Json],
     latest_user_position: Callable[[list[Json]], int],
     text_only: bool = False,
+    image_payloads: dict[str, bytes] | None = None,
 ) -> Json:
     """Assemble the Messages request body from normalized messages and provider settings.
 
@@ -51,6 +52,8 @@ def anthropic_params(
     (`images`), builtin tool schemas (`builtin_tools`), and the request-recipe application
     (`apply_request`, the Anthropic wire's thinking/effort fold). `text_only` is the route's
     image-delivery verdict: raw blocks are suppressed but readable labels and asset paths stay.
+    `image_payloads` is the request-local ref→bytes mapping; image parts read from it instead of
+    reopening each asset file on the loop.
     """
     system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
     # Anthropic prompt caching is a prefix match that only takes effect at explicit
@@ -72,6 +75,7 @@ def anthropic_params(
                 reasoning_history=resolved.reasoning_history,
                 latest_user_position=latest_user_position,
                 text_only=text_only,
+                image_payloads=image_payloads,
             )
         ),
         "max_tokens": resolved.output_max_tokens,
@@ -103,13 +107,15 @@ def anthropic_messages(
     reasoning_history: str = "all",
     latest_user_position: Callable[[list[Json]], int] | None = None,
     text_only: bool = False,
+    image_payloads: dict[str, bytes] | None = None,
 ) -> list[Json]:
     """Convert normalized messages to Messages history, merging consecutive same-role turns.
 
     System messages are dropped (they live in `system`), assistant messages replay their saved
     content blocks when the origin matches, and tool results become user tool_result blocks.
     `text_only` is the route's image-delivery verdict: raw blocks are suppressed but readable
-    labels and asset paths stay.
+    labels and asset paths stay. `image_payloads` is the request-local ref→bytes mapping; image
+    parts read from it instead of reopening each asset file on the loop.
     """
     origin = origin or provider_origin(None)
     converted: list[Json] = []
@@ -119,7 +125,7 @@ def anthropic_messages(
         if role == "system":
             continue
         if role == "user":
-            append_anthropic_message(converted, "user", images.anthropic_content(message, text_only=text_only))
+            append_anthropic_message(converted, "user", images.anthropic_content(message, text_only=text_only, payloads=image_payloads))
         elif role == "assistant":
             blocks = anthropic_assistant_blocks(message, origin, provider_origin=provider_origin, replayable_echo=replayable_echo)
             if not keeps_reasoning(reasoning_history, message, index, latest_user):

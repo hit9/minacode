@@ -581,3 +581,60 @@ def test_missing_recognized_image_keeps_tui_draft_on_submit(tmp_path):
     assert received == []
     assert app.input_buffer.text == IMAGE_MARKER + " "
     assert "Cannot read image" in app.input_error
+
+
+async def test_load_payloads_reads_each_distinct_asset_once_and_matches_direct_wire(tmp_path, monkeypatch):
+    """A request loads every distinct image ref exactly once, and the wire parts built from those
+    payloads are byte-identical to the per-image reads they replace."""
+    s = session(tmp_path)
+    stored = []
+    for name in ("a.png", "b.png"):
+        value = s.images.recognize(image_file(tmp_path / name).name)
+        stored.append(s.images.prepare(value).images[0])
+    first, second = stored
+    messages = [
+        {"role": "user", "content": "one", IMAGE_REFS_KEY: [first.to_json()]},
+        {"role": "user", "content": "two", IMAGE_REFS_KEY: [first.to_json(), second.to_json()]},
+    ]
+    reads: list[str] = []
+    real_bytes = ImageInputs._bytes
+
+    def counting_bytes(self, image, *, payloads=None):
+        reads.append(image.ref)
+        return real_bytes(self, image, payloads=payloads)
+
+    monkeypatch.setattr(ImageInputs, "_bytes", counting_bytes)
+    payloads = await s.images.load_payloads(messages)
+
+    assert sorted(payloads) == sorted({first.ref, second.ref})
+    assert sorted(reads) == sorted({first.ref, second.ref})  # the shared ref was read once
+    assert s.images.chat_content(messages[0], payloads=payloads) == s.images.chat_content(messages[0])
+
+
+async def test_load_payloads_rejects_corrupt_and_missing_assets(tmp_path):
+    """Payload loading keeps the domain error of a per-image read: a corrupt or deleted asset
+    names itself instead of failing downstream with a provider error."""
+    s = session(tmp_path)
+    value = s.images.recognize(image_file(tmp_path / "x.png").name)
+    image = s.images.prepare(value).images[0]
+    message = {"role": "user", "content": "x", IMAGE_REFS_KEY: [image.to_json()]}
+    asset = os.path.join(s.images.assets_dir(), image.ref)
+
+    with open(asset, "wb") as file:
+        file.write(b"tampered")
+    with pytest.raises(ModelError, match="corrupt"):
+        await s.images.load_payloads([message])
+
+    os.unlink(asset)
+    with pytest.raises(ModelError, match="missing"):
+        await s.images.load_payloads([message])
+
+
+async def test_load_payloads_skips_text_only_refs(tmp_path):
+    """A text-only route never sends raw blocks, so its refs are not loaded into payloads."""
+    s = session(tmp_path)
+    value = s.images.recognize(image_file(tmp_path / "x.png").name)
+    image = s.images.prepare(value).images[0]
+    message = {"role": "user", "content": "x", IMAGE_REFS_KEY: [image.to_json()], IMAGE_TEXT_ONLY_KEY: True}
+
+    assert await s.images.load_payloads([message]) == {}

@@ -80,7 +80,9 @@ class ChatWire:
         billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
-        messages = self.messages(messages, provider=provider)
+        text_only = self._client.session.image_route.is_text_only()
+        payloads = await self._client.session.images.load_payloads(messages) if not text_only else {}
+        messages = self.messages(messages, text_only=text_only, image_payloads=payloads, provider=provider)
         resolved = self._client.resolved(provider)
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         params = chat_module.chat_params(
@@ -112,18 +114,27 @@ class ChatWire:
             raise self._client.empty_length_error(usage)
         return assistant, calls, content
 
-    def messages(self, messages: list[Json], *, text_only: bool | None = None, provider: ProviderConfig | None = None) -> list[Json]:
+    def messages(
+        self, messages: list[Json], *, text_only: bool | None = None, image_payloads: dict[str, bytes] | None = None, provider: ProviderConfig | None = None
+    ) -> list[Json]:
         """Build Chat Completions history using the provider's documented replay contract.
 
         `text_only` defaults to the session's current main-route image verdict; pass an explicit
-        value to override it (the main request path recomputes it per call).
+        value to override it (the main request path recomputes it per call). `image_payloads` is
+        the request-local ref→bytes mapping loaded before the wire is built.
         """
 
         provider = provider if provider is not None else self._client.session.config.provider
         if text_only is None:
             text_only = self._client.session.image_route.is_text_only()
         return chat_module.chat_messages(
-            messages, provider, self._client.resolved(provider), self._client.session.images, self._client.latest_user_position, text_only=text_only
+            messages,
+            provider,
+            self._client.resolved(provider),
+            self._client.session.images,
+            self._client.latest_user_position,
+            text_only=text_only,
+            image_payloads=image_payloads,
         )
 
     def estimation_payload(self, messages: list[Json], tools: list[Json] | None, builtin: list[Json]) -> Json:
@@ -176,10 +187,14 @@ class ResponsesWire:
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
         resolved = self._client.resolved(provider)
+        text_only = self._client.session.image_route.is_text_only()
+        payloads = await self._client.session.images.load_payloads(messages) if not text_only else {}
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         params: Json = {
             "model": provider.model,
-            "input": self.messages(Text.value(messages), self._client.provider_origin(provider), provider=provider),
+            "input": self.messages(
+                Text.value(messages), self._client.provider_origin(provider), provider=provider, text_only=text_only, image_payloads=payloads
+            ),
             "stream": stream,
             # Stateless by design, not to save anything: the wire can retain the conversation and
             # let a later request name it by id, but session messages are the source of truth, a
@@ -233,7 +248,15 @@ class ResponsesWire:
             report_builtin_call=self._client.report_builtin_call,
         )
 
-    def messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None, provider: ProviderConfig | None = None) -> list[Json]:
+    def messages(
+        self,
+        messages: list[Json],
+        origin: str = "",
+        *,
+        text_only: bool | None = None,
+        image_payloads: dict[str, bytes] | None = None,
+        provider: ProviderConfig | None = None,
+    ) -> list[Json]:
         provider = provider if provider is not None else self._client.session.config.provider
         resolved = self._client.resolved(provider)
         text_only = self._client.session.image_route.is_text_only() if text_only is None else text_only
@@ -246,6 +269,7 @@ class ResponsesWire:
             reasoning_history=resolved.reasoning_history,
             latest_user_position=self._client.latest_user_position,
             text_only=text_only,
+            image_payloads=image_payloads,
         )
 
     def estimation_payload(self, messages: list[Json], tools: list[Json] | None, builtin: list[Json]) -> Json:
@@ -287,7 +311,9 @@ class AnthropicWire:
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
         messages = Text.value(messages)
-        params = omit_request_fields(self.params(messages, tools, provider), provider.omit_body)
+        text_only = self._client.session.image_route.is_text_only()
+        payloads = await self._client.session.images.load_payloads(messages) if not text_only else {}
+        params = omit_request_fields(self.params(messages, tools, provider, image_payloads=payloads), provider.omit_body)
         client = self._client.anthropic_client(provider=provider)
         stream = allow_stream and provider.stream and self._client.on_stream is not None
         if stream:
@@ -312,7 +338,9 @@ class AnthropicWire:
             report_builtin_call=self._client.report_builtin_call,
         )
 
-    def params(self, messages: list[Json], tools: list[Json] | None, provider: ProviderConfig | None = None) -> Json:
+    def params(
+        self, messages: list[Json], tools: list[Json] | None, provider: ProviderConfig | None = None, *, image_payloads: dict[str, bytes] | None = None
+    ) -> Json:
         provider = provider if provider is not None else self._client.session.config.provider
         return anthropic_module.anthropic_params(
             messages,
@@ -326,6 +354,7 @@ class AnthropicWire:
             apply_request=lambda params, entry, resolved: self._client.apply_request(params, entry, resolved, wire="anthropic"),
             latest_user_position=self._client.latest_user_position,
             text_only=self._client.session.image_route.is_text_only(),
+            image_payloads=image_payloads,
         )
 
     def messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:

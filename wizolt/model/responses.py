@@ -40,6 +40,7 @@ def responses_input(
     reasoning_history: str = "all",
     latest_user_position: Callable[[list[Json]], int] | None = None,
     text_only: bool = False,
+    image_payloads: dict[str, bytes] | None = None,
 ) -> list[Json]:
     """Convert normalized messages to Responses input items.
 
@@ -48,6 +49,8 @@ def responses_input(
     `provider_origin` is the caller's endpoint identity (ModelClient.provider_origin) and
     `replayable_echo` its replay gate (ModelClient.replayable_echo). `text_only` is the route's
     image-delivery verdict: raw blocks are suppressed but readable labels and asset paths stay.
+    `image_payloads` is the request-local ref→bytes mapping; image parts read from it instead of
+    reopening each asset file on the loop.
     """
     origin = origin or provider_origin(None)
     converted: list[Json] = []
@@ -88,7 +91,7 @@ def responses_input(
                 {
                     "role": role,
                     "content": (
-                        images.responses_content(message, text_only=text_only)
+                        images.responses_content(message, text_only=text_only, payloads=image_payloads)
                         if role == "user" and images.refs(message)
                         # A pre-built content list (a vision-bridge request) is already in the
                         # Responses wire shape; str() would flatten it into one text blob.

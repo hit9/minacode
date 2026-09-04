@@ -76,11 +76,11 @@ def test_attachment_always_goes_to_main_model_and_never_calls_vision(tmp_path, v
     assert IMAGE_ASSET_CONTEXT_PREFIX not in s.transcript_messages[0]["content"]
 
 
-def test_projected_asset_mapping_is_structured_and_complete_for_multiple_images(tmp_path):
+async def test_projected_asset_mapping_is_structured_and_complete_for_multiple_images(tmp_path):
     s = session(tmp_path)
     first_path = image_file(tmp_path / 'odd "name".png')
     second_path = image_file(tmp_path / "second.png", color=(65, 43, 21))
-    images = (s.images.load(str(first_path)), s.images.load(str(second_path)))
+    images = (await s.images.load(str(first_path)), await s.images.load(str(second_path)))
     message = s.images.message(UserInput(f"compare {IMAGE_MARKER} and {IMAGE_MARKER}", images))
 
     projected = s.images.responses_content(message)

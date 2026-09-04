@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 from PIL import Image, UnidentifiedImageError
 
-from wizolt.base import Json, ModelError
+from wizolt.base import Json, ModelError, run_blocking
 
 if TYPE_CHECKING:
     from wizolt.session import Session
@@ -224,9 +224,18 @@ class ImageInputs:
             IMAGE_REFS_KEY: [image.to_json() for image in stored.images],
         }
 
-    def load(self, path: str, *, source_text: str = "") -> ImageRef:
-        """Validate and store one explicit local image for model input."""
-        image = self._inspect(path, source_text=source_text or path)
+    async def load(self, path: str, *, source_text: str = "") -> ImageRef:
+        """Validate and store one explicit local image for model input, off the loop.
+
+        The PIL inspection and the copy into the session's assets run on the executor; the loop
+        only awaits. Cancellation waits for that worker (`run_blocking`), which cleans up its own
+        staging file, so the request either publishes the completed content-addressed asset or
+        nothing at all."""
+
+        return await run_blocking(lambda: self._load_sync(path, source_text=source_text or path))
+
+    def _load_sync(self, path: str, *, source_text: str) -> ImageRef:
+        image = self._inspect(path, source_text=source_text)
         assert image is not None
         return self.prepare(UserInput(IMAGE_MARKER, (image,))).images[0]
 
@@ -256,32 +265,32 @@ class ImageInputs:
     def retain(self, images: tuple[ImageRef, ...]) -> None:
         self.retained_refs.update(image.ref for image in images)
 
-    def chat_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
-        return self._protocol_content(message, self._chat_image_part, "text", text_only=text_only)
+    def chat_content(self, message: Json, *, text_only: bool = False, payloads: dict[str, bytes] | None = None) -> str | list[Json]:
+        return self._protocol_content(message, self._chat_image_part, "text", text_only=text_only, payloads=payloads)
 
-    def responses_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
-        return self._protocol_content(message, self._responses_image_part, "input_text", text_only=text_only)
+    def responses_content(self, message: Json, *, text_only: bool = False, payloads: dict[str, bytes] | None = None) -> str | list[Json]:
+        return self._protocol_content(message, self._responses_image_part, "input_text", text_only=text_only, payloads=payloads)
 
-    def anthropic_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
-        return self._protocol_content(message, self._anthropic_image_part, "text", text_only=text_only)
+    def anthropic_content(self, message: Json, *, text_only: bool = False, payloads: dict[str, bytes] | None = None) -> str | list[Json]:
+        return self._protocol_content(message, self._anthropic_image_part, "text", text_only=text_only, payloads=payloads)
 
-    def _chat_image_part(self, image: ImageRef) -> Json:
-        return {"type": "image_url", "image_url": {"url": self._data_url(image)}}
+    def _chat_image_part(self, image: ImageRef, payloads: dict[str, bytes] | None = None) -> Json:
+        return {"type": "image_url", "image_url": {"url": self._data_url(image, payloads=payloads)}}
 
-    def _responses_image_part(self, image: ImageRef) -> Json:
-        return {"type": "input_image", "image_url": self._data_url(image)}
+    def _responses_image_part(self, image: ImageRef, payloads: dict[str, bytes] | None = None) -> Json:
+        return {"type": "input_image", "image_url": self._data_url(image, payloads=payloads)}
 
-    def _anthropic_image_part(self, image: ImageRef) -> Json:
+    def _anthropic_image_part(self, image: ImageRef, payloads: dict[str, bytes] | None = None) -> Json:
         return {
             "type": "image",
             "source": {
                 "type": "base64",
                 "media_type": image.media_type,
-                "data": base64.b64encode(self._bytes(image)).decode("ascii"),
+                "data": base64.b64encode(self._bytes(image, payloads=payloads)).decode("ascii"),
             },
         }
 
-    def vision_content(self, images: tuple[ImageRef, ...], api: str, text: str) -> list[Json]:
+    def vision_content(self, images: tuple[ImageRef, ...], api: str, text: str, *, payloads: dict[str, bytes] | None = None) -> list[Json]:
         """Content blocks for one explicit vision-provider request.
 
         The [vision] entry always carries the images, and the blocks are pre-built so projection leaves the
@@ -289,13 +298,13 @@ class ImageInputs:
         question or the default observation instruction, never the coding task."""
 
         if api == "anthropic":
-            parts = [self._anthropic_image_part(image) for image in images]
+            parts = [self._anthropic_image_part(image, payloads) for image in images]
             text_type = "text"
         elif api == "responses":
-            parts = [self._responses_image_part(image) for image in images]
+            parts = [self._responses_image_part(image, payloads) for image in images]
             text_type = "input_text"
         else:
-            parts = [self._chat_image_part(image) for image in images]
+            parts = [self._chat_image_part(image, payloads) for image in images]
             text_type = "text"
         if text:
             parts.append({"type": text_type, "text": text})
@@ -373,7 +382,15 @@ class ImageInputs:
         )
         return "\n".join(rows)
 
-    def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str, *, text_only: bool = False) -> str | list[Json]:
+    def _protocol_content(
+        self,
+        message: Json,
+        image_part: Callable[[ImageRef, dict[str, bytes] | None], Json],
+        text_type: str,
+        *,
+        text_only: bool = False,
+        payloads: dict[str, bytes] | None = None,
+    ) -> str | list[Json]:
         images = self.input_refs(message)
         if not images:
             # A pre-built content list for the explicit vision provider is already in wire shape.
@@ -388,7 +405,7 @@ class ImageInputs:
             asset_context = self.asset_context(images)
             block: Json = {"type": text_type, "text": "\n\n".join(part for part in (text, asset_context) if part)}
             return [block]
-        parts = [image_part(image) for image in images]
+        parts = [image_part(image, payloads) for image in images]
         asset_context = self.asset_context(images)
         parts.append({"type": text_type, "text": "\n\n".join(part for part in (text, asset_context) if part)})
         return parts
@@ -455,7 +472,47 @@ class ImageInputs:
             raise ModelError(f"Stored image is missing: {image.name} ({image.ref[:12]})")
         return replace(image, source_path="")
 
-    def _bytes(self, image: ImageRef) -> bytes:
+    def _payloads_sync(self, images: tuple[ImageRef, ...]) -> dict[str, bytes]:
+        """Read and verify one request's distinct stored assets. The worker side of payload loading.
+
+        Runs on an executor thread: one open + sha256 check per distinct ref, so a batch that
+        mentions the same image in several messages reads its file exactly once. A corrupt or
+        missing asset raises the same domain error the per-image read did."""
+
+        payloads: dict[str, bytes] = {}
+        for image in images:
+            if image.ref in payloads:
+                continue
+            payloads[image.ref] = self._bytes(image)
+        return payloads
+
+    async def load_payloads(self, messages: list[Json]) -> dict[str, bytes]:
+        """Load every distinct image referenced by `messages` once, off the loop.
+
+        Returns a request-local mapping from ref to verified bytes; the caller builds wire parts
+        from it and drops it when the request is done. Never cached on the session."""
+
+        refs: dict[str, ImageRef] = {}
+        for message in messages:
+            for image in self.input_refs(message):
+                refs.setdefault(image.ref, image)
+        if not refs:
+            return {}
+        return await run_blocking(lambda: self._payloads_sync(tuple(refs.values())))
+
+    async def payloads_for(self, refs: tuple[ImageRef, ...]) -> dict[str, bytes]:
+        """Request-local bytes for one explicit ref set (a vision observation). Off the loop."""
+
+        if not refs:
+            return {}
+        return await run_blocking(lambda: self._payloads_sync(refs))
+
+    def _bytes(self, image: ImageRef, *, payloads: dict[str, bytes] | None = None) -> bytes:
+        if payloads is not None:
+            try:
+                return payloads[image.ref]
+            except KeyError:
+                raise ModelError(f"Stored image is missing: {image.name} ({image.ref[:12]})") from None
         path = self.asset_path(image)
         try:
             with open(path, "rb") as file:
@@ -466,8 +523,8 @@ class ImageInputs:
             raise ModelError(f"Stored image is corrupt: {image.name} ({image.ref[:12]})")
         return data
 
-    def _data_url(self, image: ImageRef) -> str:
-        return f"data:{image.media_type};base64,{base64.b64encode(self._bytes(image)).decode('ascii')}"
+    def _data_url(self, image: ImageRef, *, payloads: dict[str, bytes] | None = None) -> str:
+        return f"data:{image.media_type};base64,{base64.b64encode(self._bytes(image, payloads=payloads)).decode('ascii')}"
 
     def asset_path(self, image: ImageRef) -> str:
         """Stable path of one stored image, suitable for a later ViewImage call."""

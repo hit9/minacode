@@ -28,6 +28,7 @@ def chat_messages(
     latest_user_position: Callable[[list[Json]], int],
     *,
     text_only: bool = False,
+    image_payloads: dict[str, bytes] | None = None,
 ) -> list[Json]:
     """Build Chat Completions history from normalized messages under the provider's replay contract.
 
@@ -35,7 +36,9 @@ def chat_messages(
     image content for local image refs. `latest_user_position` is the boundary the caller uses for
     "current turn" reasoning — ModelClient.latest_user_position — so the same rule cannot drift.
     `text_only` is the route's image-delivery verdict: raw blocks are suppressed but readable
-    labels and stable asset paths stay.
+    labels and stable asset paths stay. `image_payloads` is the request-local ref→bytes mapping
+    loaded once before building the wire; the image parts read from it instead of reopening each
+    asset file on the loop.
     """
     converted: list[Json] = []
     latest_user = latest_user_position(messages)
@@ -47,7 +50,7 @@ def chat_messages(
             for key in ("reasoning_content", "reasoning", "reasoning_details"):
                 clean.pop(key, None)
         if message.get("role") == "user" and images.refs(message):
-            clean["content"] = images.chat_content(message, text_only=text_only)
+            clean["content"] = images.chat_content(message, text_only=text_only, payloads=image_payloads)
         converted.append(clean)
     return Text.value(converted)
 

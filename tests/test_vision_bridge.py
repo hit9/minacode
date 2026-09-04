@@ -105,7 +105,7 @@ async def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monk
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
     model = ModelClient(s)
-    observation = await VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
+    observation = await VisionObserver(model).observe((await s.images.load(str(tmp_path / "shot.png")),), "exact error?")
 
     assert observation == OBSERVATION
     assert captured["tools"] is None
@@ -167,7 +167,7 @@ async def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path
             ]
         ),
     )
-    await VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "")
+    await VisionObserver(model).observe((await s.images.load(str(tmp_path / "shot.png")),), "")
     assert (s.usage.calls, s.usage.total_tokens) == (2, 10_820)
     assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (10_000, 200_000)
 
