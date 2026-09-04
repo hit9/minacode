@@ -227,13 +227,33 @@ class Tool:
         return [str(arg) for arg in self.args]
 
     @staticmethod
+    def range_int(value: object) -> int | None:
+        """A line-range endpoint as an int: an integer or a pure-decimal digit string, else None.
+
+        Some providers serialize numbers as strings; this is the tolerance point for read-only line
+        ranges only. Booleans, floats, signed or non-decimal strings stay rejected."""
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdecimal() and value.isascii():
+            return int(value)
+        return None
+
+    @staticmethod
     def line_range(value: object, label: str = "range") -> tuple[int, int]:
-        if not isinstance(value, list) or len(value) != 2 or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+        if not isinstance(value, list) or len(value) != 2:
             raise ToolError(f"{label} must be [start,end] integers")
-        start, end = value
+        endpoints: list[int] = []
+        for item in value:
+            endpoint = Tool.range_int(item)
+            if endpoint is None:
+                raise ToolError(f"{label} must be [start,end] integers")
+            endpoints.append(endpoint)
+        start, end = endpoints
         if start < 0 or end < 0:
             raise ToolError(f"{label} values must be >= 0")
-        return int(start), int(end)
+        return start, end
 
     @staticmethod
     def compact(value: Any, limit: int = 120) -> str:

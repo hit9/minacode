@@ -72,7 +72,13 @@ class ReadTool(Tool):
 
     @classmethod
     def ranges_arg(cls, value: object) -> object:
-        return [value] if isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) and not isinstance(item, bool) for item in value) else value
+        """Wrap a flat [start,end] pair into [[start,end]]; list-of-pairs forms pass through.
+
+        Endpoints may be ints or pure-decimal digit strings; scalar two-item lists are the single
+        range form, longer or nested lists are pairs."""
+        if isinstance(value, list) and len(value) == 2 and all(cls.range_int(item) is not None for item in value):
+            return [value]
+        return value
 
     def needs_confirmation(self) -> bool:
         return any(not (self.session.in_cwd(path) or self.session.owns_asset(path)) for path, _ in self.targets())

@@ -61,6 +61,9 @@ def test_base_tool_helpers_validate_shared_argument_contracts(tmp_path):
     assert tool.strings(min_count=1, max_count=2) == ["one", "two"]
     assert tool.preview() == "Demo(one, two)"
     assert Tool.line_range([1, 3]) == (1, 3)
+    assert Tool.line_range(["1", "3"]) == (1, 3)
+    assert Tool.line_range([1, "3"]) == (1, 3)
+    assert Tool.line_range(["0", "0"]) == (0, 0)
     assert Tool.compact({"key": "a long value"}, 16) == '{"key":"a lon...'
     assert Tool.compile_regex("needle").search("NEEDLE")
     assert not Tool.compile_regex("needle", case_sensitive=True).search("NEEDLE")
@@ -71,6 +74,14 @@ def test_base_tool_helpers_validate_shared_argument_contracts(tmp_path):
         DemoTool(session(tmp_path), [1]).strings()
     with pytest.raises(ToolError, match=r"range must be \[start,end\] integers"):
         Tool.line_range([True, 2])
+    with pytest.raises(ToolError, match=r"range must be \[start,end\] integers"):
+        Tool.line_range([1.5, 2])
+    with pytest.raises(ToolError, match=r"range must be \[start,end\] integers"):
+        Tool.line_range(["318x", 560])
+    with pytest.raises(ToolError, match=r"range must be \[start,end\] integers"):
+        Tool.line_range(["318:560", 1])
+    with pytest.raises(ToolError, match=r"range must be \[start,end\] integers"):
+        Tool.line_range(["-1", 2])
     with pytest.raises(ToolError, match="range values must be >= 0"):
         Tool.line_range([-1, 2])
     with pytest.raises(ToolError, match="invalid regex"):
@@ -98,6 +109,19 @@ def test_read_accepts_ranges_in_both_array_forms_and_renders_a_view(tmp_path):
     # The single [start, end] form is accepted as one range.
     single = ReadTool(s, [{"path": "sample.py", "ranges": [2, 3]}]).call()
     assert "2 | b" in single.retained_text and "3 | c" in single.retained_text
+
+
+def test_read_accepts_pure_decimal_string_endpoints_in_both_forms(tmp_path):
+    """Some providers serialize numbers as strings; Read normalizes pure-decimal digit-string
+    endpoints in both the nested and the flat range forms instead of rejecting the call."""
+    (tmp_path / "sample.py").write_text("a\nb\nc\nd\n", encoding="utf-8")
+    s = session(tmp_path)
+
+    nested = ReadTool(s, [{"path": "sample.py", "ranges": [["1", "2"]]}]).call()
+    assert "1 | a" in nested.retained_text and "2 | b" in nested.retained_text
+
+    flat = ReadTool(s, [{"path": "sample.py", "ranges": ["3", "4"]}]).call()
+    assert "3 | c" in flat.retained_text and "4 | d" in flat.retained_text
 
 
 def test_strict_schema_handles_optional_enum_union_and_container_without_mutation():
@@ -157,6 +181,9 @@ def test_skill_tool_without_library_reports_missing_capability(tmp_path):
         ([{"path": "file.py", "extra": True}], "unexpected field"),
         ([{"path": ""}], "non-empty path"),
         ([{"path": "file.py", "ranges": []}], "non-empty ranges"),
+        ([{"path": "file.py", "ranges": [[1, "x"]]}], r"must be \[start,end\] integers"),
+        ([{"path": "file.py", "ranges": [[1, 2.5]]}], r"must be \[start,end\] integers"),
+        ([{"path": "file.py", "ranges": [["1x", "2"]]}], r"must be \[start,end\] integers"),
     ],
 )
 def test_read_target_validation_is_actionable(tmp_path, args, message):
@@ -335,6 +362,10 @@ def test_recall_behaviors(tmp_path):
 
     common_range = RecallTool(s, [{"keys": [first], "ranges": [[0, 1]]}]).call()
     assert "a0" in common_range and "a1" not in common_range
+
+    # Digit-string endpoints (some providers stringify numbers) parse like integers.
+    string_endpoints = RecallTool(s, [{"keys": [first], "ranges": [["1", "2"]]}]).call()
+    assert "a0" in string_endpoints and "a1" in string_endpoints and "a2" not in string_endpoints
 
     with pytest.raises(ToolError):
         RecallTool(s, [{"key": first, "ranges": [[2, "bad"]]}]).call()
