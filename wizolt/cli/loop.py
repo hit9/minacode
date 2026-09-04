@@ -443,7 +443,7 @@ Full documentation: https://wizolt.readthedocs.io
         self.session.images.retain(item.images)
         return item.user_input()
 
-    def run(self) -> int:
+    def run(self, *, show_banner: bool = True) -> int:
         """Synchronous entry point for the CLI. Both frontends run on one loop from here."""
 
         try:
@@ -452,19 +452,20 @@ Full documentation: https://wizolt.readthedocs.io
             pass
         else:
             raise RuntimeError("CommandLoop.run() cannot be called from a running event loop; await the frontend coroutine")
-        return asyncio.run(self._run_frontend())
+        return asyncio.run(self._run_frontend(show_banner=show_banner))
 
-    async def _run_frontend(self) -> int:
+    async def _run_frontend(self, *, show_banner: bool = True) -> int:
         """Select the frontend inside the CLI's single event-loop entry."""
         if self.interactive_input:
             # The primary-screen renderer can spend a second probing cursor position on a slow
             # terminal. Put the static banner in native scrollback before that probe; restored
             # history and every later write still wait for the TUI's ordered output path.
-            self.emit_banner()
+            if show_banner:
+                self.emit_banner()
             return await TuiRuntime(self).run(show_banner=False)
-        return await self.run_simple()
+        return await self.run_simple(show_banner=show_banner)
 
-    async def run_simple(self) -> int:
+    async def run_simple(self, *, show_banner: bool = True) -> int:
         """The non-TTY frontend on the CLI-owned loop.
 
         The same loop as the TUI frontend gives the turn: one owner for startup discovery, the
@@ -472,7 +473,7 @@ Full documentation: https://wizolt.readthedocs.io
 
         self.session.next_hints_available = False  # the simple REPL has no chip UI; don't offer an invisible terminal tool
         self.open_background()
-        self.start_session()
+        self.start_session(show_banner=show_banner)
         discovery = asyncio.ensure_future(self.discover_mcp())
         try:
             return await self._simple_loop()

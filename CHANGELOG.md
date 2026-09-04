@@ -25,8 +25,8 @@
 
 ### Changed
 
-- Starting wizolt loads less code before dispatch, and its banner appears before the TUI probes
-  terminal cursor support. Cheap exits (`wizolt --version`, `--help`, `--init-config`) answer
+- Starting wizolt loads less code before dispatch, and its banner appears before session/UI imports
+  and terminal cursor probing. Cheap exits (`wizolt --version`, `--help`, `--init-config`) answer
   before the interactive CLI is loaded.
 - **Breaking.** Async Python APIs now use the natural operation name (`Agent.run`,
   `ToolRunner.run`, `ModelClient.request`, and `TuiApp.run`); retained synchronous entry points use

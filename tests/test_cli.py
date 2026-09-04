@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+from io import StringIO
 from types import SimpleNamespace
 
 import pytest
@@ -75,6 +76,51 @@ def test_cli_runs_session_and_closes_resources(monkeypatch):
 
     assert cli.main(["--config", "custom.toml", "--yolo", "--theme", "light"]) == 7
     assert closed == ["resolved-dark", "background"]
+
+
+def test_interactive_banner_precedes_session_and_ui_imports(monkeypatch):
+    """A large worktree or a cold render import must not leave the terminal blank."""
+
+    class Tty(StringIO):
+        def isatty(self):
+            return True
+
+    stdin = Tty()
+    stdout = Tty()
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli.sys, "stdout", stdout)
+    calls = []
+
+    def configure_logging():
+        calls.append(("configure", stdout.getvalue()))
+
+    session = SimpleNamespace(settings=SimpleNamespace(theme="dark"), mcp=None)
+    monkeypatch.setattr(cli, "configure_logging", configure_logging)
+    monkeypatch.setattr(cli.Session, "from_config_file", lambda **_kwargs: session)
+    monkeypatch.setattr(cli.Theme, "resolve", lambda theme: theme)
+    monkeypatch.setattr(cli.Theme, "set_mode", lambda _theme: None)
+    monkeypatch.setattr(cli, "Agent", lambda value: value)
+    monkeypatch.setattr(cli, "warm_provider_sdks", lambda: None)
+
+    class FakeLoop:
+        resume_request = ""
+
+        def __init__(self, _agent):
+            pass
+
+        def run(self, *, show_banner=True):
+            calls.append(("run", show_banner))
+            return 0
+
+        def close_background_output(self):
+            pass
+
+    monkeypatch.setattr(cli, "CommandLoop", FakeLoop)
+
+    assert cli.main([]) == 0
+    banner = f"wizolt {cli.__version__}. /help for commands.\n"
+    assert calls == [("configure", banner), ("run", False)]
+    assert stdout.getvalue() == banner
 
 
 def test_cli_loads_resumed_session_with_runtime_overrides(monkeypatch):

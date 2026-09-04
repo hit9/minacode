@@ -170,6 +170,13 @@ def main(argv: list[str] | None = None) -> int:
         print(("Created" if created else "Exists") + " config: " + path)
         return 0
 
+    # This line needs only the lightweight version module. Put it on screen before importing the
+    # session and rendering stacks; the first CommandLoop consumes the handoff, while a session
+    # selected later through /resume prints its own banner normally.
+    banner_preprinted = sys.stdin.isatty() and sys.stdout.isatty()
+    if banner_preprinted:
+        print(f"wizolt {_cli.__version__}. /help for commands.", flush=True)
+
     _cli.configure_logging()
     try:
         # Switching sessions ends one run and starts the next rather than re-pointing a live
@@ -194,7 +201,11 @@ def main(argv: list[str] | None = None) -> int:
             warm_provider_sdks()
             command_loop = _cli.CommandLoop(_cli.Agent(session))
             try:
-                code = command_loop.run()
+                if banner_preprinted:
+                    code = command_loop.run(show_banner=False)
+                    banner_preprinted = False
+                else:
+                    code = command_loop.run()
             finally:
                 # The runtime closes what the session opened, on the loop that opened it; all that
                 # is left here is the terminal-output gate, in case the runtime never got that far.
