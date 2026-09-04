@@ -1045,8 +1045,8 @@ Full documentation: https://wizolt.readthedocs.io
                 final_output()
 
     def with_status_paused(self, action):
-        # Only quiet the standalone status-bar thread used by the simple/non-TTY path. The full TUI
-        # renders status and output together, so it never needs this terminal-level coordination.
+        # Only quiet the standalone status row used by the simple frontend. The full TUI renders
+        # status and output together, so it never needs this terminal-level coordination.
         was_running = self.status_bar.is_running()
         if was_running:
             self.status_bar.stop()

@@ -231,7 +231,6 @@ def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path,
     retrying_text = "".join(text for _, text in retrying)
     assert "retrying 2/6 · timeout (10s)" in retrying_text
     assert any(text == "● " for _, text in retrying)
-    assert ("retrying 2/6 · timeout", "warn") in command_loop.status_bar.entries(show_elapsed=True)
 
     now[0] = 102.1
     working = command_loop.view.queue_divider_fragments()
@@ -239,7 +238,6 @@ def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path,
     assert "working · attempt 2/6 (12s)" in working_text
     assert "retrying" not in working_text
     assert any(text == "● " for _, text in working)
-    assert ("attempt 2/6", "warn") in command_loop.status_bar.entries(show_elapsed=True)
 
     command_loop.session.state.current_model_call_started_at = 0.0
     assert all(text != "● " for _, text in command_loop.view.queue_divider_fragments())

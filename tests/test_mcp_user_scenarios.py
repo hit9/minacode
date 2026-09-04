@@ -1,4 +1,5 @@
 """mcp user scenarios (split from tests/test_mcp_commands.py)."""
+
 import asyncio
 import threading
 import time
@@ -318,20 +319,20 @@ class TestMCPUserScenarios:
         monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
-        # The batch is a task, not a worker thread: both servers are connected concurrently on this
-        # loop, and the status bar is read between awaits the way the TUI reads it between frames.
+        # The status row has no animation of its own, but each render reads the current connected
+        # count while both servers connect concurrently on this loop.
         connecting = asyncio.ensure_future(mcp_command(loop, "connect alpha beta"))
         await self.wait_for(lambda: all(event.is_set() for event in started.values()))
-        assert StatusBar(s).mcp_status().startswith("mcp 0/2")
+        assert "mcp 0" in "".join(text for _, text in StatusBar(s).fragments())
 
         release["alpha"].set()
         await self.wait_for(lambda: s.mcp.connected("alpha"))
         assert s.mcp.discovery_status == "discovering"
-        assert StatusBar(s).mcp_status().startswith("mcp 1/2")
+        assert "mcp 1" in "".join(text for _, text in StatusBar(s).fragments())
 
         release["beta"].set()
         result = await connecting
 
         assert s.mcp.discovery_status == "ready"
-        assert StatusBar(s).mcp_status() == "mcp 2"
+        assert "mcp 2" in "".join(text for _, text in StatusBar(s).fragments())
         assert result and "`alpha`" in result and "`beta`" in result

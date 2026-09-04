@@ -5,7 +5,7 @@ from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runne
 from wizolt.cli.worker import worker_command
 
 
-async def test_status_bar_shows_worker_segment(tmp_path):
+async def test_status_bar_stays_on_parent_session_while_worker_runs(tmp_path):
     from wizolt.config import (
         Config,
         ProviderConfig,
@@ -18,10 +18,10 @@ async def test_status_bar_shows_worker_segment(tmp_path):
     parent.usage.last_prompt_budget = 400
     parent.usage.last_cached_prompt_tokens = 50
     bar = StatusBar(parent)
-    texts = [text for text, _ in bar.entries(show_elapsed=False)]
+    original = "".join(text for _, text in bar.fragments())
     parent_lead = parent.config.active_provider + "/" + (parent.config.provider.model.rsplit("/", 1)[-1] or "(no model)")
-    assert parent_lead in texts and "[worker]" not in texts
-    assert "ctx 50% · cache 25%" in texts
+    assert parent_lead in original and "[worker]" not in original
+    assert "ctx 50% · cache 25%" in original
 
     # A live but idle worker does not take over the bar: marker, provider/model, and usage all
     # apply only while a delegation is in flight (the engine clears _active_turn_messages in
@@ -33,18 +33,11 @@ async def test_status_bar_shows_worker_segment(tmp_path):
     worker.usage.last_prompt_budget = 100
     worker.usage.last_cached_prompt_tokens = 25
     parent.worker = worker
-    texts = [text for text, _ in bar.entries(show_elapsed=False)]
-    assert "[worker]" not in texts
-    assert parent_lead in texts and "default/worker-model" not in texts
-    assert "ctx 50% · cache 25%" in texts  # the parent's usage stays the source while idle
-    assert "ctx 50% · cache 50%" not in texts  # the worker's usage is not shown while idle
+    assert "".join(text for _, text in bar.fragments()) == original
 
-    # In flight: the bar leads with the marker and reads the worker's provider/model and usage.
+    # Worker identity and progress belong to the working divider, not this stable session summary.
     worker._active_turn_messages.append({"role": "user", "content": "order"})
-    texts = [text for text, _ in bar.entries(show_elapsed=False)]
-    assert texts[0] == "[worker]"
-    assert "default/worker-model" in texts and parent_lead not in texts
-    assert "ctx 50% · cache 50%" in texts
+    assert "".join(text for _, text in bar.fragments()) == original
 
 
 async def test_working_divider_marks_inflight_worker(tmp_path):

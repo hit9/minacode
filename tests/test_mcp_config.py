@@ -792,26 +792,7 @@ class TestServerStatusRendering:
 
 
 class TestStatusBarMCPStatus:
-    def test_stale_shows_nothing(self):
-        """Stale status → empty string."""
-        s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
-        bootstrap_features(s)
-        bar = StatusBar(s)
-        assert bar.mcp_status() == ""
-
-    def test_discovering_shows_spinner(self, monkeypatch):
-        """Discovering status → loaded/total + spinner."""
-        s = Session(cwd="/tmp", config=Config.from_dict({"mcp": {"test": {"url": "http://x/mcp"}}}))
-        bootstrap_features(s)
-        s.mcp.discovery_status = "discovering"
-        bar = StatusBar(s)
-        monkeypatch.setattr(time, "monotonic", lambda: 0.0)
-        status = bar.mcp_status()
-        # First spinner char
-        assert status == "mcp 0/0" + bar.INDEX_SPINNER[0]
-
-    def test_discovering_shows_loaded_and_total(self, monkeypatch):
-        """Discovering status includes loaded and configured server counts."""
+    def test_always_shows_connected_server_count(self):
         raw = {
             "mcp": {
                 "a": {"url": "http://a/mcp", "auto_connect": True},
@@ -822,49 +803,17 @@ class TestStatusBarMCPStatus:
         bootstrap_features(s)
         s.mcp.discovery_status = "discovering"
         s.mcp.tools["a"] = [mcp_tool_info("a", "echo")]
-        bar = StatusBar(s)
-        monkeypatch.setattr(time, "monotonic", lambda: 0.0)
-        assert bar.mcp_status() == "mcp 1/2" + bar.INDEX_SPINNER[0]
+        text = "".join(text for _, text in StatusBar(s).fragments())
+        assert "mcp 1" in text
+        assert "mcp 1/2" not in text
 
-    def test_ready_shows_server_count(self, monkeypatch):
-        """Ready status → 'MCP N' where N is server count."""
-        s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
-        bootstrap_features(s)
-        s.mcp.discovery_status = "ready"
-        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
-        bar = StatusBar(s)
-        assert bar.mcp_status() == "mcp 1"
-
-    def test_ready_zero_servers(self):
-        """Ready with no servers → 'mcp 0'."""
-        s = Session(cwd="/tmp", config=Config.from_dict({"mcp": {"test": {"url": "http://x/mcp"}}}))
-        bootstrap_features(s)
-        s.mcp.discovery_status = "ready"
-        bar = StatusBar(s)
-        assert bar.mcp_status() == "mcp 0"
-
-    def test_error_shows_error(self):
-        """Error status → 'mcp err'."""
+    def test_shows_zero_when_no_server_is_connected(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         s.mcp.discovery_status = "error"
-        bar = StatusBar(s)
-        assert bar.mcp_status() == "mcp err"
-
-    def test_discovering_statusbar_spinner_animates(self, monkeypatch):
-        """Discovering spinner changes over time."""
-        s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
-        bootstrap_features(s)
-        s.mcp.discovery_status = "discovering"
-        bar = StatusBar(s)
-
-        monkeypatch.setattr(time, "monotonic", lambda: 0.0)
-        first = bar.mcp_status()
-
-        monkeypatch.setattr(time, "monotonic", lambda: StatusBar.INTERVAL)
-        second = bar.mcp_status()
-
-        assert first != second
+        text = "".join(text for _, text in StatusBar(s).fragments())
+        assert "mcp 0" in text
+        assert "err" not in text
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,6 @@ from wizolt.base import (
     HTTP_USER_AGENT,
     ToolCall,
     UpdateStatus,
-    __version__,
 )
 from wizolt.cli import CommandLoop
 from wizolt.cli.update import UpdateChecker
@@ -155,20 +154,14 @@ async def test_cancelling_code_index_sync_waits_then_clears_refreshing(tmp_path,
     assert index.session.state.code_index_status == "synced"
 
 
-def test_status_bar_animates_refreshing_code_index(tmp_path, monkeypatch):
+def test_status_bar_uses_a_static_refreshing_code_index_marker(tmp_path):
     s = session(tmp_path)
     s.state.code_index_refreshing = True
     s.state.code_index_notice = "syncing"
     bar = StatusBar(s)
 
-    monkeypatch.setattr(time, "monotonic", lambda: 0.0)
-    first = bar.index_status()
-    monkeypatch.setattr(time, "monotonic", lambda: StatusBar.INTERVAL)
-    second = bar.index_status()
-
-    assert first != second
-    assert first in StatusBar.INDEX_SPINNER
-    assert second in StatusBar.INDEX_SPINNER
+    assert bar.index_status() == "~"
+    assert "index~" in "".join(text for _, text in bar.fragments())
 
 
 def test_loading_the_cache_claims_the_due_remote_check(tmp_path):
@@ -182,12 +175,8 @@ def test_loading_the_cache_claims_the_due_remote_check(tmp_path):
     assert UpdateChecker(s).load_cached() is False
 
 
-def test_update_status_signals_newer_version_in_status_bar(tmp_path):
-    s = data_session(tmp_path)
-    s.update.latest = "99.0.0"
+def test_update_status_compares_normalized_versions():
     assert UpdateStatus.version_tuple("1.2") == (1, 2, 0)
-    assert s.update.newer_than(__version__)
-    assert s.update.latest in StatusBar(s).update_status()
 
 
 def mock_pypi(monkeypatch, handler, seen: dict | None = None):

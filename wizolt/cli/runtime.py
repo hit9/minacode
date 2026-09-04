@@ -401,7 +401,7 @@ class TuiRuntime:
             on_retry=self._request_model_retry,
             on_recall=self.recall,
             on_expand_output=self.expand_output,
-            status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
+            status_fragments_fn=self.loop.status_bar.fragments,
             activity_fragments_fn=self.loop.view.tui_activity_fragments,
             input_hint_fn=self.loop.view.tui_input_hint,
             quick_hints_fn=lambda: self.loop.session.quick_hints,

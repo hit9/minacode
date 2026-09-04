@@ -32,9 +32,7 @@ from wizolt.base import (
     LogEdge,
     LogRole,
     Text,
-    __version__,
 )
-from wizolt.config import Config, compaction_provider_config
 from wizolt.session import Session
 from wizolt.tools import CodeIndex
 
@@ -109,15 +107,12 @@ class Theme:
         # with it, so its plain tone stays below full white.
         "status.base": "#cbd5e1",
         "status.sep": "#4b5563",
-        "status.provider": "#cbd5e1",
-        "status.sweep.start": "#4f9fc4",
-        "status.sweep.end": "#9b82c9",
-        "status.sweep.crest": "#cfe6f2",
+        "status.provider": "#60a5fa",
         "status.reason": "#a5b4fc",
         "status.mcp": "#93c5fd",
         "status.ctx": "#facc15",
-        "status.update": "#fb923c",
         "status.index": "#94a3b8",
+        "status.yolo": "#c084fc",
         "status.warn": "#fb7185",
         "status.worker": "#fbbf24",
         "divider.glow": "#67e8f9",
@@ -139,17 +134,12 @@ class Theme:
         "syntax.default_hex": "24292e",
         "status.base": "#4b5563",
         "status.sep": "#9ca3af",
-        "status.provider": "#4b5563",
-        # On a light terminal the crest is the darkest point: contrast, not brightness, is what
-        # makes the travelling band read as a highlight.
-        "status.sweep.start": "#3b7ea3",
-        "status.sweep.end": "#6b52a3",
-        "status.sweep.crest": "#1f2937",
+        "status.provider": "#1d4ed8",
         "status.reason": "#5b21b6",
         "status.mcp": "#1e40af",
         "status.ctx": "#a16207",
-        "status.update": "#9a3412",
         "status.index": "#475569",
+        "status.yolo": "#7e22ce",
         "status.warn": "#b91c1c",
         "status.worker": "#b45309",
         "divider.glow": "#0e7490",
@@ -1273,27 +1263,18 @@ class BashLivePreview:
 
 
 class StatusBar:
-    """Show what the agent is doing now, on a timer thread, owning none of it.
+    """A quiet, colored summary of the session, owning none of the state it displays.
 
     Every value displayed is read from session state the engine already maintains. It is a view: it
     never blocks a turn, and must never become the reason a piece of state exists.
 
-    It writes to stderr, and only when stderr is a terminal, so the repainting line stays out of piped
-    transcripts and clear of the completed output on stdout. It redraws in place and erases on stop,
-    leaving nothing in scrollback.
+    The TUI reads the fragments whenever its ordinary events redraw the screen. The simple frontend
+    writes the same static row to stderr once at turn start and erases it on stop, keeping it out of
+    piped transcripts without a timer or repaint thread.
     """
 
-    INTERVAL: ClassVar[float] = 0.2
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
-    INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
-    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn", "worker")
-    # The working sweep: one crest crossing the line every couple of seconds. `SWEEP_FALLOFF` sets
-    # its half width as a fraction of the line (5.0 → a fifth), wide enough that it drifts rather
-    # than blinks. Bands and levels quantize the gradient and the crest; see `sweep_fragments`.
-    SWEEP_CYCLES_PER_SEC: ClassVar[float] = 0.55
-    SWEEP_FALLOFF: ClassVar[float] = 5.0
-    SWEEP_BANDS: ClassVar[int] = 10
-    SWEEP_LEVELS: ClassVar[int] = 10
+    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "index", "yolo", "warn")
 
     @classmethod
     def role_style(cls, role: str) -> str:
@@ -1302,43 +1283,34 @@ class StatusBar:
     def __init__(self, session: Session):
         self.session = session
         self.started_at = 0.0
-        self.stop_event = threading.Event()
-        self.thread: threading.Thread | None = None
+        self.running = False
         self.rendered = False
         self.output = create_output(sys.stderr)
         self.seen_retry_count = session.state.model_retry_count
         self.retry_notice_until = 0.0
 
     def start(self, *, reset: bool = True) -> None:
-        if self.thread is not None or not sys.stderr.isatty():
+        if self.running or not sys.stderr.isatty():
             return
         self.begin(reset=reset)
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self.run, daemon=True)
-        self.thread.start()
+        self.output.write_raw("\r")
+        self.output.erase_end_of_line()
+        print_formatted_text(FormattedText(self.fragments()), output=self.output, end="", flush=True)
+        self.rendered = True
+        self.running = True
 
     def begin(self, *, reset: bool = True) -> None:
         if reset or not self.started_at:
             self.started_at = time.monotonic()
 
     def stop(self) -> None:
-        if self.thread is None:
+        if not self.running:
             return
-        self.stop_event.set()
-        self.thread.join()
-        self.thread = None
+        self.running = False
         self.clear()
 
     def is_running(self) -> bool:
-        return self.thread is not None
-
-    def run(self) -> None:
-        while not self.stop_event.is_set():
-            self.output.write_raw("\r")
-            self.output.erase_end_of_line()
-            print_formatted_text(FormattedText(self.display_fragments(active=True)), output=self.output, end="", flush=True)
-            self.rendered = True
-            self.stop_event.wait(self.INTERVAL)
+        return self.running
 
     def clear(self) -> None:
         if self.rendered:
@@ -1346,11 +1318,6 @@ class StatusBar:
             self.output.erase_end_of_line()
             self.output.flush()
             self.rendered = False
-
-    def display_fragments(self, *, active: bool) -> StyleAndTextTuples:
-        if not active:
-            return self.fragments(sweep=False, show_elapsed=False)
-        return self.fragments(sweep=True, show_elapsed=True)
 
     def retry_notice_active(self) -> bool:
         now = time.monotonic()
@@ -1381,8 +1348,7 @@ class StatusBar:
         return f"↓ {round(state.stream_chars / 4 / elapsed)} tok/s"
 
     def active_session(self) -> Session:
-        """The session whose work this row describes: the worker while a delegation is in flight,
-        the parent otherwise. Same in-flight predicate as `entries`."""
+        """The session whose stream the working divider describes."""
         worker = self.session.worker
         return worker if worker is not None and bool(worker._active_turn_messages) else self.session
 
@@ -1410,113 +1376,41 @@ class StatusBar:
             text += f" · {remaining}s"
         return text
 
-    def fragments(self, *, sweep: bool, show_elapsed: bool) -> StyleAndTextTuples:
-        entries = self.entries(show_elapsed=show_elapsed)
-        text = " | ".join(text for text, _ in entries)
-        columns = shutil.get_terminal_size((120, 20)).columns
-        if get_cwidth(text) >= columns:
-            if sweep:
-                return self.sweep_fragments(Text.clip_width(text, columns - 1))
-            # Idle: clip per segment so the role colors survive instead of the whole line
-            # collapsing to one status.base tone (a colorless white bar in a narrow pane).
-            return self.clip_fragments(self.styled_fragments(entries), columns - 1)
-        return self.sweep_fragments(text) if sweep else self.styled_fragments(entries)
-
-    @staticmethod
-    def compaction_lead(source: Session, config: Config, row: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
-        """The row's leading segments while a summary is in flight, or None when none is.
-
-        The `[compaction]` marker shows for every summary, including one running on the row's own
-        entry. What the reader needs from this row is which phase the wait belongs to, and a
-        compaction is the one phase that looks exactly like an ordinary request while being none of
-        the turn's actual work. When the summary runs elsewhere the marker is followed by that
-        entry and its effort instead of `row`; the reasoning comes from the resolved entry, and
-        falls back to the row's when the named entry is gone from the config."""
-        entry = source.state.compaction_entry
-        if not entry:
-            return None
-        if entry == config.active_provider + "/" + config.provider.model:
-            return [("[compaction]", "ctx"), *row]
-        name, _, entry_model = entry.rpartition("/")
-        reasoning = compaction_provider_config(config).reasoning if name in config.providers else config.provider.reasoning
-        return [("[compaction]", "ctx"), (name + "/" + (entry_model or "(no model)"), "warn"), (reasoning, "reason")]
-
-    def entries(self, *, show_elapsed: bool) -> list[tuple[str, str]]:
-        # The worker display is scoped to an in-flight delegation: the engine clears
-        # _active_turn_messages in finish_turn, so the moment the worker answers, the bar returns
-        # to the parent's provider/model/usage exactly as if no worker existed. An idle worker no
-        # longer shadows the parent's row.
-        source = self.active_session()
-        inflight = source is not self.session
-        config = source.config
-        lead_role = "warn" if inflight else "provider"
+    def fragments(self) -> StyleAndTextTuples:
+        """Render the stable status row in its fixed group order and semantic colors."""
+        config = self.session.config
         provider = config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
-        parts: list[tuple[str, str]] = []
-        if inflight:
-            parts.append(("[worker]", "worker"))
-        # A summary in flight is named on the row, always. Read off the displayed session, so a
-        # worker compacting its own context shows on the worker's row. When it runs on its own
-        # [compaction] entry the situation is also the in-flight worker's -- the request on the wire
-        # is not this row's model -- so the marker names that entry in place of these segments.
-        row = [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
-        parts += self.compaction_lead(source, config, row) or row
-
-        mcp_status = self.mcp_status()
-        if mcp_status:
-            parts.append((mcp_status, "mcp"))
-        skill_count = len(self.session.skills.skills) if self.session.skills else 0
-        if skill_count:
-            parts.append((f"skills {skill_count}", "mcp"))
-        running_jobs = len(self.session.running_jobs())
-        if running_jobs:
-            parts.append((f"jobs {running_jobs}", "warn"))
-        # Deliberately the conversation's counter, never the compaction one. A summary in flight
-        # has no usage yet, so switching would show the *previous* summary's numbers under a row
-        # that reads as the current one. Silently changing what a percentage refers to is worse than
-        # a stale one. The per-summary reading is `/status`'s `compaction cache` row, which is exact.
-        usage = source.usage
+        usage = self.session.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
-            # The provider-reported tokens and the budget of the last request are the display truth;
-            # the estimate (state.context_percent) stays as the fallback before any request exists.
-            # The pair describes one real request, so raising a context limit moves this only once the
-            # next request has been sent against the new budget -- mixing a measured numerator with
-            # today's denominator would re-score a request that already happened.
-            # This only renders; compaction keeps triggering on the estimate (see DESIGN.md, context.py).
             ctx_percent = min(100, usage.last_prompt_tokens * 100 // usage.last_prompt_budget)
         else:
-            ctx_percent = source.state.context_percent
-        ctx_text = "ctx " + str(ctx_percent) + "%"
-        if usage.last_prompt_tokens:
-            ctx_text += " · cache " + str(usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens) + "%"
-        parts.append((ctx_text, "ctx"))
-        update_status = self.update_status()
-        if update_status:
-            parts.append((update_status, "update"))
-        index_status = self.index_status()
-        if index_status:
-            parts.append(("index" + index_status, "index"))
-        if self.session.settings.yolo:
-            parts.append(("yolo", "warn"))
-        if show_elapsed:
-            turn_step = self.session.state.turn_step
-            max_steps = self.session.settings.max_steps
-            # Only meaningful near the cap, where the turn is about to be cut off; hidden while far from it.
-            if turn_step * 5 >= max_steps * 4:
-                parts.append((f"step {turn_step}/{max_steps}", "warn"))
-            if retry_status := self.retry_status():
-                parts.append((retry_status, "warn"))
-            elif attempt_status := self.model_attempt_status():
-                parts.append((attempt_status, "warn"))
-        return parts
+            ctx_percent = self.session.state.context_percent
+        cache_percent = usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens if usage.last_prompt_tokens else 0
+        mcp_count = sum(self.session.mcp.connected(item.name) for item in self.session.mcp.parse_configs()) if self.session.mcp is not None else 0
+        skill_count = len(self.session.skills.skills) if self.session.skills else 0
 
-    def styled_fragments(self, entries: list[tuple[str, str]]) -> StyleAndTextTuples:
+        identity: list[tuple[str, str]] = []
+        if self.session.settings.yolo:
+            identity.append(("[yolo] ", "yolo"))
+        identity.extend([(config.active_provider + "/" + model, "provider"), (" · ", "sep"), (provider.reasoning, "reason")])
+        groups: list[list[tuple[str, str]]] = [
+            identity,
+            [(f"mcp {mcp_count}", "mcp"), (" · ", "sep"), (f"skills {skill_count}", "mcp")],
+            [(f"ctx {ctx_percent}%", "ctx"), (" · ", "sep"), (f"cache {cache_percent}%", "ctx")],
+            [("index" + self.index_status(), "index")],
+        ]
         fragments: StyleAndTextTuples = []
-        for index, (text, role) in enumerate(entries):
-            if index:
+        for group in groups:
+            if fragments:
                 fragments.append((Theme.style("status.sep"), " | "))
-            fragments.append((self.role_style(role), text))
-        return fragments or [("", "")]
+            fragments.extend((self.role_style(role), text) if role != "sep" else (Theme.style("status.sep"), text) for text, role in group)
+
+        text = "".join(fragment[1] for fragment in fragments)
+        columns = shutil.get_terminal_size((120, 20)).columns
+        if get_cwidth(text) >= columns:
+            return self.clip_fragments(fragments, columns - 1)
+        return fragments
 
     @staticmethod
     def clip_fragments(fragments: StyleAndTextTuples, width: int) -> StyleAndTextTuples:
@@ -1540,57 +1434,10 @@ class StatusBar:
                 used += char_width
         return clipped or [("", "")]
 
-    def sweep_fragments(self, text: str) -> StyleAndTextTuples:
-        """Paint the working status line as a crest travelling over a quiet gradient.
-
-        Both the gradient and the crest are quantized, so neighbouring cells share one style string.
-        A continuous per-cell color costs an escape sequence per column every frame and mints a
-        style string prompt-toolkit caches forever; in bands the renderer emits one escape per run
-        and the set of strings stays small. The steps are far finer than the eye resolves over a
-        crest this wide, so the motion still reads as continuous.
-        """
-        if not text:
-            return [("", "")]
-        width = max(1, len(text) - 1)
-        sweep = (time.monotonic() * self.SWEEP_CYCLES_PER_SEC) % 1.0
-        bases = Theme.ramp("status.sweep.start", "status.sweep.end", self.SWEEP_BANDS)
-        crest = Theme.rgb(Theme.style("status.sweep.crest"))
-        fragments: StyleAndTextTuples = []
-        for index, char in enumerate(text):
-            ratio = index / width
-            base = bases[round(ratio * (self.SWEEP_BANDS - 1))]
-            level = round(max(0.0, 1.0 - abs(ratio - sweep) * self.SWEEP_FALLOFF) ** 2 * (self.SWEEP_LEVELS - 1))
-            fragments.append((base if not level else Theme.mix(Theme.rgb(base), crest, level / (self.SWEEP_LEVELS - 1)), char))
-        return fragments
-
     def index_status(self) -> str:
         if self.session.state.code_index_error:
             return CodeIndex.label("error")
         if self.session.state.code_index_refreshing:
             notice = self.session.state.code_index_notice or "syncing"
-            return self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)] if notice in {"syncing", "updating"} else notice
+            return CodeIndex.label(notice)
         return CodeIndex.label(self.session.state.code_index_status)
-
-    def update_status(self) -> str:
-        update = self.session.update
-        if update.checking:
-            return "update..."
-        return "update " + update.latest if update.newer_than(__version__) else ""
-
-    def mcp_status(self) -> str:
-        if self.session.mcp is None:
-            return ""
-        configs = self.session.mcp.parse_configs()
-        if not configs:
-            return ""
-        status = self.session.mcp.discovery_status
-        if status == "discovering":
-            spinner = self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
-            loaded, total = self.session.mcp.discovery_progress()
-            return f"mcp {loaded}/{total}{spinner}"
-        if status == "error":
-            return "mcp err"
-        if status != "ready":
-            return ""
-        # "!" flags that the tools index overflowed the cap and some tools are hidden.
-        return f"mcp {len(self.session.mcp.tools)}{'!' if self.session.mcp.index_truncated else ''}"

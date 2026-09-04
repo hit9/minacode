@@ -198,17 +198,17 @@ async def test_bash_live_start_pauses_standalone_status(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     loop.ui.color = True
     loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
-    loop.status_bar.thread = object()
-    loop.status_bar.stop = lambda: setattr(loop.status_bar, "thread", None)
-    loop.status_bar.start = lambda **_kwargs: setattr(loop.status_bar, "thread", object())
+    loop.status_bar.running = True
+    loop.status_bar.stop = lambda: setattr(loop.status_bar, "running", False)
+    loop.status_bar.start = lambda **_kwargs: setattr(loop.status_bar, "running", True)
 
     loop.tool_live_start()
     assert loop.live_status_paused is True
-    assert loop.status_bar.thread is None
+    assert loop.status_bar.running is False
 
     loop.tool_live_output("", "")
     assert loop.live_status_paused is False
-    assert loop.status_bar.thread is not None
+    assert loop.status_bar.running is True
 
 
 async def test_command_loop_indents_intermediate_and_final_messages(tmp_path):

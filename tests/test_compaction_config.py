@@ -168,35 +168,15 @@ def _compaction_bar_session(tmp_path, **compaction):
     return s
 
 
-def test_status_bar_names_the_entry_a_summary_runs_on(tmp_path):
-    """A summary on its own provider entry is the same situation as an in-flight worker: the
-    request on the wire is not the row's model, so the bar names the one that is."""
+def test_status_bar_stays_on_the_session_during_compaction(tmp_path):
     s = _compaction_bar_session(tmp_path, provider="cheap", model="haiku", reasoning="off")
     bar = StatusBar(s)
+    original = "".join(text for _, text in bar.fragments())
 
-    assert " | ".join(text for text, _ in bar.entries(show_elapsed=False)).startswith("default/big-model | high")
+    assert original.startswith("default/big-model · high | ")
 
     s.state.compaction_entry = "cheap/haiku"
-    entries = bar.entries(show_elapsed=False)
-    assert entries[:3] == [("[compaction]", "ctx"), ("cheap/haiku", "warn"), ("off", "reason")]
-
-    # Cleared when the request ends: the row goes back to the conversation's own model.
-    s.state.compaction_entry = ""
-    assert bar.entries(show_elapsed=False)[0] == ("default/big-model", "provider")
-
-
-def test_status_bar_marks_a_compaction_running_on_the_row_own_entry(tmp_path):
-    """With no [compaction] overrides the resolved entry is the active one, and the row keeps its
-    own provider segments -- but it still says a summary is what the wait is for. Naming the phase
-    is the point: a compaction otherwise looks exactly like an ordinary request."""
-    s = _compaction_bar_session(tmp_path)
-    bar = StatusBar(s)
-    s.state.compaction_entry = "default/big-model"
-
-    assert bar.entries(show_elapsed=False)[:3] == [("[compaction]", "ctx"), ("default/big-model", "provider"), ("high", "reason")]
-
-    s.state.compaction_entry = ""
-    assert bar.entries(show_elapsed=False)[0] == ("default/big-model", "provider")
+    assert "".join(text for _, text in bar.fragments()) == original
 
 
 def test_status_bar_output_rate_reads_the_stream_that_is_running(tmp_path):

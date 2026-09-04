@@ -196,7 +196,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in rendered
     assert "| cache | (no requests yet) |" in rendered
     assert "| field | value |" in rendered
-    bar_text = " | ".join(text for text, _ in StatusBar(s).entries(show_elapsed=False))
+    bar_text = "".join(text for _, text in StatusBar(s).fragments())
     assert f"skills {count}" in bar_text
 
 
