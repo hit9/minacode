@@ -633,6 +633,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     assert edit_params["required"] == ["path", "edits"]
     assert set(edit_params["properties"]) == {"edits", "path", "source"}
     assert "source=view.N from Read, Search, or InspectCode" in EditTool.schema()["function"]["description"]
+    assert edit_params["properties"]["edits"]["items"]["properties"]["op"]["enum"] == ["create", "replace", "delete"]
 
     recall_keys = RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
     assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"

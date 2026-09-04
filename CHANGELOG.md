@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- `Edit` tolerates a provider omitting `op` only when `source`, `start`, `end`, and explicit
+  replacement content make `replace` unambiguous; incomplete create/delete shapes remain errors.
+
 ### Added
 
 - `ToolScript` scripts can hand a batch of independent calls over at once with

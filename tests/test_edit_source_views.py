@@ -100,6 +100,18 @@ def test_edit_accepts_redundant_matching_path_in_model_operation(tmp_path):
     assert payload["edits"][0]["path"] == "script.py"
 
 
+def test_edit_infers_only_the_complete_missing_replace_shape(tmp_path):
+    """Providers sometimes omit only `op`; source + range + explicit text is safely replace."""
+    s = session(tmp_path)
+    path = tmp_path / "script.py"
+    path.write_text("old\nkeep\n", encoding="utf-8")
+    key = view(s, "script.py")
+
+    EditTool(s, ["script.py", key, [{"start": 1, "end": 1, "content": "new\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "new\nkeep\n"
+
+
 def test_edit_rejects_different_nested_path_in_model_operation(tmp_path):
     call = ModelClient.tool_call(
         "edit",
@@ -366,7 +378,10 @@ async def test_planned_edit_refuses_to_overwrite_what_changed_after_planning(tmp
         (["code.txt", "$VIEW", []], "Edit edits must be a non-empty array"),
         (["code.txt", "$VIEW", ["replace 1"]], "each edit must be an object"),
         (["code.txt", "$VIEW", [{"op": "replace", "start": 1, "end": 1, "content": "x\n", "old": "a"}]], "Edit unexpected field: old"),
-        (["code.txt", "$VIEW", [{"op": "rewrite", "start": 1, "end": 1}]], "unknown edit op"),
+        (["code.txt", "$VIEW", [{"op": "rewrite", "start": 1, "end": 1}]], "Edit op must be create"),
+        (["code.txt", "$VIEW", [{"start": 1, "end": 1}]], "Edit op is required"),
+        (["code.txt", "$VIEW", [{"start": 1, "end": 1, "content": 7}]], "Edit op is required"),
+        (["code.txt", "", [{"start": 1, "end": 1, "content": "x\n"}]], "Edit op is required"),
         (["code.txt", "$VIEW", [{"op": "create", "content": "x\n"}]], "source is forbidden for create"),
         (["code.txt", "", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "replace requires source=view.N"),
         (["code.txt", "$VIEW", [{"op": "create", "content": "x"}, {"op": "delete", "start": 1, "end": 1}]], "create cannot be mixed"),
@@ -377,7 +392,7 @@ async def test_planned_edit_refuses_to_overwrite_what_changed_after_planning(tmp
         (["code.txt", "$VIEW", [{"op": "replace", "start": 0, "end": 1, "content": "x\n"}]], "replace requires 1 <= start <= end"),
         (["code.txt", "$VIEW", [{"op": "insert_after", "line": -1, "content": "x\n"}]], "Edit unexpected field: line"),
         (["code.txt", "$VIEW", [{"op": "insert_after", "line": 1}]], "Edit unexpected field: line"),
-        (["code.txt", "$VIEW", [{"op": "insert_before", "content": "x\n"}]], "unknown edit op"),
+        (["code.txt", "$VIEW", [{"op": "insert_before", "content": "x\n"}]], "Edit op must be create"),
         (["code.txt", "", [{"op": "create"}]], "create requires content"),
         (["code.txt", "view.99", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "source missing view.99 is unknown or expired"),
         (["other.txt", "$VIEW", [{"op": "replace", "start": 1, "end": 1, "content": "x\n"}]], "source path mismatch"),

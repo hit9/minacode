@@ -337,7 +337,7 @@ class EditTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         edit = cls.object_schema({
-            "op": {"type": "string", "description": "create|replace|delete"},
+            "op": {"type": "string", "enum": ["create", "replace", "delete"], "description": "create|replace|delete"},
             "start": {"type": "integer", "minimum": 1, "description": "First line of an inclusive 1-based replace/delete range; must be visible in the named source view"},
             "end": {"type": "integer", "minimum": 1, "description": "Last line of an inclusive 1-based replace/delete range; the line at end is itself replaced or deleted"},
             "content": {
@@ -353,7 +353,7 @@ class EditTool(Tool):
         }, ["op"])
         return cls.object_schema({
             "path": {"type": "string", "description": "File to create or patch"},
-            "source": {"type": "string", "description": "The view.N id returned by Read, Search, or InspectCode for this path. Required for every existing-file call; forbidden for create"},
+            "source": {"type": "string", "description": "The view.N id returned by Read, Search, or InspectCode for this path. Required for every existing-file call; forbidden for create. Its lines= ranges must cover every start:end; the newest same-path view may cover only a recent edit"},
             "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
         }, ["path", "edits"])
         # fmt: on
@@ -521,9 +521,18 @@ class EditTool(Tool):
                 raise ToolError("each edit must be an object")
             if unexpected := sorted(set(item) - {"op", "start", "end", "content"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
-            op = str(item.get("op") or "")
+            raw_op = item.get("op")
+            if raw_op is None and self._implicit_replace(item, source_name):
+                # A recurring provider omission: source + an exact range + explicit replacement
+                # text has only one useful interpretation. Never infer create or delete, and keep
+                # the public schema explicit so this remains tolerance rather than a second API.
+                op = "replace"
+            else:
+                op = str(raw_op or "")
+            if not op:
+                raise ToolError("Edit op is required; valid operations: create, replace, delete")
             if op not in {"create", "replace", "delete"}:
-                raise ToolError("unknown edit op")
+                raise ToolError(f"Edit op must be create, replace, or delete; got {op!r}")
             if op == "create" and len(raw_edits) != 1:
                 raise ToolError("create cannot be mixed with other edits")
             if op == "create" and source_name:
@@ -541,6 +550,24 @@ class EditTool(Tool):
                     raise ToolError("create requires content; use an explicit empty string to create an empty file")
                 edits.append(Edit(op=op, content=self.normalize_text(str(item.get("content") or ""))))
         return path, source_name, edits
+
+    @staticmethod
+    def _implicit_replace(item: Json, source_name: str) -> bool:
+        """Whether an omitted op has the complete, type-safe shape of a replace.
+
+        Requiring a source, both integer coordinates, and an explicit string keeps malformed
+        create/delete calls rejected. In particular, absence of content can never become an
+        accidental deletion.
+        """
+        start, end = item.get("start"), item.get("end")
+        return bool(
+            source_name
+            and isinstance(start, int)
+            and not isinstance(start, bool)
+            and isinstance(end, int)
+            and not isinstance(end, bool)
+            and isinstance(item.get("content"), str)
+        )
 
     def resolve_view(
         self,
