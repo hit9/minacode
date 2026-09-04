@@ -157,6 +157,12 @@ class Agent:
             self._active_loop = None
 
     async def _run_turn(self, user_input: str | UserInput) -> str:
+        # Embedding and headless callers hand Agent a draft that may carry recognized-but-unstored
+        # images; the TUI already admitted its own submissions, so this is an idempotent re-check.
+        # Stored before the opening message exists, so a checkpoint can never capture a reference
+        # to an asset the write did not finish.
+        if isinstance(user_input, UserInput) and user_input.images:
+            user_input = await self.session.images.admit(user_input)
         self.stopped_at_max_steps = False
         self.turn_sources = []
         self.session.clear_quick_hints()  # a new turn invalidates whatever the previous turn offered

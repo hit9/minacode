@@ -242,12 +242,31 @@ class TuiRuntime:
             submission = await self.submissions.get()
             try:
                 if submission.value is not None:
-                    self.loop.session.enqueue_user_input(submission.value)
+                    admitted = await self._admit_input(submission.value)
+                    if admitted is None:
+                        continue  # refused: the draft went back to the editor, nothing was queued
+                    self.loop.session.enqueue_user_input(admitted)
                 uid = await self.loop.session.save_snapshot()
                 if submission.resume_notice:
                     self.loop.emit_resume_line(uid)
             finally:
                 self.submissions.task_done()
+
+    async def _admit_input(self, value: str | UserInput) -> UserInput | None:
+        """Store one submitted input's images off the loop before anything owns it.
+
+        Admission failure -- a recognized image vanished or changed before its copy -- refuses the
+        input: the draft goes back to the editor with the error, and nothing was queued. Text
+        without images passes straight through."""
+
+        value = value if isinstance(value, UserInput) else UserInput(str(value))
+        if not value.images:
+            return value
+        try:
+            return await self.loop.session.images.admit(value)
+        except WizoltError as error:
+            self.tui.restore_submission(value.display_text(), str(error))
+            return None
 
     async def _close_submissions(self) -> None:
         """Stop accepting, let the consumer finish what it already accepted, then end it."""
@@ -504,6 +523,9 @@ class TuiRuntime:
                 self.loop.emit_turn("Cancelled")
                 self.reset_turn()
                 continue
+            if (admitted := await self._admit_input(user_input)) is None:
+                continue  # an image submission was refused; its draft is back in the editor
+            user_input = admitted
             if not await self.dispatch(user_input):
                 await self._turn_until_shutdown(user_input)
 

@@ -204,6 +204,19 @@ class ImageInputs:
             position += 1
         return UserInput("".join(output), tuple(found))
 
+    async def admit(self, value: str | UserInput) -> UserInput:
+        """Verify and store one submitted draft's images; the runtime's admission step.
+
+        Copying each recognized image into the session's assets -- re-validating the source file
+        against what was recognized -- runs on the executor, so a busy loop never copies bytes or
+        opens images. Nothing is queued or snapshotted until this returns, and a failure leaves
+        the draft untouched for the caller to hand back to the editor. Already-stored refs make
+        this a cheap idempotent re-check."""
+
+        if not isinstance(value, UserInput) or not value.images or self.session is None:
+            return UserInput(str(value))
+        return await run_blocking(lambda: self.prepare(value))
+
     def prepare(self, value: str | UserInput) -> UserInput:
         """Validate and store a draft's images as session-owned assets."""
 

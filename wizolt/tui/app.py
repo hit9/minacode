@@ -561,16 +561,26 @@ class TuiApp:
             return True
         return False
 
-    def _submitted_input(self) -> UserInput | None:
-        value = self._recognize_input()
-        try:
-            value = self.images.prepare(value)
-        except WizoltError as error:
-            self.input_error = str(error)
-            self.invalidate()
-            return None
-        self.input_error = ""
-        return value
+    def _submitted_input(self) -> UserInput:
+        """Recognition only; storing the images is the runtime's admission step.
+
+        A prompt-toolkit submission callback cannot await a file write, so the draft leaves here
+        recognized but not yet stored. Nothing is queued or snapshotted until the runtime has
+        copied and re-validated each image off the loop; a failed admission hands the draft back
+        to the editor rather than dropping it."""
+
+        return self._recognize_input()
+
+    def restore_submission(self, text: str, error: str) -> None:
+        """Admission refused one submitted input (its image vanished or changed): put it back.
+
+        The draft is restored only when the buffer is still empty -- the user may already be
+        typing the next line -- and the error is shown either way."""
+
+        self.input_error = str(error)
+        if not self.input_buffer.text:
+            self._reset_input(text)
+        self.invalidate()
 
     def _append_history(self, value: UserInput) -> None:
         if self.history is not None:

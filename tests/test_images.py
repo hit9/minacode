@@ -568,19 +568,67 @@ def test_image_label_processor_maps_the_whole_label_to_one_source_cell(tmp_path)
     assert transformed.display_to_source(10) == 1
 
 
-def test_missing_recognized_image_keeps_tui_draft_on_submit(tmp_path):
+def test_tui_recognition_is_instant_but_submission_no_longer_stores_on_the_callback(tmp_path):
+    """A submission callback only recognizes: typing an image path still becomes a marker at once,
+    and submitting hands the unstored draft to the caller -- the runtime's admission step owns the
+    copy, not the keystroke callback."""
     s = session(tmp_path)
     path = image_file(tmp_path / "gone.png")
     received = []
     app = TuiApp(on_chat_submit=received.append, images=s.images)
     app.input_buffer.insert_text(path.name + " ")
-    path.unlink()
 
     app.input_buffer.validate_and_handle()
 
-    assert received == []
-    assert app.input_buffer.text == IMAGE_MARKER + " "
+    assert len(received) == 1 and received[0].images and received[0].images[0].source_path != ""
+    assert app.input_buffer.text == ""  # cleared for the next draft
+    assert app.input_error == ""
+
+
+def test_tui_restore_submission_puts_the_refused_draft_back(tmp_path):
+    """A failed admission hands the draft back to the editor with the error, when the buffer is
+    still empty."""
+    s = session(tmp_path)
+    app = TuiApp(images=s.images)
+    app.invalidate = lambda: None
+    app._reset_input("")
+
+    app.restore_submission("describe [Image #1 \u00b7 gone.png]", "Cannot read image gone.png")
+
+    assert app.input_buffer.text == "describe [Image #1 \u00b7 gone.png]"
     assert "Cannot read image" in app.input_error
+
+
+def test_tui_restore_submission_never_overwrites_a_new_draft(tmp_path):
+    """While the user is already typing the next line, a refused draft is reported but not forced
+    back over their text."""
+    s = session(tmp_path)
+    app = TuiApp(images=s.images)
+    app.invalidate = lambda: None
+    app._reset_input("")
+    app.input_buffer.insert_text("next line")
+
+    app.restore_submission("old draft", "refused")
+
+    assert app.input_buffer.text == "next line"
+    assert app.input_error == "refused"
+
+
+async def test_admission_refuses_an_image_removed_after_recognition_without_touching_the_draft(tmp_path):
+    """The runtime's admission step re-validates the recognized source off the loop; a file deleted
+    between recognition and submission refuses the draft, stores nothing, and leaves the draft's
+    reference intact for the editor."""
+    s = session(tmp_path)
+    path = image_file(tmp_path / "gone.png")
+    value = s.images.recognize(path.name)  # file present: recognized and referenced
+    assert value.images and value.images[0].source_path
+    path.unlink()
+
+    with pytest.raises(ModelError, match="Cannot read image"):
+        await s.images.admit(value)
+
+    assert not os.path.exists(os.path.join(s.images.assets_dir(), value.images[0].ref))
+    assert value.images[0].source_path == str(path)
 
 
 async def test_load_payloads_reads_each_distinct_asset_once_and_matches_direct_wire(tmp_path, monkeypatch):
@@ -638,3 +686,75 @@ async def test_load_payloads_skips_text_only_refs(tmp_path):
     message = {"role": "user", "content": "x", IMAGE_REFS_KEY: [image.to_json()], IMAGE_TEXT_ONLY_KEY: True}
 
     assert await s.images.load_payloads([message]) == {}
+
+
+async def test_admission_copy_blocked_still_lets_the_loop_advance(tmp_path, monkeypatch):
+    """Admission runs the image copy on the executor, so a slow disk cannot stall the loop while a
+    submitted image is being stored."""
+    import asyncio
+    import shutil
+    import threading
+
+    s = session(tmp_path)
+    path = image_file(tmp_path / "slow.png", size=(64, 64))
+    value = s.images.recognize(path.name)
+    entered, release = threading.Event(), threading.Event()
+    real_copyfile = shutil.copyfile
+
+    def slow_copy(source, destination):
+        entered.set()
+        release.wait(5)
+        return real_copyfile(source, destination)
+
+    monkeypatch.setattr(shutil, "copyfile", slow_copy)
+
+    beats = 0
+
+    async def heartbeat():
+        nonlocal beats
+        while True:
+            beats += 1
+            await asyncio.sleep(0.001)
+
+    pulse = asyncio.create_task(heartbeat())
+    admitting = asyncio.create_task(s.images.admit(value))
+    await asyncio.to_thread(entered.wait, 5)
+    await asyncio.sleep(0.02)
+    assert beats > 0, "the loop stalled behind an image admission copy"
+    release.set()
+    stored = await admitting
+    pulse.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pulse
+    assert stored.images and not stored.images[0].source_path
+
+
+async def test_cancelling_admission_quiesces_and_leaves_no_staging_residue(tmp_path, monkeypatch):
+    """A cancelled admission waits for its copy worker (run_blocking) and leaves no `.image-*`
+    staging file behind; the content-addressed asset either exists complete or not at all."""
+    import asyncio
+    import shutil
+    import threading
+
+    s = session(tmp_path)
+    path = image_file(tmp_path / "slow.png", size=(64, 64))
+    value = s.images.recognize(path.name)
+    entered, release = threading.Event(), threading.Event()
+    real_copyfile = shutil.copyfile
+
+    def slow_copy(source, destination):
+        entered.set()
+        release.wait(5)
+        return real_copyfile(source, destination)
+
+    monkeypatch.setattr(shutil, "copyfile", slow_copy)
+    admitting = asyncio.create_task(s.images.admit(value))
+    await asyncio.to_thread(entered.wait, 5)
+    admitting.cancel()
+    await asyncio.sleep(0.05)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await admitting
+
+    assets = s.images.assets_dir()
+    assert not any(name.startswith(".image-") for name in os.listdir(assets))  # staging cleaned up
