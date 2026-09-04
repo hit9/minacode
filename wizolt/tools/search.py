@@ -10,14 +10,28 @@ import os
 import re
 import shutil
 import threading
-from typing import ClassVar
-
-import code_symbol_index as csi
+from typing import Any, ClassVar
 
 from wizolt.base import Json, ToolArgs, ToolError, run_blocking
 from wizolt.session import Session
 from wizolt.source import INSPECT, SEARCH, SourceBlock, SourceSpan, SourceViewDraft, ToolOutput
 from wizolt.tools.base import Tool
+
+_csi_module: Any | None = None
+
+
+def _csi() -> Any:
+    """The code-symbol-index integration, imported on first use.
+
+    The package costs tens of milliseconds and is only needed when a code-symbol call actually
+    runs or a status read asks about the index, so the tool registry and the startup path must
+    not import it eagerly."""
+    global _csi_module
+    if _csi_module is None:
+        import code_symbol_index
+
+        _csi_module = code_symbol_index
+    return _csi_module
 
 
 class SearchTool(Tool):
@@ -506,7 +520,7 @@ class CodeIndex:
         """Blocking third-party status read. It returns data and never mutates Session."""
 
         try:
-            data = csi.status(self.session.cwd, check=check, max_pending_files=max_pending_files)
+            data = _csi().status(self.session.cwd, check=check, max_pending_files=max_pending_files)
         except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             return "error", str(error), None
         status = str(getattr(data, "status", "") or "error")
@@ -545,8 +559,8 @@ class CodeIndex:
     def _sync_worker(self, force: bool) -> None:
         """The blocking third-party half of `sync`. Runs on a worker; touches no session state."""
         if force:
-            csi.clean(self.session.cwd)
-        csi.index(self.session.cwd)
+            _csi().clean(self.session.cwd)
+        _csi().index(self.session.cwd)
 
     async def update(self, paths: list[str]) -> str:
         """Update edited paths without blocking the loop or publishing state from a worker."""
@@ -572,7 +586,7 @@ class CodeIndex:
         self.session.state.code_index_checking = True
         try:
             try:
-                data = await run_blocking(lambda: csi.status(self.session.cwd, check=True, max_pending_files=self.AUTO_UPDATE_LIMIT + 1))
+                data = await run_blocking(lambda: _csi().status(self.session.cwd, check=True, max_pending_files=self.AUTO_UPDATE_LIMIT + 1))
             except Exception:  # noqa: BLE001 - background index freshness checks are best-effort.
                 return ""
             self.set_status(str(getattr(data, "status", "") or "error"), str(getattr(data, "message", None) or getattr(data, "reason", None) or ""))
@@ -592,7 +606,7 @@ class CodeIndex:
             return ""
         self.notice("updating", refreshing=True)
         try:
-            await run_blocking(lambda: csi.update(paths, root=self.session.cwd))
+            await run_blocking(lambda: _csi().update(paths, root=self.session.cwd))
         except asyncio.CancelledError:
             await self._settle_cancelled_operation()
             raise
@@ -698,14 +712,14 @@ class InspectCodeTool(Tool):
             if options.get("all_kinds"):
                 raise ToolError("InspectCode ref_kind and all_kinds are mutually exclusive")
             tokens = [token.strip() for token in ref_kind.split(",") if token.strip()]
-            if unknown := sorted(set(tokens) - csi.REFERENCE_KINDS):
-                raise ToolError("InspectCode unknown ref_kind: " + ", ".join(unknown) + "; valid: " + ", ".join(sorted(csi.REFERENCE_KINDS)))
+            if unknown := sorted(set(tokens) - _csi().REFERENCE_KINDS):
+                raise ToolError("InspectCode unknown ref_kind: " + ", ".join(unknown) + "; valid: " + ", ".join(sorted(_csi().REFERENCE_KINDS)))
         index = CodeIndex(self.session)
         if not index.available():
             raise ToolError("code index is not available; run /index")
         try:
             output = self.inspect_text(mode, target, options, limit)
-        except csi.CodeSymbolIndexError as error:
+        except _csi().CodeSymbolIndexError as error:
             text = self.process_result("InspectCodeToolResult", 1, "", str(error))
             return ToolOutput.of(text)
         hydrated, blocks = self.hydrate(output)
@@ -753,20 +767,20 @@ class InspectCodeTool(Tool):
             "format": "text",
         }
         if mode == "find":
-            return csi.search(target, limit=limit or csi.DEFAULT_SEARCH_LIMIT, **common)
+            return _csi().search(target, limit=limit or _csi().DEFAULT_SEARCH_LIMIT, **common)
         if mode == "inspect":
-            return csi.inspect(target, limit=limit or csi.DEFAULT_PAGE_LIMIT, **common)
+            return _csi().inspect(target, limit=limit or _csi().DEFAULT_PAGE_LIMIT, **common)
         if mode == "refs":
             ref_kinds = options.get("ref_kind") or ("all" if options.get("all_kinds") else "behavioral")
-            return csi.refs(target, limit=limit or csi.DEFAULT_MAX_REFERENCES, offset=int(options.get("offset") or 0), ref_kinds=ref_kinds, **common)
+            return _csi().refs(target, limit=limit or _csi().DEFAULT_MAX_REFERENCES, offset=int(options.get("offset") or 0), ref_kinds=ref_kinds, **common)
         if mode == "impls":
-            return csi.impls(target, limit=limit or csi.DEFAULT_MAX_IMPLEMENTORS, offset=int(options.get("offset") or 0), **common)
+            return _csi().impls(target, limit=limit or _csi().DEFAULT_MAX_IMPLEMENTORS, offset=int(options.get("offset") or 0), **common)
         if mode in self.CHAIN_MODES:
             depth = int(options.get("depth") or 3)
             if mode == "callees":
-                return csi.callees(target, limit=limit or csi.DEFAULT_MAX_CALLEES, depth=depth, loose=bool(options.get("loose")), **common)
-            return csi.callers(target, limit=limit or csi.DEFAULT_MAX_CALLERS, depth=depth, **common)
+                return _csi().callees(target, limit=limit or _csi().DEFAULT_MAX_CALLEES, depth=depth, loose=bool(options.get("loose")), **common)
+            return _csi().callers(target, limit=limit or _csi().DEFAULT_MAX_CALLERS, depth=depth, **common)
         symbol = options.get("symbol") or None
-        return csi.outline(
-            target, root=self.session.cwd, symbol=str(symbol) if symbol else None, max_symbols=limit or csi.DEFAULT_MAX_OUTLINE_SYMBOLS, format="text"
+        return _csi().outline(
+            target, root=self.session.cwd, symbol=str(symbol) if symbol else None, max_symbols=limit or _csi().DEFAULT_MAX_OUTLINE_SYMBOLS, format="text"
         )

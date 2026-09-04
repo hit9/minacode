@@ -16,6 +16,11 @@
 
 ### Changed
 
+- Entering wizolt feels immediate instead of blank: while the interpreter loads, the `wizolt`
+  banner is swept in with a small light animation, and the finished line is the banner itself.
+  Maintenance exits (`wizolt --version`, `--help`, `--init-config`, `update`) answer before the
+  interactive CLI is loaded, and piped or scripted runs skip the animation and print the banner
+  as before.
 - **Breaking.** Async Python APIs now use the natural operation name (`Agent.run`,
   `ToolRunner.run`, `ModelClient.request`, and `TuiApp.run`); retained synchronous entry points use
   an explicit `_sync` suffix. Internal async APIs follow the same convention.

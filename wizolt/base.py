@@ -13,12 +13,23 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, ClassVar, Generic, TypeVar
 
-from prompt_toolkit.utils import get_cwidth
-
 __version__ = "0.37.1"
 
 _ResourceT = TypeVar("_ResourceT")
 _BlockingT = TypeVar("_BlockingT")
+
+
+def _cwidth(text: str) -> int:
+    """Display width of `text` in terminal cells.
+
+    Imported lazily: `prompt_toolkit.utils` drags in the whole prompt_toolkit package (~70ms),
+    and base is imported by every module — including the early-startup splash, whose point is to
+    appear before anything heavy loads. The first render that actually measures text pays the
+    import once."""
+    from prompt_toolkit.utils import get_cwidth
+
+    return get_cwidth(text)
+
 
 Json = dict[str, Any]
 ToolArgs = list[Any]
@@ -322,14 +333,14 @@ class Text:
     @staticmethod
     def clip_width(text: str, width: int) -> str:
         width = max(0, width)
-        if get_cwidth(text) <= width:
+        if _cwidth(text) <= width:
             return text
         ellipsis = "." * min(3, width)
-        available = width - get_cwidth(ellipsis)
+        available = width - _cwidth(ellipsis)
         clipped = []
         used = 0
         for char in text:
-            char_width = max(0, get_cwidth(char))
+            char_width = max(0, _cwidth(char))
             if used + char_width > available:
                 break
             clipped.append(char)
@@ -349,7 +360,7 @@ class Text:
                 if char == "\n":
                     logical_lines.append([])
                 else:
-                    logical_lines[-1].append((style, char, get_cwidth(char)))
+                    logical_lines[-1].append((style, char, _cwidth(char)))
 
         def row_segments(row_prefix: list[tuple[str, str]], cells: list[tuple[str, str, int]]) -> list[tuple[str, str]]:
             row = list(row_prefix)
@@ -365,7 +376,7 @@ class Text:
         for logical in logical_lines:
             remaining = logical
             while True:
-                prefix_width = sum(get_cwidth(text) for _, text in row_prefix)
+                prefix_width = sum(_cwidth(text) for _, text in row_prefix)
                 available = max(1, width - prefix_width) if width else None
                 if available is None or sum(cell_width for _, _, cell_width in remaining) <= available:
                     rows.append(row_segments(row_prefix, remaining))
@@ -610,7 +621,7 @@ class LogBlock:
         for line, level, rails in self.walk_rows():
             margin = "".join(text for _, text in self.margin_units(level, rails))
             prefix = margin + line.text_prefix()
-            continuation = margin + " " * get_cwidth(line.text_prefix())
+            continuation = margin + " " * _cwidth(line.text_prefix())
             rows.extend(Text.wrap_styled([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
         return "\n".join("".join(text for _, text in row) for row in rows)
 

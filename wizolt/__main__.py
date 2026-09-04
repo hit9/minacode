@@ -1,45 +1,95 @@
 """wizolt entry point: command-line argument parsing and dispatch.
 
 Invoked through the ``wizolt`` console script or ``python -m wizolt``.
+
+Deliberately imports nothing from the wizolt package at module level: argparse and the early
+maintenance exits (`--version`, `update`) should answer before the interactive CLI — prompt_toolkit,
+the tools, the TUI, the session machinery — is imported, and the startup sweep covers that import
+with an animation instead of a blank terminal. The interactive-CLI names `main` needs are reached
+through the lazy `_cli` namespace below: reading `_cli.Session` imports it on first use and caches
+it on this module, so tests can keep substituting fakes here without importing wizolt at module
+load time.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib
 import os
 import subprocess
 import sys
 import threading
 
-from wizolt.base import ConfigError, UpdateStatus, WizoltError, __version__, configure_logging
-from wizolt.cli import CommandLoop
-from wizolt.cli.update import UpdateChecker
-from wizolt.config import (
-    Config,
-    ConfigFile,
-    RuntimeSettings,
-)
-from wizolt.engine import Agent
-from wizolt.providers.schema import CatalogError
-from wizolt.providers.sync import CatalogRuntime
-from wizolt.render import Theme
-from wizolt.session import Session
+# Every interactive-CLI name `main` needs, as (module, attribute). Loaded on first use and cached
+# on this module, so tests can keep substituting fakes here without `import wizolt.__main__`
+# paying for the interactive CLI.
+_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    "__version__": ("wizolt.base", "__version__"),
+    "Agent": ("wizolt.engine", "Agent"),
+    "CatalogError": ("wizolt.providers.schema", "CatalogError"),
+    "CatalogRuntime": ("wizolt.providers.sync", "CatalogRuntime"),
+    "CommandLoop": ("wizolt.cli", "CommandLoop"),
+    "Config": ("wizolt.config", "Config"),
+    "ConfigError": ("wizolt.base", "ConfigError"),
+    "ConfigFile": ("wizolt.config", "ConfigFile"),
+    "RuntimeSettings": ("wizolt.config", "RuntimeSettings"),
+    "Session": ("wizolt.session", "Session"),
+    "Theme": ("wizolt.render", "Theme"),
+    "UpdateChecker": ("wizolt.cli.update", "UpdateChecker"),
+    "UpdateStatus": ("wizolt.base", "UpdateStatus"),
+    "WizoltError": ("wizolt.base", "WizoltError"),
+    "configure_logging": ("wizolt.base", "configure_logging"),
+}
+
+
+def _import_lazy(name: str):
+    """Import one interactive-CLI name and cache it on this module (PEP 562)."""
+    spec = _LAZY_IMPORTS[name]
+    value = getattr(importlib.import_module(spec[0]), spec[1])
+    globals()[name] = value
+    return value
+
+
+def __getattr__(name: str):
+    """Import a lazy interactive-CLI name on first attribute read (PEP 562)."""
+    if name not in _LAZY_IMPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return _import_lazy(name)
+
+
+class _EntryCli:
+    """The entry point's handle on the interactive CLI. Reading an attribute (`_cli.Session`)
+    imports that name on first use and caches it on this module, so later reads are plain
+    attribute lookups; a name a test has already bound here (a fake) is returned as-is. This is
+    the seam that keeps `wizolt.__main__` importable without the interactive CLI while `main`
+    still resolves the real classes through module attributes the way it always has."""
+
+    def __getattr__(self, name: str):
+        bound = globals().get(name)
+        if bound is not None:
+            return bound
+        if name not in _LAZY_IMPORTS:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return _import_lazy(name)
+
+
+_cli = _EntryCli()
 
 
 def run_update() -> int:
     """Check PyPI for a newer wizolt and upgrade it via the detected package manager."""
-    print(f"wizolt {__version__}")
+    print(f"wizolt {_cli.__version__}")
     try:
-        latest = UpdateChecker.fetch_latest_sync()
+        latest = _cli.UpdateChecker.fetch_latest_sync()
     except Exception as error:  # noqa: BLE001 - update failures from any network/backend layer are reported uniformly.
         print(f"Error: could not check the latest version: {error}", file=sys.stderr)
         return 1
-    if not UpdateStatus(latest=latest).newer_than(__version__):
-        print(f"already up to date ({__version__})")
+    if not _cli.UpdateStatus(latest=latest).newer_than(_cli.__version__):
+        print(f"already up to date ({_cli.__version__})")
         return 0
-    command = UpdateChecker.upgrade_command()
-    print(f"updating {__version__} -> {latest}: {' '.join(command)}")
+    command = _cli.UpdateChecker.upgrade_command()
+    print(f"updating {_cli.__version__} -> {latest}: {' '.join(command)}")
     try:
         return subprocess.call(command)
     except OSError as error:
@@ -85,11 +135,6 @@ def warm_provider_sdks() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    configure_logging()
-    if sys.platform == "win32":
-        print("Error: wizolt does not support native Windows; use WSL instead.", file=sys.stderr)
-        return 1
-
     parser = argparse.ArgumentParser(prog="wizolt", epilog="Documentation: https://wizolt.readthedocs.io")
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
@@ -111,37 +156,69 @@ def main(argv: list[str] | None = None) -> int:
         "command", nargs="?", choices=["update", "upgrade"], default=None, help="Maintenance command: update/upgrade wizolt to the latest version"
     )
     args = parser.parse_args(argv)
+    if sys.platform == "win32":
+        print("Error: wizolt does not support native Windows; use WSL instead.", file=sys.stderr)
+        return 1
+    # Maintenance exits answer before anything heavy — the interactive CLI, the sweep — is loaded.
     if args.version:
-        print(__version__)
+        print(_cli.__version__)
         return 0
     if args.command in {"update", "upgrade"}:
         return run_update()
+    if args.init_config:
+        path, created = _cli.ConfigFile.init(args.config)
+        print(("Created" if created else "Exists") + " config: " + path)
+        return 0
+
+    # A session run is certain now: start the sweep so the imports below happen under the
+    # animation. Resolving the lazy names also imports their modules; a failure must take the
+    # swept line back instead of leaving it animating over a traceback.
+    from wizolt import startup
+
+    startup.start()
     try:
-        if args.init_config:
-            path, created = ConfigFile.init(args.config)
-            print(("Created" if created else "Exists") + " config: " + path)
-            return 0
+        _cli.configure_logging()
+        # Resolve every lazy name once: the imports happen under the sweep, and a failure takes
+        # the swept line back instead of leaving it animating over a traceback.
+        for _name in (
+            "Agent",
+            "CatalogError",
+            "CatalogRuntime",
+            "CommandLoop",
+            "Config",
+            "ConfigError",
+            "ConfigFile",
+            "RuntimeSettings",
+            "Session",
+            "Theme",
+            "WizoltError",
+        ):
+            getattr(_cli, _name)
+    except Exception:
+        startup.abort()
+        raise
+    try:
         # Switching sessions ends one run and starts the next rather than re-pointing a live
         # object graph at another Session: everything below is built around one, and this is the
         # only moment nothing is running. Teardown stays in the `finally` that already does it.
         resume = args.resume or ("latest" if args.continue_project else "")
         while True:
             if resume:
-                data = ConfigFile.load(args.config)
-                catalog = CatalogRuntime(Config.data_dir_from(data))
-                config = Config.from_dict(data, policy=catalog.policy)
-                session = Session.load_snapshot(
+                data = _cli.ConfigFile.load(args.config)
+                catalog = _cli.CatalogRuntime(_cli.Config.data_dir_from(data))
+                config = _cli.Config.from_dict(data, policy=catalog.policy)
+                session = _cli.Session.load_snapshot(
                     resume,
                     config=config,
-                    settings=RuntimeSettings.from_dict(data, yolo=args.yolo, theme=args.theme),
+                    settings=_cli.RuntimeSettings.from_dict(data, yolo=args.yolo, theme=args.theme),
                     cwd=os.getcwd(),
                     catalog=catalog,
                 )
             else:
-                session = Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)
-            Theme.set_mode(Theme.resolve(session.settings.theme))
+                session = _cli.Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)
+            _cli.Theme.set_mode(_cli.Theme.resolve(session.settings.theme))
             warm_provider_sdks()
-            command_loop = CommandLoop(Agent(session))
+            command_loop = _cli.CommandLoop(_cli.Agent(session))
             try:
                 code = command_loop.run()
             finally:
@@ -151,10 +228,12 @@ def main(argv: list[str] | None = None) -> int:
             resume = command_loop.resume_request
             if not resume:
                 return code
-    except ConfigError as error:
+    except _cli.ConfigError as error:
+        startup.abort()
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2
-    except (WizoltError, CatalogError) as error:
+    except (_cli.WizoltError, _cli.CatalogError) as error:
+        startup.abort()
         print("Error: " + str(error), file=sys.stderr)
         return 1
 
