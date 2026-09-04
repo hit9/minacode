@@ -979,7 +979,7 @@ class TuiApp:
         app._request_absolute_cursor_position()
 
     @staticmethod
-    def alternate_screen_available() -> bool:
+    async def alternate_screen_available() -> bool:
         """Whether an exclusive modal can preserve the primary screen in this terminal."""
         if not os.environ.get("TMUX"):
             return True
@@ -991,10 +991,20 @@ class TuiApp:
             command.extend(["-t", pane])
         command.append("#{alternate-screen}")
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=1, check=False)
-        except (OSError, subprocess.TimeoutExpired):
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(process.communicate(), timeout=1)
+            except TimeoutError:
+                process.kill()
+                await process.communicate()
+                return True
+        except OSError:
             return True
-        return result.returncode != 0 or result.stdout.strip() != "0"
+        return process.returncode != 0 or stdout.decode("utf-8", errors="replace").strip() != "0"
 
     def modal_fragments(self) -> StyleAndTextTuples:
         return self.modal.fragments_fn() if self.modal is not None else []

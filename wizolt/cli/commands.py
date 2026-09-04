@@ -380,7 +380,7 @@ def ps_command(loop: CommandLoop, args: str) -> str:
 async def diff_command(loop: CommandLoop, args: str) -> str | None:
     if args.strip():
         return "Usage: /diff"
-    if loop.interactive_input and loop.ui.color and (loop.tui is None or loop.tui.alternate_screen_available()):
+    if loop.interactive_input and loop.ui.color and (loop.tui is None or await loop.tui.alternate_screen_available()):
         await diff_viewer(loop)
         return None
     latest = loop.agent.session.latest_round_diff_sections()
@@ -671,7 +671,7 @@ async def compaction_log(loop: CommandLoop, args: str) -> str | LogBlock | None:
         return "No compaction has stored a segment yet"
     # A TUI is required, not just assumed from interactive input: without one the viewer would
     # render nothing at all, and the log lines below say the same thing without a screen.
-    if loop.interactive_input and loop.ui.color and loop.tui is not None and loop.tui.alternate_screen_available():
+    if loop.interactive_input and loop.ui.color and loop.tui is not None and await loop.tui.alternate_screen_available():
         await compaction_log_viewer(loop)
         return None
     count = loop.session.state.compaction_count

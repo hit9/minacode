@@ -120,15 +120,16 @@ async def test_alternate_screen_probe_reads_the_resolved_window_option(tmp_path)
     command = [executable, "-L", socket]
     probe = tmp_path / "alternate_screen_probe.py"
     probe.write_text(
-        f"""import subprocess
+        f"""import asyncio
+import subprocess
 
 from wizolt.tui import TuiApp
 
-print(TuiApp.alternate_screen_available())
+print(asyncio.run(TuiApp.alternate_screen_available()))
 subprocess.run([{executable!r}, "set-option", "-wg", "alternate-screen", "off"], check=True)
-print(TuiApp.alternate_screen_available())
+print(asyncio.run(TuiApp.alternate_screen_available()))
 subprocess.run([{executable!r}, "set-option", "-wg", "alternate-screen", "on"], check=True)
-print(TuiApp.alternate_screen_available())
+print(asyncio.run(TuiApp.alternate_screen_available()))
 """
     )
     run = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))} > {shlex.quote(str(tmp_path / 'out'))} 2>&1"
@@ -158,7 +159,10 @@ async def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_pat
     lp = loop(s)
     lp.interactive_input = True
     lp.ui.color = True
-    lp.tui = type("Tui", (), {"alternate_screen_available": staticmethod(lambda: False)})()
+    async def unavailable():
+        return False
+
+    lp.tui = type("Tui", (), {"alternate_screen_available": staticmethod(unavailable)})()
     opened = []
     monkeypatch.setattr(commands_mod, "diff_viewer", lambda _loop: opened.append(True))
 
