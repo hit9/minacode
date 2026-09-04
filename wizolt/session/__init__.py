@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import threading
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -324,10 +323,6 @@ class Session:
     _meta_written: dict = field(default_factory=dict)
     _active_turn_messages: list[Json] = field(default_factory=list)
     _active_transcript_messages: list[Json] = field(default_factory=list)
-    # Retained because one queue mutator is genuinely cross-thread: `NextHints` (tools/memory.py)
-    # calls `add_quick_hints` from a synchronous tool body on the runner's executor while the loop
-    # reads the same fields. Everything else that touches the queue now runs on the owning loop.
-    _gitignore_lock: threading.RLock = field(default_factory=threading.RLock)
     # The save gate and the loop it belongs to. Rebound lazily by `_save_gate`, never serialized:
     # an asyncio primitive is meaningful only to the loop that created it.
     _snapshot_gate: asyncio.Lock | None = field(default=None, repr=False, compare=False)

@@ -225,28 +225,51 @@ class SearchTool(Tool):
             )
         return requests
 
-    def gitignore_patterns(self, root: str) -> list[str]:
+    async def gitignore_patterns(self, root: str) -> list[str]:
+        """Read ignore files off-loop and publish cache changes on the owning loop.
+
+        Each worker records the cache value it observed. A slower concurrent search may use its
+        own consistent result, but cannot overwrite a newer cache entry when it returns later.
+        """
+
+        cwd = self.session.cwd
+        cache = dict(self.session._gitignore_cache)
+        patterns, changes = await run_blocking(lambda: self._read_gitignore_patterns(root, cwd, cache))
+        for path, observed, replacement in changes:
+            if self.session._gitignore_cache.get(path) != observed:
+                continue
+            if replacement is None:
+                self.session._gitignore_cache.pop(path, None)
+            else:
+                self.session._gitignore_cache[path] = replacement
+        return patterns
+
+    @staticmethod
+    def _read_gitignore_patterns(
+        root: str,
+        cwd: str,
+        cache: dict[str, tuple[int, list[str]]],
+    ) -> tuple[list[str], list[tuple[str, tuple[int, list[str]] | None, tuple[int, list[str]] | None]]]:
         patterns = []
-        paths = [os.path.join(self.session.cwd, ".gitignore")]
+        changes = []
+        paths = [os.path.join(cwd, ".gitignore")]
         if os.path.isdir(root):
             paths.append(os.path.join(root, ".gitignore"))
         for path in dict.fromkeys(paths):
+            observed = cache.get(path)
             try:
                 mtime = os.stat(path).st_mtime_ns
-                with self.session._gitignore_lock:
-                    cached = self.session._gitignore_cache.get(path)
-                if cached is not None and cached[0] == mtime:
-                    patterns.extend(cached[1])
+                if observed is not None and observed[0] == mtime:
+                    patterns.extend(observed[1])
                     continue
                 with open(path, encoding="utf-8") as file:
                     pats = [line.strip() for line in file if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!")]
-                with self.session._gitignore_lock:
-                    self.session._gitignore_cache[path] = (mtime, pats)
+                changes.append((path, observed, (mtime, pats)))
                 patterns.extend(pats)
             except OSError:
-                with self.session._gitignore_lock:
-                    self.session._gitignore_cache.pop(path, None)
-        return patterns
+                if observed is not None:
+                    changes.append((path, observed, None))
+        return patterns, changes
 
     def ignored(self, path: str, patterns: list[str]) -> bool:
         rel = self.session.relpath(path).replace(os.sep, "/")
@@ -279,19 +302,19 @@ class SearchTool(Tool):
         # Parsing .gitignore is filesystem work: do it on the executor, never on the loop. The
         # cache is shared with the Python fallback's worker (`files()`), which is why the lock
         # stays; `gitignore_patterns` updates the cache under it from whichever thread runs it.
-        patterns = await run_blocking(lambda: self.gitignore_patterns(str(request["path"])))
+        patterns = await self.gitignore_patterns(str(request["path"]))
         if self.default_ignored(str(request["path"]), patterns):
             return []
         if "\n" not in str(request["pattern"]):
             rows = await self.rg_candidates(request)
             if rows is not None:
                 return rows
-        return await self._python_candidates(request)
+        return await self._python_candidates(request, patterns)
 
-    async def _python_candidates(self, request: Json) -> list[tuple[str, int]]:
+    async def _python_candidates(self, request: Json, patterns: list[str]) -> list[tuple[str, int]]:
         """Run the filesystem fallback off-loop and do not abandon it on cancellation."""
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(None, self.python_candidates, request)
+        future = loop.run_in_executor(None, lambda: self.python_candidates(request, patterns))
         cancelled: asyncio.CancelledError | None = None
         while not future.done():
             try:
@@ -339,8 +362,7 @@ class SearchTool(Tool):
             rows.append((path, number - 1))
         return rows
 
-    def files(self, root: str, glob_pattern: str) -> list[str]:
-        gitignore = self.gitignore_patterns(root)
+    def files(self, root: str, glob_pattern: str, gitignore: list[str]) -> list[str]:
         if self.default_ignored(root, gitignore):
             return []
         if os.path.isfile(root):
@@ -368,10 +390,10 @@ class SearchTool(Tool):
                 found.append(path)
         return found
 
-    def python_candidates(self, request: Json) -> list[tuple[str, int]]:
+    def python_candidates(self, request: Json, gitignore: list[str]) -> list[tuple[str, int]]:
         regex = self.compile_regex(str(request["pattern"]), multiline=True)
         rows: list[tuple[str, int]] = []
-        for path in self.files(str(request["path"]), str(request["glob"])):
+        for path in self.files(str(request["path"]), str(request["glob"]), gitignore):
             if self._stopped:
                 break
             lines = self.read_current(path)

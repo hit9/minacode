@@ -868,7 +868,7 @@ async def test_search_python_fallback_quiesces_before_cancellation_returns(tmp_p
     started = threading.Event()
     ended = threading.Event()
 
-    def scan(_request):
+    def scan(_request, _patterns):
         started.set()
         while not tool._stopped:
             ended.wait(0.01)
@@ -876,7 +876,7 @@ async def test_search_python_fallback_quiesces_before_cancellation_returns(tmp_p
         return []
 
     monkeypatch.setattr(tool, "python_candidates", scan)
-    task = asyncio.create_task(tool._python_candidates({}))
+    task = asyncio.create_task(tool._python_candidates({}, []))
     async with asyncio.timeout(2):
         while not started.is_set():
             await asyncio.sleep(0.01)
