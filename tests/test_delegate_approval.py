@@ -5,6 +5,20 @@ from test_worker_handoff import FakeModelClient, _delegate_session
 from wizolt.tools import TOOL_REGISTRY
 
 
+def capturing_tui(captured: dict):
+    """A `loop.tui` stand-in that records the modal it was asked to show instead of drawing one.
+
+    These tests are about what the viewer renders, so the modal never has to open: the recorded
+    `fragments_fn`/`key_fn` are the whole subject."""
+
+    async def show_modal(fragments_fn, key_fn, *, exclusive=False):
+        captured.update(fragments_fn=fragments_fn, key_fn=key_fn, exclusive=exclusive)
+
+    from types import SimpleNamespace
+
+    return SimpleNamespace(show_modal=show_modal)
+
+
 async def test_delegate_send_is_confirmed_even_under_yolo(tmp_path):
     from wizolt.tools import DelegateTool
 
@@ -420,15 +434,15 @@ async def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     from prompt_toolkit.utils import get_cwidth
 
     from wizolt.base import ApprovalView
-    from wizolt.cli.modals import approval_text_viewer_sync
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((60, 40))
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=capturing_tui(captured))
     order = "\n".join(["把这个仓库里的审批快捷键改造一遍并补上测试" * 3, "", "```python", "def nested():", "    x = 1", "```"])
-    approval_text_viewer_sync(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
+    await approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
 
     rows = "".join(text for _, text in captured["fragments_fn"]()).splitlines()
     assert rows, "the viewer rendered nothing"
@@ -444,7 +458,7 @@ async def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     from types import SimpleNamespace
 
     from wizolt.base import ApprovalView
-    from wizolt.cli.modals import approval_text_viewer_sync
+    from wizolt.cli.modals import approval_text_viewer
     from wizolt.tui import TUI_MODAL_PENDING
 
     # Fixed terminal size keeps the viewport deterministic: 40 lines - 6 = 34 visible rows.
@@ -452,15 +466,9 @@ async def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(
-        tui=SimpleNamespace(
-            show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(
-                fragments_fn=fragments_fn, key_fn=key_fn, exclusive=kwargs.get("exclusive", False)
-            )
-        )
-    )
+    loop = SimpleNamespace(tui=capturing_tui(captured))
     order_lines = [f"line {i} " + "word " * 30 for i in range(200)]  # wraps to ~400 lines
-    approval_text_viewer_sync(loop, ApprovalView("order", "\n".join(order_lines), "", [("title", "fix things")]))
+    await approval_text_viewer(loop, ApprovalView("order", "\n".join(order_lines), "", [("title", "fix things")]))
     fragments = captured["fragments_fn"]
     handle_key = captured["key_fn"]
     assert captured["exclusive"] is True  # full-screen alternate-screen viewer
@@ -502,15 +510,15 @@ async def test_delegate_order_viewer_renders_markdown(monkeypatch):
     from types import SimpleNamespace
 
     from wizolt.base import ApprovalView
-    from wizolt.cli.modals import approval_text_viewer_sync
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=capturing_tui(captured))
     order = "## Section\n\n- item one\n- item two\n\n```python\nprint(1)\n```"
-    approval_text_viewer_sync(loop, ApprovalView("order", order, "", [("title", "fix things")]))
+    await approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
     rendered = "".join(text for _, text in captured["fragments_fn"]())
     assert "Section" in rendered
@@ -527,15 +535,15 @@ async def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     from types import SimpleNamespace
 
     from wizolt.base import ApprovalView
-    from wizolt.cli.modals import approval_text_viewer_sync
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=capturing_tui(captured))
     order = "Touch these files:\nwizolt/loop.py\nwizolt/parser.py\nDo not touch tests."
-    approval_text_viewer_sync(loop, ApprovalView("order", order, "", [("title", "fix things")]))
+    await approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
     rows = [row.strip() for row in "".join(text for _, text in captured["fragments_fn"]()).splitlines()]
     for source_line in order.splitlines():
@@ -548,14 +556,14 @@ async def test_delegate_order_viewer_field_header_alignment(monkeypatch):
     from prompt_toolkit.utils import get_cwidth
 
     from wizolt.base import ApprovalView
-    from wizolt.cli.modals import approval_text_viewer_sync
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    approval_text_viewer_sync(loop, ApprovalView("order", "order", "", [("title", "fix"), ("lang", "python"), ("max_steps", "3")]))
+    loop = SimpleNamespace(tui=capturing_tui(captured))
+    await approval_text_viewer(loop, ApprovalView("order", "order", "", [("title", "fix"), ("lang", "python"), ("max_steps", "3")]))
 
     fragments = captured["fragments_fn"]()
     cyan = {text for style, text in fragments if style == "ansicyan" and text.strip() in {"title", "lang", "max_steps"}}
@@ -569,14 +577,14 @@ async def test_delegate_order_viewer_header_separator(monkeypatch):
     from prompt_toolkit.utils import get_cwidth
 
     from wizolt.base import ApprovalView
-    from wizolt.cli.modals import approval_text_viewer_sync
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    approval_text_viewer_sync(loop, ApprovalView("order", "order", "", [("title", "fix things")]))
+    loop = SimpleNamespace(tui=capturing_tui(captured))
+    await approval_text_viewer(loop, ApprovalView("order", "order", "", [("title", "fix things")]))
 
     lines = "".join(text for _, text in captured["fragments_fn"]()).splitlines()
     separators = [line for line in lines if line.strip() and set(line) <= {"─", " "}]
@@ -593,15 +601,15 @@ async def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     from prompt_toolkit.utils import get_cwidth
 
     from wizolt.base import ApprovalView
-    from wizolt.cli.modals import approval_text_viewer_sync
+    from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((60, 40))
     monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
-    loop = SimpleNamespace(tui=SimpleNamespace(show_modal_sync=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    loop = SimpleNamespace(tui=capturing_tui(captured))
     order = '## 标题\n\n- 把这段中文说明加进审批流程并补充测试\n\n```python\nprint("中文")\n```'
-    approval_text_viewer_sync(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
+    await approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
 
     rendered = "".join(text for _, text in captured["fragments_fn"]())
     rows = rendered.splitlines()

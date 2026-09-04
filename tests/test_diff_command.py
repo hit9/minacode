@@ -272,11 +272,8 @@ async def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_pa
     rendered = []
 
     class Modal:
-        def show_modal_sync(self, fragments_fn, _key_fn, **_kwargs):
+        async def show_modal(self, fragments_fn, _key_fn, **_kwargs):
             rendered.extend(fragments_fn())
-
-        async def show_modal(self, fragments_fn, key_fn, **kwargs):
-            return self.show_modal_sync(fragments_fn, key_fn, **kwargs)
 
     lp.tui = Modal()
 

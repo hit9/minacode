@@ -381,7 +381,7 @@ def running_script_entry(loop: CommandLoop) -> OutputEntry | None:
     return OutputEntry("running", "ToolScript", detail, ApprovalView("script · running", code, "python", rows), live=True)
 
 
-def tool_output_viewer(loop: CommandLoop) -> None:
+async def tool_output_viewer(loop: CommandLoop) -> None:
     """Browse what recent calls produced without copying it into scrollback.
 
     Every entry -- a Bash command with its output, a ToolScript with its script and result, a
@@ -415,11 +415,11 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     # cursor where it was instead of restarting at the top.
     state: ChoiceViewState | None = None
     while True:
-        picked, state = _tool_output_list(loop, entries, state)
+        picked, state = await _tool_output_list(loop, entries, state)
         if picked is None:
             return
         # Esc, q, or Ctrl-C in a detail goes back to the list; Ctrl-O closes the whole browser.
-        if approval_text_viewer_sync(loop, picked, back_on_escape=True) is not _TOOL_OUTPUT_BACK:
+        if await approval_text_viewer(loop, picked, back_on_escape=True) is not _TOOL_OUTPUT_BACK:
             return
 
 
@@ -498,7 +498,7 @@ def job_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView:
     return ApprovalView(f"job · {record.key}", bounded, "bash", rows, result)
 
 
-def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: ChoiceViewState | None = None) -> tuple[ApprovalView | None, ChoiceViewState]:
+async def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: ChoiceViewState | None = None) -> tuple[ApprovalView | None, ChoiceViewState]:
     """The list modal itself: pick one, and it closes returning the view to open.
 
     `state` keeps the cursor (and any `/` filter) across reopenings, so a detail's Esc lands back
@@ -562,7 +562,7 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: Choi
         view = entries[int(result)].view
         return view() if callable(view) else view
 
-    picked = loop.tui.show_modal_sync(fragments, handle_key)
+    picked = await loop.tui.show_modal(fragments, handle_key)
     return (picked if isinstance(picked, ApprovalView) else None), state
 
 
@@ -728,14 +728,6 @@ async def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on
     if modal is None or loop.tui is None:
         return None
     return await loop.tui.show_modal(*modal, exclusive=True)
-
-
-def approval_text_viewer_sync(loop: CommandLoop, view: ApprovalView, *, back_on_escape: bool = False) -> object:
-    """Blocking adapter for the tool-output browser, which itself runs on a worker thread."""
-    modal = _approval_text_view(loop, view, back_on_escape=back_on_escape)
-    if modal is None or loop.tui is None:
-        return None
-    return loop.tui.show_modal_sync(*modal, exclusive=True)
 
 
 async def diff_viewer(loop: CommandLoop) -> None:

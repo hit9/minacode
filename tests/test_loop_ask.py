@@ -46,12 +46,9 @@ async def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     rendered = []
 
     class Modal:
-        def show_modal_sync(self, fragments_fn, key_fn, exclusive=False):
+        async def show_modal(self, fragments_fn, key_fn, exclusive=False):
             rendered.extend(fragments_fn())
             return key_fn("enter", "")
-
-        async def show_modal(self, fragments_fn, key_fn, exclusive=False):
-            return self.show_modal_sync(fragments_fn, key_fn, exclusive)
 
     loop.tui = Modal()
 

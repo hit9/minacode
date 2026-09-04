@@ -85,6 +85,28 @@ def request_input_from_driver(app, prompt="Approve? "):
     return result
 
 
+def show_modal_from_driver(app, fragments_fn, key_fn, *, exclusive=False):
+    """Open a modal on a live TuiApp from a driver thread, and hand back a future to read.
+
+    The modal belongs to the application's own loop, which is where its keys are handled and where
+    its result resolves -- production opens it from a runtime task there. The driver schedules it
+    and reads the ending off a future, the same shape `request_input_from_driver` uses."""
+
+    result: concurrent.futures.Future = concurrent.futures.Future()
+
+    def start() -> None:
+        async def show() -> None:
+            try:
+                result.set_result(await app.show_modal(fragments_fn, key_fn, exclusive=exclusive))
+            except BaseException as error:  # noqa: BLE001 - the driver reads every ending off the future
+                result.set_exception(error)
+
+        app.app.loop.create_task(show())
+
+    app.app.loop.call_soon_threadsafe(start)
+    return result
+
+
 def rendered_screen_text(application, output):
     screen = application.renderer.last_rendered_screen
     if screen is None:

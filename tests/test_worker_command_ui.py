@@ -361,7 +361,7 @@ async def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(
     modal = ModalHarness(["enter", "G"])  # open the entry, then scroll the viewer to the bottom
     command_loop.tui = modal
 
-    tool_output_viewer(command_loop)
+    await tool_output_viewer(command_loop)
 
     listing = "".join(value for _, value in modal.frames[0])
     assert "ToolScript call 30 lines" in listing
@@ -382,7 +382,7 @@ async def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
     modal = ModalHarness([])
     command_loop.tui = modal
 
-    tool_output_viewer(command_loop)
+    await tool_output_viewer(command_loop)
 
     assert modal.frames == []
 
@@ -397,7 +397,7 @@ async def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_p
     modal = ModalHarness(["enter"])
     command_loop.tui = modal
 
-    tool_output_viewer(command_loop)
+    await tool_output_viewer(command_loop)
 
     viewer = "".join(value for _, value in modal.frames[-1])
     assert " 2  print(rows[2])" in viewer
@@ -414,7 +414,7 @@ async def test_tool_output_viewer_shows_the_whole_command_not_the_clipped_log_li
     modal = ModalHarness(["enter"])
     command_loop.tui = modal
 
-    tool_output_viewer(command_loop)
+    await tool_output_viewer(command_loop)
 
     viewer = next(frame for frame in ("".join(v for _, v in f) for f in modal.frames) if "read-only" in frame)
     assert "vendor/29" in viewer  # the tail of the command survived

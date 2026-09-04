@@ -141,6 +141,9 @@ class TuiRuntime:
         # observes its result, so nothing is left to an event-loop exception handler.
         self.runtime_loop: asyncio.AbstractEventLoop | None = None
         self.tasks: set[asyncio.Task] = set()
+        # The tool-output browser, while one is open. Runtime-owned like every other task here;
+        # kept as a handle only so a second Ctrl-O can tell that one is already showing.
+        self.browser: asyncio.Task | None = None
         self.scrollback: ScrollbackWriter | None = None
         # Set to end the input loop: an asyncio event, so waiting for it is an await rather than a
         # poll, and it is owned by the loop that sets it.
@@ -198,7 +201,15 @@ class TuiRuntime:
         return self.loop.recall_pending_input(self._request_model_retry)
 
     def expand_output(self) -> None:
-        self.spawn(asyncio.to_thread(tool_output_viewer, self.loop), name="tool-output")
+        """Ctrl-O: open the tool-output browser as one runtime task on the TUI's own loop.
+
+        One browser at a time. The browser is a modal, and a second Ctrl-O used to queue a second
+        one behind it on the modal idle event -- so closing the first opened another the reader
+        never asked for. While one is open the keystroke does nothing; Esc/Ctrl-O still closes it."""
+
+        if self.browser is not None and not self.browser.done():
+            return
+        self.browser = self.spawn(tool_output_viewer(self.loop), name="tool-output")
 
     def spawn(self, coroutine, *, name: str = "") -> asyncio.Task | None:
         """Start one runtime-owned task and keep it until it is done.

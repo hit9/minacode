@@ -12,6 +12,7 @@ from tui_harness import wait_for
 
 from wizolt.cli import TuiRuntime
 from wizolt.cli.runtime import ScrollbackWriter
+from wizolt.tools import Tool
 from wizolt.tui import TuiApp
 
 
@@ -347,3 +348,97 @@ async def test_cancelling_the_waiter_itself_leaves_no_unobserved_task_error():
 
     assert app.input_mode == "chat"  # the prompt is back even though nobody answered
     assert unobserved == []
+
+
+# --- the tool-output browser -------------------------------------------------------------------
+
+
+class BrowsingTui(FakeTui):
+    """A stand-in whose modal never answers, so an opened browser stays open for the test."""
+
+    def __init__(self):
+        super().__init__()
+        self.opened = 0
+        self.settled = 0
+
+    async def show_modal(self, fragments_fn, key_fn, *, exclusive=False):
+        del fragments_fn, key_fn, exclusive
+        self.opened += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.settled += 1
+            raise
+
+
+async def browsing_runtime(tmp_path, monkeypatch):
+    """A live runtime with one stored result, so Ctrl-O has something to show."""
+    runtime, command_loop, tui = runtime_for(tmp_path, monkeypatch, tui=BrowsingTui())
+    command_loop.session.store_tool_result("Bash", ["printf hi"], Tool.process_result("BashToolResult", 0, "hi", ""))
+    return runtime, command_loop, tui
+
+
+async def test_a_second_ctrl_o_does_not_open_a_competing_browser(tmp_path, monkeypatch):
+    """Repeated Ctrl-O while the browser is open is ignored, not queued.
+
+    Modals open one at a time, so a second browser would sit behind the first on the idle event and
+    open itself the moment the reader closed the one they asked for."""
+    runtime, _command_loop, tui = await browsing_runtime(tmp_path, monkeypatch)
+
+    async def browse():
+        runtime.expand_output()
+        first = runtime.browser
+        await wait_for(lambda: tui.opened == 1)
+        runtime.expand_output()
+        runtime.expand_output()
+        await asyncio.sleep(0)
+        assert runtime.browser is first
+        assert tui.opened == 1
+        runtime.request_shutdown()
+
+    await run_until(runtime, browse)
+    assert tui.opened == 1
+
+
+async def test_shutdown_settles_an_open_browser(tmp_path, monkeypatch):
+    """Closing the runtime cancels the browser and lets its modal finish unwinding.
+
+    A modal future left pending is the failure this guards: the application would exit around a
+    viewer that never resolved, and the next opener would wait on an idle event nobody sets."""
+    runtime, _command_loop, tui = await browsing_runtime(tmp_path, monkeypatch)
+
+    async def browse():
+        runtime.expand_output()
+        await wait_for(lambda: tui.opened == 1)
+        runtime.request_shutdown()
+
+    await run_until(runtime, browse)
+
+    assert runtime.browser is not None
+    assert runtime.browser.cancelled()
+    assert tui.settled == 1
+
+
+async def test_the_loop_keeps_running_while_the_browser_is_open(tmp_path, monkeypatch):
+    """The browser is a task now, not a worker thread the loop waits on: a heartbeat still ticks."""
+    runtime, _command_loop, tui = await browsing_runtime(tmp_path, monkeypatch)
+    beats = 0
+
+    async def heartbeat():
+        nonlocal beats
+        while True:
+            beats += 1
+            await asyncio.sleep(0)
+
+    async def browse():
+        pulse = asyncio.ensure_future(heartbeat())
+        runtime.expand_output()
+        await wait_for(lambda: tui.opened == 1)
+        seen = beats
+        await wait_for(lambda: beats > seen + 5)
+        pulse.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pulse
+        runtime.request_shutdown()
+
+    await run_until(runtime, browse)

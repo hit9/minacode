@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from prompt_toolkit import search as pt_search
@@ -53,10 +53,8 @@ class TuiModal:
     fragments_fn: Callable[[], StyleAndTextTuples]
     key_fn: Callable[[str, str], Any]
     exclusive: bool = False
-    done: threading.Event = field(default_factory=threading.Event)
-    result: Any = None
-    # Set when the modal was opened from the loop, so its result is awaited there instead of
-    # waited on from a worker thread.
+    # The result future, created by `show_modal` on the loop that opened it. Every modal is opened
+    # and awaited on the application's own loop, so there is no second, thread-facing ending.
     future: Any = None
 
 
@@ -250,7 +248,6 @@ class TuiApp:
         self._approval_focus = 0
         self.status_label: str = ""
         self.modal: TuiModal | None = None
-        self.modal_lock = threading.Lock()
         self.input_window: Window | None = None
         self.activity_window: Window | None = None
         self.modal_window: Window | None = None
@@ -913,7 +910,16 @@ class TuiApp:
         modal = TuiModal(fragments_fn, key_fn, exclusive=exclusive)
         modal.future = asyncio.get_running_loop().create_future()
         self._activate_modal(app, modal, exclusive=exclusive)
-        return await modal.future
+        try:
+            return await modal.future
+        except asyncio.CancelledError:
+            # Shutdown cancelled the task that was showing this modal. The modal itself is still
+            # on screen holding focus and the alternate screen; close it here, or the application
+            # unwinds around a viewer nobody can answer and the next opener waits on an idle event
+            # that never gets set.
+            if self.modal is modal:
+                self.close_modal(None)
+            raise
 
     def _activate_modal(self, app: Application, modal: TuiModal, *, exclusive: bool) -> None:
         """Make `modal` the visible one. Runs on the loop, whichever entry point opened it."""
@@ -926,29 +932,10 @@ class TuiApp:
             self._use_alternate_screen(True)
         app.invalidate()
 
-    def show_modal_sync(
-        self,
-        fragments_fn: Callable[[], StyleAndTextTuples],
-        key_fn: Callable[[str, str], Any],
-        *,
-        exclusive: bool = False,
-    ) -> Any:
-        """Show a modal inside this Application and block the calling worker until it closes."""
-        with self.modal_lock:
-            app = self.app
-            if app is None or not app.is_running or self.modal_window is None:
-                return None
-            modal = TuiModal(fragments_fn, key_fn, exclusive=exclusive)
-
-            self._schedule(lambda: self._activate_modal(app, modal, exclusive=exclusive))
-            modal.done.wait()
-            return modal.result
-
     def close_modal(self, result: Any = None) -> None:
         modal = self.modal
         if modal is None:
             return
-        modal.result = result
         self.modal = None
         if self._modal_idle is not None:
             self._modal_idle.set()
@@ -959,7 +946,6 @@ class TuiApp:
         self.invalidate()
         if modal.future is not None and not modal.future.done():
             modal.future.set_result(result)
-        modal.done.set()
 
     def _use_alternate_screen(self, enabled: bool) -> None:
         """Move the persistent app between the primary and alternate screen.
