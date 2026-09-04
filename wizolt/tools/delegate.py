@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         Config,
         ProviderConfig,
     )
+    from wizolt.engine import Agent
     from wizolt.runner import ToolRunner
 
 # The worker's tool set. Exclusions, and why: Delegate (would recurse), Ask (blocks on user input
@@ -101,6 +102,30 @@ def _worker_stream(runner: ToolRunner):
         model_stream(kind, text)
 
     return stream
+
+
+def _wire_worker_agent(agent: Agent, runner: ToolRunner) -> None:
+    """Bind a persistent worker agent to the runner driving this send.
+
+    The worker session keeps its Agent between sends, while presentation belongs to the current
+    ToolRunner. Rebind every time so a worker first used headlessly does not stay headless after it
+    is attached to a TUI, and a detached TUI callback is never retained by a later runner.
+    """
+    worker_output = _worker_output(runner)
+    agent.output_fn = runner.worker_answer or worker_output
+    agent.final_output_fn = runner.worker_answer
+    agent.model.on_stream = _worker_stream(runner) if runner.model_stream is not None else None
+    agent.model.on_retry_wait = runner.retry_wait
+    agent.model.on_builtin_call = runner.builtin_call
+    agent.context.on_compaction = runner.compaction
+    agent.tools.input_fn = runner.input_fn
+    agent.tools.output_fn = worker_output
+    agent.tools.live_start = runner.live_start
+    agent.tools.live_output = runner.live_output
+    agent.tools.approval_form = runner.approval_form
+    agent.tools.text_viewer = runner.text_viewer
+    agent.tools.cancel_input = runner.cancel_input
+    agent.tools.script_status = runner.script_status
 
 
 def worker_provider_config(config: Config, provider_name: str) -> ProviderConfig:
@@ -305,36 +330,15 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             # Same pattern as Tool.resolved_schemas and Session's local imports.
             from wizolt.engine import Agent
 
-            worker_output = _worker_output(runner)
             agent = Agent(
                 worker,
                 input_fn=runner.input_fn,
-                output_fn=runner.worker_answer or worker_output,
-                # Model text (interim and final) renders like an agent answer when the loop wired
-                # worker_answer; otherwise both publish through the ordinary log wrapper below.
-                final_output_fn=runner.worker_answer,
+                output_fn=lambda _text: None,
             )
-            agent.tools.output_fn = worker_output
-            if runner.model_stream is not None:
-                # The parent loop's stream display; see ToolRunner.model_stream.
-                # _worker_stream swallows `output_done`: the worker's own output_fn
-                # already writes completed text into the parent scrollback, and the
-                # loop's promote would write it a second time.
-                agent.model.on_stream = _worker_stream(runner)
-            # Reuse the parent's live region: serial delegation means only one stream at a time.
-            agent.tools.live_start = runner.live_start
-            agent.tools.live_output = runner.live_output
-            # Same None-guarded wiring style as model_stream: the worker is a full session, so its
-            # retry backoff, provider-side builtin calls, and automatic compaction surface in the
-            # parent TUI like the main agent's. on_queue_flush is deliberately not wired (a worker
-            # does not receive live follow-ups).
-            if runner.retry_wait is not None:
-                agent.model.on_retry_wait = runner.retry_wait
-            if runner.builtin_call is not None:
-                agent.model.on_builtin_call = runner.builtin_call
-            if runner.compaction is not None:
-                agent.context.on_compaction = runner.compaction
             worker._agent = agent
+        # The Agent is persistent but the runner/UI driving it need not be. This also wires a
+        # resumed or previously headless worker before its first streamed token.
+        _wire_worker_agent(agent, runner)
         started = time.monotonic()
         before_diffs = len(worker.turn_diffs)
         before_in = worker.usage.prompt_tokens

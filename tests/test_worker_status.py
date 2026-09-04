@@ -1,4 +1,5 @@
 """worker status (split from tests/test_worker_handoff.py)."""
+
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
 from wizolt.cli.worker import worker_command
@@ -45,6 +46,7 @@ async def test_status_bar_shows_worker_segment(tmp_path):
     assert "default/worker-model" in texts and parent_lead not in texts
     assert "ctx 50% · cache 50%" in texts
 
+
 async def test_working_divider_marks_inflight_worker(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
@@ -63,6 +65,7 @@ async def test_working_divider_marks_inflight_worker(tmp_path):
     worker._active_turn_messages.append({"role": "user", "content": "order"})
     assert "[worker]" in label()
 
+
 async def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
@@ -77,6 +80,44 @@ async def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatc
     on_stream("output", "x")
     on_stream("output_done", "t")
     assert calls == [("output", "x"), ("", "")]
+
+
+async def test_worker_stream_updates_parent_thinking_and_status_while_request_is_live(tmp_path, monkeypatch):
+    from wizolt.cli import CommandLoop
+    from wizolt.engine import Agent
+
+    parent = _delegate_session(tmp_path)
+    loop = CommandLoop(Agent(parent, output_fn=lambda _text: None), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    observed = []
+
+    class StreamingModel(FakeModelClient):
+        async def request(self, messages, request_tools=None):
+            self.on_stream("reasoning", "checking the worker task")
+            observed.append(
+                (
+                    "".join(text for _, text in loop.view.model_stream_fragments()),
+                    "".join(text for _, text in loop.view.queue_divider_fragments()),
+                )
+            )
+            self.on_stream("output", "writing the result")
+            observed.append(
+                (
+                    "".join(text for _, text in loop.view.model_stream_fragments()),
+                    "".join(text for _, text in loop.view.queue_divider_fragments()),
+                )
+            )
+            return await super().request(messages, request_tools)
+
+    model = StreamingModel([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda _session: model)
+
+    await _delegate_call(parent, loop.agent.tools, action="send", order="inspect it")
+
+    assert "checking the worker task" in observed[0][0]
+    assert "thinking" in observed[0][0] and "[worker]" in observed[0][1]
+    assert "writing the result" in observed[1][0]
+    assert "responding" in observed[1][0] and "[worker]" in observed[1][1]
+
 
 async def test_status_reports_worker_delegation_state(tmp_path):
     from wizolt.cli import CommandLoop
@@ -124,6 +165,7 @@ async def test_status_reports_worker_delegation_state(tmp_path):
     text = await status_text()
     assert "`delegating`, rounds `0`" in text
 
+
 async def test_worker_status_command_is_human_readable(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
@@ -159,6 +201,7 @@ async def test_worker_status_command_is_human_readable(tmp_path):
     worker.state.context_percent = 42
     assert "worker context: 42%" in await worker_command(loop, "status")
 
+
 async def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, ToolCall
     from wizolt.context import ContextManager
@@ -180,6 +223,7 @@ async def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monke
     assert outputs, "the worker turn produced no output"
     rendered = [str(block) for block in outputs if isinstance(block, LogBlock)]  # str items raised before the fix
     assert any("thinking out loud" in text for text in rendered)
+
 
 async def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, ToolCall
@@ -213,6 +257,7 @@ async def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_
     agent = parent.worker._agent
     assert agent.output_fn is append_answer
     assert agent.tools.output_fn is not append_answer
+
 
 async def test_worker_output_passes_memory_shaped_text_through_for_highlighting():
     from types import SimpleNamespace
