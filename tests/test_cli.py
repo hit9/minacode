@@ -126,7 +126,7 @@ def test_cli_reports_domain_errors(monkeypatch, capsys, error, return_code, mess
 
 
 def test_cli_update_already_current(monkeypatch, capsys):
-    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", lambda: cli.__version__)
+    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest_sync", lambda: cli.__version__)
     called = []
     monkeypatch.setattr(cli.subprocess, "call", lambda command: called.append(command) or 0)
 
@@ -136,7 +136,7 @@ def test_cli_update_already_current(monkeypatch, capsys):
 
 
 def test_cli_upgrade_runs_package_manager(monkeypatch, capsys):
-    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", lambda: "999.0.0")
+    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest_sync", lambda: "999.0.0")
     monkeypatch.setattr(cli.UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "wizolt"])
     called = []
     monkeypatch.setattr(cli.subprocess, "call", lambda command: called.append(command) or 3)
@@ -151,14 +151,14 @@ def test_cli_update_reports_fetch_error(monkeypatch, capsys):
     def boom():
         raise cli.WizoltError("network down")
 
-    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", boom)
+    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest_sync", boom)
 
     assert cli.main(["update"]) == 1
     assert "network down" in capsys.readouterr().err
 
 
 def test_cli_update_reports_missing_package_manager(monkeypatch, capsys):
-    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", lambda: "999.0.0")
+    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest_sync", lambda: "999.0.0")
     monkeypatch.setattr(cli.UpdateChecker, "upgrade_command", lambda: ["missing-installer"])
 
     def missing(_command):

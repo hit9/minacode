@@ -250,7 +250,7 @@ def test_simple_cli_preserves_images_when_combining_pending_inputs(tmp_path, mon
         return "done"
 
     monkeypatch.setattr(agent, "run", run)
-    monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _self: None)
+    monkeypatch.setattr(loop_module.UpdateChecker, "load_cached", lambda _self: False)
     monkeypatch.setattr(loop_module.CodeIndex, "schedule_existing_refresh", lambda _self: False)
 
     def eof(_prompt):

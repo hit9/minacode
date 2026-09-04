@@ -31,7 +31,7 @@ def run_update() -> int:
     """Check PyPI for a newer wizolt and upgrade it via the detected package manager."""
     print(f"wizolt {__version__}")
     try:
-        latest = UpdateChecker.fetch_latest()
+        latest = UpdateChecker.fetch_latest_sync()
     except Exception as error:  # noqa: BLE001 - update failures from any network/backend layer are reported uniformly.
         print(f"Error: could not check the latest version: {error}", file=sys.stderr)
         return 1

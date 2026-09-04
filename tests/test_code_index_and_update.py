@@ -1,9 +1,10 @@
 """code index and update (split from tests/test_core_logic.py)."""
-import threading
+import asyncio
 import time
 from types import SimpleNamespace
 
 import code_symbol_index as csi
+import pytest
 from test_core_logic import data_session, session
 
 import wizolt.cli.update as update_module
@@ -124,28 +125,15 @@ def test_status_bar_animates_refreshing_code_index(tmp_path, monkeypatch):
     assert first in StatusBar.INDEX_SPINNER
     assert second in StatusBar.INDEX_SPINNER
 
-def test_update_checker_start_spawns_daemon_thread(tmp_path, monkeypatch):
-    started = []
-
-    class FakeThread:
-        def __init__(self, target, daemon):
-            self.target = target
-            self.daemon = daemon
-
-        def start(self):
-            started.append((self.target, self.daemon))
-
+def test_loading_the_cache_claims_the_due_remote_check(tmp_path):
+    """`load_cached` is the whole synchronous half: publish the cached version, say if a check is
+    due, and claim it so a second caller does not stack a duplicate request."""
     s = data_session(tmp_path)
-    monkeypatch.setattr(threading, "Thread", FakeThread)
 
-    UpdateChecker(s).start()
-    assert len(started) == 1
-    assert started[0][1] is True  # daemon
+    assert UpdateChecker(s).load_cached() is True
     assert s.update.checking is True
 
-    # start() is a no-op while a check is already in flight so we don't stack duplicates.
-    UpdateChecker(s).start()
-    assert len(started) == 1
+    assert UpdateChecker(s).load_cached() is False
 
 def test_update_status_signals_newer_version_in_status_bar(tmp_path):
     s = data_session(tmp_path)
@@ -154,34 +142,88 @@ def test_update_status_signals_newer_version_in_status_bar(tmp_path):
     assert s.update.newer_than(__version__)
     assert s.update.latest in StatusBar(s).update_status()
 
-def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch):
-    seen = {}
+def mock_pypi(monkeypatch, handler, seen: dict | None = None):
+    """Route the checker's async client at `handler`, recording how it was constructed."""
+    real = update_module.httpx2.AsyncClient
 
-    class Response:
-        def __enter__(self):
-            return self
+    def client(**kwargs):
+        if seen is not None:
+            seen.update(kwargs)
+        return real(**kwargs, transport=update_module.httpx2.MockTransport(handler))
 
-        def __exit__(self, *args):
-            pass
+    monkeypatch.setattr(update_module.httpx2, "AsyncClient", client)
 
-        def read(self):
-            return b'{"info":{"version":"9.8.7"}}'
 
-    def fake_urlopen(request, timeout):
-        seen["timeout"] = timeout
-        seen["user_agent"] = request.get_header("User-agent")
-        return Response()
+async def test_update_check_uses_the_bounded_timeout_and_user_agent(monkeypatch):
+    seen: dict = {}
 
-    monkeypatch.setattr(update_module, "urlopen", fake_urlopen)
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["user_agent"] = request.headers.get("user-agent")
+        return update_module.httpx2.Response(200, content=b'{"info":{"version":"9.8.7"}}')
 
-    assert UpdateChecker(data_session(tmp_path)).fetch_latest() == "9.8.7"
-    assert seen == {"timeout": UpdateChecker.TIMEOUT, "user_agent": HTTP_USER_AGENT}
+    mock_pypi(monkeypatch, handler, seen)
+
+    assert await UpdateChecker.fetch_latest() == "9.8.7"
+    assert seen["url"] == UpdateChecker.PYPI_URL
+    assert seen["user_agent"] == HTTP_USER_AGENT
+    assert seen["timeout"] == UpdateChecker.TIMEOUT
+
+async def test_update_check_records_a_malformed_response_as_a_status_error(tmp_path, monkeypatch):
+    """A proxy that answers with HTML is an expected failure: it leaves a status, not a crash."""
+    s = data_session(tmp_path)
+    mock_pypi(monkeypatch, lambda _request: update_module.httpx2.Response(200, content=b"<html>nope</html>"))
+
+    await UpdateChecker(s).check()
+
+    assert s.update.error and s.update.checking is False
+    assert s.update.latest == ""
+
+async def test_update_check_records_a_timeout_as_a_status_error(tmp_path, monkeypatch):
+    s = data_session(tmp_path)
+
+    def times_out(request):
+        raise update_module.httpx2.ConnectTimeout("timed out", request=request)
+
+    mock_pypi(monkeypatch, times_out)
+
+    await UpdateChecker(s).check()
+
+    assert "timed out" in s.update.error
+    assert s.update.checking is False
+
+async def test_cancelling_the_update_check_closes_the_client(tmp_path, monkeypatch):
+    """The request is the runtime's, so cancelling it must close the pool rather than leave a
+    socket to a finalizer -- which is the whole reason the client is used as a context manager."""
+    s = data_session(tmp_path)
+    entered = asyncio.Event()
+    closed = []
+    real = update_module.httpx2.AsyncClient
+
+    class TrackedClient(real):
+        async def get(self, *args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def __aexit__(self, *args):
+            closed.append(True)
+            return await super().__aexit__(*args)
+
+    monkeypatch.setattr(update_module.httpx2, "AsyncClient", TrackedClient)
+
+    check = asyncio.ensure_future(UpdateChecker(s).check())
+    await entered.wait()
+    check.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await check
+
+    assert closed == [True]
 
 def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch):
     s = data_session(tmp_path)
     s.update.latest = "999.0.0"
     emitted = []
-    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     monkeypatch.setattr(UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "wizolt"])
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
     monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)

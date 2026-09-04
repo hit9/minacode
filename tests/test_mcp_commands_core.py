@@ -29,7 +29,7 @@ class TestMCPCommands:
         bootstrap_features(s)
         calls = []
         monkeypatch.setattr(s.mcp, "discover_auto", as_async(lambda: calls.append("auto")))
-        monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+        monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
         monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
         monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
         command_loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)

@@ -39,6 +39,7 @@ from wizolt.base import (
     WizoltError,
     __version__,
     fail_if_running_loop,
+    run_blocking,
 )
 from wizolt.cli import commands, worker
 from wizolt.cli.modals import approval_text_viewer, question_interaction
@@ -594,32 +595,39 @@ Full documentation: https://wizolt.readthedocs.io
     def start_session(self) -> None:
         """Initialize output and background services shared by both command-loop frontends."""
         self.emit(f"wizolt {__version__}. /help for commands.")
-        UpdateChecker(self.session).start()
+        # Cached state is read synchronously -- it is small, local, and the first status display
+        # needs it -- and only the remote half is scheduled. Nothing here may hold the prompt: a
+        # slow index, a slow filesystem, or an unreachable PyPI is not a reason to wait to type.
+        checker = UpdateChecker(self.session)
+        update_due = checker.load_cached()
         if self.session.update.newer_than(__version__):
             self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `{' '.join(UpdateChecker.upgrade_command())}`.")
-        self.schedule_expired_session_cleanup()
         self.render_resumed_session()
         # Publish existing availability without scanning the tree; the freshness check already
         # runs after each completed turn.
         CodeIndex(self.session).status()
+        if update_due:
+            self.spawn_background(checker.check(), name="update-check")
+        self.spawn_background(self.clean_expired_sessions(), name="session-cleanup")
         # The provider catalog refresh runs off the startup path after the first screen, gated to
         # once per 72h (see sync.CatalogRuntime); a failure only shows through /catalog.
         catalog = self.session.catalog
-        if catalog is not None:
-            catalog.start_background_sync()
+        if catalog is not None and catalog.refresh_due():
+            self.spawn_background(catalog.refresh(), name="catalog-refresh")
 
-    def schedule_expired_session_cleanup(self) -> None:
+    async def clean_expired_sessions(self) -> None:
         """Run the retention sweep off the startup path: on a network filesystem it can cost
         seconds before the prompt accepts a keystroke, and nothing depends on it having run first.
-        Runs on a daemon thread and reports through the background channel."""
 
-        def sweep() -> None:
-            with contextlib.suppress(Exception):
-                removed = SessionSnapshotStore.clean_expired(self.session)
-                if removed:
-                    self.emit_background(self.expired_sessions_notice(removed))
+        The traversal and the deletions are one blocking pass. Cancelling this waits for that pass
+        to finish rather than abandoning it half-deleted -- retention removes unrecoverable work,
+        so the one thing it may not do is stop in the middle. The notice is emitted here, on the
+        loop, once the pass has returned its count."""
 
-        threading.Thread(target=sweep, name="session-cleanup", daemon=True).start()
+        with contextlib.suppress(Exception):
+            removed = await run_blocking(lambda: SessionSnapshotStore.clean_expired(self.session))
+            if removed:
+                self.emit_background(self.expired_sessions_notice(removed))
 
     def expired_sessions_notice(self, removed: int) -> str:
         """Word the retention notice: retention removes unrecoverable work, so report it rather

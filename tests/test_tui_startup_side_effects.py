@@ -1,7 +1,7 @@
 """tui startup side effects (split from tests/test_tui_runtime.py)."""
 import asyncio
 import os
-import time
+import threading
 
 import pytest
 from prompt_toolkit.history import FileHistory
@@ -32,8 +32,7 @@ def test_background_output_is_closed_before_final_output(tmp_path):
 def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     status_checks = []
-    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
-    monkeypatch.setattr(CommandLoop, "schedule_expired_session_cleanup", lambda _loop: None)
+    monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     monkeypatch.setattr(CommandLoop, "render_resumed_session", lambda _loop: None)
     monkeypatch.setattr(
         CodeIndex,
@@ -67,7 +66,7 @@ async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monke
 
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
     monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
-    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
 
     started = asyncio.Event()
     allow_finish = asyncio.Event()
@@ -135,19 +134,15 @@ def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):
 
     assert path.read_bytes() == before
 
-def test_expired_session_cleanup_reports_without_blocking_startup(monkeypatch, tmp_path):
-    """The sweep runs on a daemon thread, so the notice arrives through the background channel."""
+async def test_expired_session_cleanup_reports_what_it_removed(monkeypatch, tmp_path):
+    """The traversal runs off the loop; the notice is emitted here, once the count comes back."""
     command_loop = loop(tmp_path)
     command_loop.session.settings.session_retention_days = 7
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 3)
     lines = []
     monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
 
-    command_loop.schedule_expired_session_cleanup()
-    for _ in range(200):
-        if lines:
-            break
-        time.sleep(0.01)
+    await command_loop.clean_expired_sessions()
 
     assert len(lines) == 1
     # Says what was lost and which setting governs it, so the knob is discoverable when it acts.
@@ -155,19 +150,18 @@ def test_expired_session_cleanup_reports_without_blocking_startup(monkeypatch, t
     assert "7 days" in lines[0]
     assert "session_retention_days" in lines[0]
 
-def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
+async def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
     lines = []
     monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
 
-    command_loop.schedule_expired_session_cleanup()
-    time.sleep(0.1)
+    await command_loop.clean_expired_sessions()
 
     assert lines == []
 
-def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path):
-    """A failing sweep must not escape the thread; retention is not worth a broken session."""
+async def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path):
+    """A failing sweep must not escape the task; retention is not worth a broken session."""
     command_loop = loop(tmp_path)
 
     def boom(_session):
@@ -175,8 +169,30 @@ def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path):
 
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", boom)
 
-    command_loop.schedule_expired_session_cleanup()
-    time.sleep(0.1)
+    await command_loop.clean_expired_sessions()
+
+async def test_cancelling_the_retention_sweep_finishes_the_deletion_pass(monkeypatch, tmp_path):
+    """Retention removes unrecoverable work, so an accepted pass is never abandoned half-done."""
+    command_loop = loop(tmp_path)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_sweep(_session):
+        entered.set()
+        release.wait(5)
+        finished.set()
+        return 0
+
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", slow_sweep)
+
+    sweep = asyncio.ensure_future(command_loop.clean_expired_sessions())
+    await asyncio.to_thread(entered.wait, 5)
+    sweep.cancel()
+    await asyncio.sleep(0.05)
+    assert not finished.is_set()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await sweep
+    assert finished.is_set()
 
 def test_expired_session_notice_reads_correctly_when_singular(tmp_path):
     command_loop = loop(tmp_path)
@@ -205,3 +221,47 @@ def test_toolscript_phase_shows_on_divider_and_yields_to_compaction(tmp_path):
 
     command_loop.toolscript_run_status(False)
     assert "working" in "".join(text for _, text in command_loop.view.queue_divider_fragments())
+
+
+async def test_startup_does_not_wait_for_a_blocked_maintenance_operation(tmp_path, monkeypatch):
+    """The prompt comes first. A hung PyPI, an unreachable catalog remote, or a retention sweep on
+    a slow network filesystem are all scheduled, never awaited, on the way to the first prompt."""
+    command_loop = loop(tmp_path)
+    monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: True)
+    monkeypatch.setattr(UpdateChecker, "fetch_latest", staticmethod(lambda: asyncio.Event().wait()))
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    command_loop.open_background()
+    try:
+        command_loop.start_session()
+
+        # start_session returned with the work merely admitted, not done.
+        assert {task.get_name() for task in command_loop._background} >= {"update-check", "session-cleanup"}
+    finally:
+        await command_loop.close_background()
+
+
+async def test_closing_right_after_startup_leaves_no_later_output_or_state_change(tmp_path, monkeypatch):
+    """Shutdown means shutdown: a sweep or a check that was still scheduled must not write to the
+    session or the terminal once close_background has returned."""
+    command_loop = loop(tmp_path)
+    lines: list[str] = []
+    monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
+    monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: True)
+
+    async def never_answers():
+        await asyncio.Event().wait()
+        return "999.0.0"
+
+    monkeypatch.setattr(UpdateChecker, "fetch_latest", staticmethod(never_answers))
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 5)
+
+    command_loop.open_background()
+    command_loop.start_session()
+    lines.clear()
+    await command_loop.close_background()
+    await asyncio.sleep(0.05)
+
+    assert lines == []
+    assert command_loop.session.update.latest == ""
+    # Nothing is admitted after close, either: a later scheduler call is refused outright.
+    assert command_loop.spawn_background(command_loop.clean_expired_sessions(), name="late") is None

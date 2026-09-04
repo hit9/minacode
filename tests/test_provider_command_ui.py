@@ -50,13 +50,13 @@ async def test_catalog_command_reports_the_selected_snapshot_and_is_not_queue_sa
     command_loop = loop(tmp_path)
     command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
 
-    status = catalog_command(command_loop, "status")
+    status = await catalog_command(command_loop, "status")
 
     assert "| version |" in status
     assert "| updated |" in status
     assert "| schema |" in status
     assert "| scope |" in status
-    assert catalog_command(command_loop, "unknown") == "Usage: /catalog [status|sync]"
+    assert await catalog_command(command_loop, "unknown") == "Usage: /catalog [status|sync]"
 
 
 async def test_catalog_command_completes_its_subcommands(tmp_path):
@@ -73,7 +73,7 @@ async def test_catalog_command_status_suggests_the_manual_sync(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
 
-    status = catalog_command(command_loop, "status")
+    status = await catalog_command(command_loop, "status")
 
     assert "`/catalog sync`" in status
 
@@ -82,12 +82,12 @@ async def test_catalog_command_adds_the_sync_error_prefix_once(tmp_path, monkeyp
     command_loop = loop(tmp_path)
     command_loop.session.catalog = CatalogRuntime(command_loop.session.config.data_dir)
 
-    def fail():
+    async def fail():
         raise CatalogSyncError("offline")
 
-    monkeypatch.setattr(command_loop.session.catalog, "sync_now", fail)
+    monkeypatch.setattr(command_loop.session.catalog, "sync", fail)
 
-    assert catalog_command(command_loop, "sync") == "catalog sync failed: offline"
+    assert await catalog_command(command_loop, "sync") == "catalog sync failed: offline"
     assert "/catalog" not in QUEUE_SAFE_COMMANDS
 
 

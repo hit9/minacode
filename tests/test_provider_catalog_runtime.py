@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 from typing import ClassVar
 from urllib.error import HTTPError, URLError
@@ -293,3 +295,82 @@ def test_catalog_lock_keeps_one_inode_across_users(tmp_path):
         second = os.stat(Path(repository.catalog_dir) / "catalog.lock").st_ino
 
     assert first == second
+
+
+async def test_refresh_updates_the_cache_without_activating_it(tmp_path, monkeypatch):
+    """The automatic refresh is cache-only: a long turn's requests keep one catalog version, and
+    the newer document is picked up at the next startup."""
+    data = catalog_data()
+    data["version"] += 1
+    runtime = CatalogRuntime(str(tmp_path))
+    active = runtime.snapshot.version
+    monkeypatch.setattr("wizolt.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
+
+    assert runtime.refresh_due() is True
+    await runtime.refresh()
+
+    assert runtime.snapshot.version == active  # not hot-swapped
+    assert runtime.sync_state.last_version == data["version"]
+    assert runtime.sync_state.error == ""
+    assert runtime.sync_state.checking is False
+    assert runtime.refresh_due() is False  # the 72h gate now holds
+
+
+async def test_refresh_records_a_failure_as_status_and_leaves_the_policy_alone(tmp_path, monkeypatch):
+    runtime = CatalogRuntime(str(tmp_path))
+    policy = runtime.policy
+
+    def unavailable(*_args, **_kwargs):
+        raise URLError("offline")
+
+    monkeypatch.setattr("wizolt.providers.sync.urlopen", unavailable)
+
+    assert runtime.refresh_due() is True
+    await runtime.refresh()
+
+    assert "offline" in runtime.sync_state.error
+    assert runtime.policy is policy
+    assert runtime.sync_state.checking is False
+
+
+async def test_cancelling_a_refresh_waits_for_the_critical_section(tmp_path, monkeypatch):
+    """`fetch` holds a cross-process lock across the request and an atomic cache write. Cancelling
+    the awaiter may not return while that section is mid-write, and the 72h gate stays where it
+    was: nothing was checked."""
+    runtime = CatalogRuntime(str(tmp_path))
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_fetch():
+        entered.set()
+        release.wait(5)
+        finished.set()
+        return runtime.snapshot
+
+    monkeypatch.setattr(runtime.repository, "fetch", slow_fetch)
+    assert runtime.refresh_due() is True
+
+    task = asyncio.ensure_future(runtime.refresh())
+    await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not finished.is_set()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished.is_set()
+    assert runtime.sync_state.checked_at == 0.0  # the attempt did not complete, so the gate is untouched
+    assert runtime.sync_state.checking is False
+
+
+async def test_manual_sync_activates_a_newer_catalog_at_the_command_boundary(tmp_path, monkeypatch):
+    data = catalog_data()
+    data["version"] += 1
+    runtime = CatalogRuntime(str(tmp_path))
+    monkeypatch.setattr("wizolt.providers.sync.urlopen", lambda *_args, **_kwargs: Response(catalog_payload(data)))
+
+    snapshot = await runtime.sync()
+
+    assert snapshot.version == data["version"]
+    assert runtime.snapshot.version == data["version"]
+    assert runtime.source == "cached"

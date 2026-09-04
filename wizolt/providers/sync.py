@@ -9,18 +9,18 @@ enforced. ``CatalogRuntime`` is what a ``Session`` holds -- the selected snapsho
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
 import tempfile
-import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from wizolt.base import HTTP_USER_AGENT, Text
+from wizolt.base import HTTP_USER_AGENT, Text, run_blocking
 from wizolt.providers.catalog import CatalogCodec, decode_bundled
 from wizolt.providers.compat import ProviderPolicy
 from wizolt.providers.schema import CatalogError, CatalogSnapshot, CatalogSourceError, CatalogSyncError, CatalogVersionConflict
@@ -237,14 +237,17 @@ class CatalogRuntime:
         cached = self.repository.cached()
         return bundled, cached.version if cached is not None else None
 
-    def sync_now(self) -> CatalogSnapshot:
+    async def sync(self) -> CatalogSnapshot:
         """Fetch the remote catalog and, if newer, activate it at the command boundary.
 
         This is the manual-sync path (``/catalog sync``): the active snapshot and policy swap only
-        here, never in the background refresh.
+        here, never in the background refresh. The fetch is one cross-process critical section --
+        ETag read, request, version comparison, atomic cache write, all under one lock -- so it
+        goes to a worker whole rather than being split around an async request. Everything after
+        it, the swap and the state, happens on the caller's loop.
         """
 
-        remote = self.repository.fetch()
+        remote = await run_blocking(self.repository.fetch)
         if remote.version > self.snapshot.version:
             self.snapshot = remote
             self.source = "cached"
@@ -258,32 +261,43 @@ class CatalogRuntime:
         self._save_state()
         return self.snapshot
 
-    def start_background_sync(self) -> None:
-        """Refresh from the remote on a daemon thread, at most once per 72h."""
+    def refresh_due(self) -> bool:
+        """Whether the 72h gate has expired. Claims the check, so two callers cannot both run it."""
 
         state = self.sync_state
         if state.checking or time.time() - state.checked_at < SYNC_INTERVAL_SECONDS:
-            return
+            return False
         state.checking = True
+        return True
 
-        def run() -> None:
-            try:
-                # The automatic refresh only updates the cache; the active policy is never
-                # hot-swapped, so a long turn's requests keep one catalog version. A newer cache
-                # is picked up on the next startup (see CatalogRepository.select).
-                snapshot = self.repository.fetch()
-                state.error = ""
-                state.last_synced_at = time.time()
-                state.last_source = "cached" if snapshot.version > self.repository.bundled().version else "bundled"
-                state.last_version = snapshot.version
-            except Exception as error:  # noqa: BLE001 - background sync failures must not escape the worker.
-                state.error = Text.clean(str(error))
-            finally:
-                state.checking = False
-                state.checked_at = time.time()
-                self._save_state()
+    async def refresh(self) -> None:
+        """Refresh the cached catalog from the remote, as the caller's own task.
 
-        threading.Thread(target=run, daemon=True).start()
+        Cancellation waits for the repository's critical section to finish -- it holds a
+        cross-process lock around an atomic cache write, and abandoning it mid-write is how a
+        catalog cache becomes a half-written file every later process has to reject."""
+
+        state = self.sync_state
+        try:
+            # The automatic refresh only updates the cache; the active policy is never
+            # hot-swapped, so a long turn's requests keep one catalog version. A newer cache
+            # is picked up on the next startup (see CatalogRepository.select).
+            snapshot = await run_blocking(self.repository.fetch)
+            state.error = ""
+            state.last_synced_at = time.time()
+            state.last_source = "cached" if snapshot.version > self.repository.bundled().version else "bundled"
+            state.last_version = snapshot.version
+        except asyncio.CancelledError:
+            # The critical section has already finished (run_blocking waits for it); the attempt
+            # itself did not, so the 72h gate is left where it was rather than counting a check
+            # that never happened.
+            state.checking = False
+            raise
+        except Exception as error:  # noqa: BLE001 - an expected maintenance failure; /catalog is the report.
+            state.error = Text.clean(str(error))
+        state.checking = False
+        state.checked_at = time.time()
+        await run_blocking(self._save_state)
 
     def _load_state(self) -> None:
         """Restore the persisted gate and last result; a corrupt file counts as never checked."""

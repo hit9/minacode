@@ -311,8 +311,11 @@ def status(loop: CommandLoop, args: str) -> str:
     return markdown_table(["field", "value"], rows)
 
 
-def catalog_command(loop: CommandLoop, args: str) -> str:
-    """Show the active provider catalog, or force a remote refresh with ``sync``."""
+async def catalog_command(loop: CommandLoop, args: str) -> str:
+    """Show the active provider catalog, or force a remote refresh with ``sync``.
+
+    Async because ``sync`` reaches the network behind a cross-process lock: awaited here, the
+    prompt and the status line stay live for the seconds a slow remote can take."""
 
     parts = args.split()
     if parts not in ([], ["status"], ["sync"]):
@@ -323,7 +326,7 @@ def catalog_command(loop: CommandLoop, args: str) -> str:
     if parts == ["sync"]:
         previous = catalog.snapshot.version
         try:
-            snapshot = catalog.sync_now()
+            snapshot = await catalog.sync()
         except CatalogSyncError as error:
             return f"catalog sync failed: {error}"
         if snapshot.version > previous:

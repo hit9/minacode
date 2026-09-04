@@ -47,7 +47,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
     monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
     monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
-    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
 
     with create_pipe_input() as pipe_input:
@@ -94,7 +94,7 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
     monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
     monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
-    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
 
     with create_pipe_input() as pipe_input:
