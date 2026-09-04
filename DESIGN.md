@@ -192,6 +192,11 @@ interpreter loads neither SDK.
 `main` warms the deferred SDKs on a daemon thread so deferral does not move the cost to the first
 request; racing is safe because CPython locks imports per module (see `warm_provider_sdks`).
 
+The interactive banner is written by `CommandLoop` before `TuiRuntime` starts prompt-toolkit.
+Keep that one static line outside the runtime's ordered scrollback path: a terminal that does not
+answer prompt-toolkit's initial cursor-position probe can hold that path for about a second.
+Restored history and all later output still wait for TUI readiness and use ordered scrollback.
+
 ### Future MCP client lifecycle
 
 `MCPManager` opens a short-lived client per discovery/tool/resource operation: fine for stateless

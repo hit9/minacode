@@ -1,4 +1,6 @@
 """loop display (split from tests/test_loop_commands.py)."""
+
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +10,7 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from test_loop_commands import queued_texts
 
+import wizolt.cli.loop as loop_module
 from wizolt.base import (
     LogBlock,
     TurnBox,
@@ -31,6 +34,40 @@ async def test_run_refuses_to_nest_the_cli_runtime(tmp_path):
         loop.run()
 
 
+async def test_interactive_banner_precedes_tui_terminal_setup(tmp_path, monkeypatch):
+    command_loop = CommandLoop(
+        Agent(session(tmp_path), output_fn=lambda _text: None),
+        input_fn=lambda _prompt: "",
+        output_fn=lambda _text: None,
+    )
+    command_loop.interactive_input = True
+    events = []
+    tui_started = asyncio.Event()
+    finish_tui = asyncio.Event()
+    monkeypatch.setattr(command_loop, "emit_banner", lambda: events.append("banner"))
+
+    class Runtime:
+        def __init__(self, owner):
+            assert owner is command_loop
+
+        async def run(self, *, show_banner=True):
+            tui_started.set()
+            await finish_tui.wait()
+            events.append(("tui", show_banner))
+            return 7
+
+    monkeypatch.setattr(loop_module, "TuiRuntime", Runtime)
+
+    running = asyncio.create_task(command_loop._run_frontend())
+    await tui_started.wait()
+    # A terminal's first CPR can take a second to time out. The banner must already be visible
+    # throughout that wait, and the eventual TUI startup must not print it again.
+    assert events == ["banner"]
+    finish_tui.set()
+    assert await running == 7
+    assert events == ["banner", ("tui", False)]
+
+
 async def test_ps_command_uses_markdown_renderer(tmp_path):
     s = session(tmp_path)
     s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7, update_status=lambda: None)
@@ -46,6 +83,7 @@ async def test_ps_command_uses_markdown_renderer(tmp_path):
     assert len(rendered) == 1
     assert rendered[0].startswith("### Active jobs")
     assert "| id | status | elapsed | command |" in rendered[0]
+
 
 def test_emit_indents_plain_text_without_losing_its_style(tmp_path):
     """`emit(text, indent)` moves a plain line into a column. The margin is applied after
@@ -66,6 +104,7 @@ def test_emit_indents_plain_text_without_losing_its_style(tmp_path):
 
     assert "".join(text for _, text in ui.indent_segments(ui.segments(""), margin)) == "\n"
 
+
 def test_turn_output_shares_one_column_and_session_chrome_does_not(tmp_path):
     """One left edge for the exchange: the user's line (its `• ` bullet hanging in the margin),
     the turn outcome, and a command's reply. The banner and the resume line frame it flush left."""
@@ -79,6 +118,7 @@ def test_turn_output_shares_one_column_and_session_chrome_does_not(tmp_path):
 
     assert output == [f"{margin}Cancelled", f"wizolt {__version__}. /help for commands."]
 
+
 def test_tui_completion_applies_single_match():
     class OneCompletion(Completer):
         def get_completions(self, document, _complete_event):
@@ -87,6 +127,7 @@ def test_tui_completion_applies_single_match():
     buffer = Buffer(document=Document("he"), completer=OneCompletion())
     TuiApp.complete_input(buffer)
     assert buffer.text == "hello"
+
 
 def test_tui_completion_starts_and_cycles_multiple_matches():
     class MultipleCompletions(Completer):
@@ -111,6 +152,7 @@ def test_tui_completion_starts_and_cycles_multiple_matches():
     TuiApp.complete_input(buffer, reverse=True)
     assert buffer.text == "alpine"
 
+
 def test_queue_acknowledges_only_claimed_duplicate_messages(tmp_path):
     s = session(tmp_path)
     queue(s, "same", "same")
@@ -122,6 +164,7 @@ def test_queue_acknowledges_only_claimed_duplicate_messages(tmp_path):
     assert queued_texts(s) == ["same"]
     assert not s.pending_user_inputs[0].inflight
 
+
 def test_queue_release_restores_interrupted_inputs(tmp_path):
     s = session(tmp_path)
     s.enqueue_user_input("ready")
@@ -131,6 +174,7 @@ def test_queue_release_restores_interrupted_inputs(tmp_path):
     s.release_user_inputs()
 
     assert not queued.inflight
+
 
 def test_recall_pending_input_can_revise_latest_inflight_message(tmp_path):
     s = session(tmp_path)
@@ -146,6 +190,7 @@ def test_recall_pending_input_can_revise_latest_inflight_message(tmp_path):
     assert s.pending_user_inputs[0].inflight is False
     assert retried == [True]
 
+
 async def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
     s = session(tmp_path)
     queue(s, "first", "delete me")
@@ -159,6 +204,7 @@ async def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
     assert queued_texts(s) == ["first"]
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert queued_texts(restored) == ["first"]
+
 
 def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     """Unconsumed pending_user_inputs are auto-submitted as next input."""
@@ -185,6 +231,7 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     assert s.next_hints_available is False
     assert "NextHints" not in {tool["function"]["name"] for tool in requested_tools}
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
+
 
 def test_simple_repl_schema_stays_next_hints_free_across_requests(tmp_path):
     """The simple REPL chooses its tool set before the first model request without NextHints,

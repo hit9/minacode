@@ -597,7 +597,7 @@ class TuiRuntime:
         finally:
             self.request_shutdown()
 
-    async def run(self) -> int:
+    async def run(self, *, show_banner: bool = True) -> int:
         """Own the interactive session: the application, the active turn, and the output queue.
 
         One loop for all of it, so a model request, a tool batch, an MCP call and a keystroke are
@@ -620,12 +620,16 @@ class TuiRuntime:
             self.loop.scrollback = self.scrollback
             self.loop.background_output_lock = self.scrollback.lock
             self.loop.agent.output_barrier = self.scrollback.barrier
-            # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
-            # so the primary-screen application places them in native terminal/tmux scrollback.
+            # Restored transcript lines wait until patch_stdout owns the terminal. The normal
+            # CommandLoop entry already put its static banner in scrollback before terminal
+            # probing; direct runtime callers retain the default banner here.
             resuming = self.loop.session.resumed
             if resuming:
                 self.tui.set_running(RESUME_STATUS_LABEL)
-            self.loop.start_session()
+            if show_banner:
+                self.loop.start_session()
+            else:
+                self.loop.start_session(show_banner=False)
             if resuming:
                 self.tui.set_idle()
             self.spawn(self.loop.discover_mcp(), name="mcp-discovery")

@@ -457,7 +457,11 @@ Full documentation: https://wizolt.readthedocs.io
     async def _run_frontend(self) -> int:
         """Select the frontend inside the CLI's single event-loop entry."""
         if self.interactive_input:
-            return await TuiRuntime(self).run()
+            # The primary-screen renderer can spend a second probing cursor position on a slow
+            # terminal. Put the static banner in native scrollback before that probe; restored
+            # history and every later write still wait for the TUI's ordered output path.
+            self.emit_banner()
+            return await TuiRuntime(self).run(show_banner=False)
         return await self.run_simple()
 
     async def run_simple(self) -> int:
@@ -646,9 +650,14 @@ Full documentation: https://wizolt.readthedocs.io
         if mcp is not None:
             await mcp.discover_auto()
 
-    def start_session(self) -> None:
-        """Initialize output and background services shared by both command-loop frontends."""
+    def emit_banner(self) -> None:
+        """Write the one static line that can safely precede interactive terminal setup."""
         self.emit(f"wizolt {__version__}. /help for commands.")
+
+    def start_session(self, *, show_banner: bool = True) -> None:
+        """Initialize output and background services shared by both command-loop frontends."""
+        if show_banner:
+            self.emit_banner()
         # Cached state is read synchronously -- it is small, local, and the first status display
         # needs it -- and only the remote half is scheduled. Nothing here may hold the prompt: a
         # slow index, a slow filesystem, or an unreachable PyPI is not a reason to wait to type.
