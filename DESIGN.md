@@ -221,10 +221,36 @@ while a request is in flight and lets one cancellation reach all of it.
   on a loop that has closed is not a lock.
 - Threads remain only at genuinely synchronous boundaries — local file reads, a ToolScript body,
   and the bounded termination of a persistent background `Popen` handle — reached through the
-  managed executor or `asyncio.to_thread`. Search subprocesses and `Job` waits are native async
-  operations; foreground Bash pipes are event-loop readers. A promoted Bash process moves both
-  pipes to one daemon drainer because it can outlive the loop that launched it. A thread never gets
-  an exception injected into it and never owns an async client.
+  managed executor or `base.run_blocking`. Search, mention discovery, fzf, the external editor,
+  and `Job` waits are native async operations; foreground Bash pipes are event-loop readers. A
+  promoted Bash process moves both pipes to one daemon drainer because it can outlive the loop that
+  launched it. A thread never gets an exception injected into it and never owns an async client.
+- `base.run_blocking(invoke)` is the one blocking bridge for state-mutating maintenance work, and
+  it is not `asyncio.to_thread`: cancelling it remembers the cancellation, keeps waiting for the
+  worker, observes its outcome, and only then reports cancellation upward. `asyncio.to_thread`
+  returns the moment the awaiter is cancelled and leaves the worker holding whatever it holds,
+  which is how a sweep ends up mutating a session after shutdown said it was done.
+
+**Session-scoped background work has one owner.** `CommandLoop.open_background()` /
+`spawn_background()` / `close_background()` admit, retain, and settle everything a session starts
+outside the turn: the update check, the catalog refresh, the retention sweep, mention discovery and
+completion, and post-turn code-index freshness. Both frontends open it after entering their loop
+and close it before returning, in the shutdown order above (after the turn, before model/MCP). It
+rejects work once closed and closes the refused coroutine, so nothing can call back into a session
+that is gone. Coalescing state for shared work — the single mention scan — lives here rather than
+on `Session`, because a task is loop-bound and the session outlives loops.
+
+Five explicit thread construction sites remain, each for a reason the loop cannot serve:
+
+1. `warm_provider_sdks` — pre-runtime import latency, started before any loop exists.
+2. ToolScript's single-worker executor — arbitrary synchronous Python, kept off the loop.
+3. the promoted-Bash drainer — its process and pipes may outlive the launching loop.
+4. the force-exit timer — it has to fire when the loop is the thing that is wedged.
+5. `StatusBar` and `BashLivePreview` — the simple colored CLI's stderr tickers. Their `start`/`stop`
+   are called from worker threads (`with_status_paused` inside `to_thread`, tool output callbacks),
+   so an asyncio ticker would need a cross-thread blocking bridge on every one of those call sites
+   to keep `stop` erasing the region only after the ticker has settled. They own no session state
+   and are not on the model/tool path, so they stay threads.
 
 **Cancellation is a request, and quiescence is the answer.** The turn is one task; `Agent.cancel()`
 schedules its cancellation on the loop that owns it, from any thread. Cancelling the task that

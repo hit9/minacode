@@ -36,6 +36,15 @@
   slow model-list endpoint no longer freezes input or redraws.
 - `Search` now runs ripgrep as an asyncio subprocess and kills and reaps it directly on
   cancellation. Its Python filesystem fallback remains off-loop and is awaited to quiescence.
+- `@file` completion, the fzf picker, and the external editor (Ctrl-X Ctrl-E / Ctrl-G) no longer
+  hold the prompt. Escape closes the picker while a large worktree is still being scanned, the
+  completion menu always shows the query you are typing now rather than an earlier one, and
+  quitting the session ends the editor or picker instead of leaving it attached to the terminal.
+- `/index` and `/catalog sync` keep the prompt and status line live while they run, and Ctrl-O can
+  no longer stack a second output browser behind the one already open.
+- The startup version check, the provider-catalog refresh, and the saved-session retention sweep
+  are owned by the session that starts them: they no longer print or change state after you exit,
+  and retention finishes the deletion pass it started rather than stopping half-way.
 - Exiting closes what the session opened, in order, before the process ends: the active turn is
   cancelled and awaited, background work is drained, and the model client and MCP are closed. A
   Ctrl-D during a model request or during MCP discovery now exits cleanly instead of leaving
