@@ -810,7 +810,7 @@ class ToolRunner:
         main thread, without parsing error strings."""
         d = d or ToolDisplay()
         recovery_output = isinstance(recovery, ToolOutput) and recovery.has_source
-        text = output + "\n" + self._render_source_output(recovery) if recovery_output else output
+        text = output + "\n" + self._render_source_output(call, recovery) if recovery_output else output
         self.session.record_tool_error("-", call.name, call.args, text)
         self.emit(
             LogBlock.hierarchy(None, [LogLine("error", oneline(output.removeprefix("ToolError:").strip(), 220), LogRole.ERROR, LogEdge.END)])
@@ -892,7 +892,7 @@ class ToolRunner:
         keys = self.session.register_source_drafts(list(projected.drafts))
         return projected.render(keys), key
 
-    def _render_source_output(self, recovery: object | None) -> str:
+    def _render_source_output(self, call: ToolCall, recovery: object | None) -> str:
         """Register a ToolError's recovery drafts and render them with their fresh view ids.
 
         Projected like any other source output: a failure message skips the generic bounding, so
@@ -903,7 +903,14 @@ class ToolRunner:
             return ""
         projected = recovery.project(max_tokens=MAX_TOOL_OUTPUT_TOKENS, estimate=self.context.estimated_text_tokens)
         keys = self.session.register_source_drafts(list(projected.drafts))
-        return projected.render(keys)
+        rendered = projected.render(keys)
+        if call.name != "Edit" or not keys:
+            return rendered
+        sources = ",".join(keys)
+        return (
+            f'<edit-recovery source="{sources}">Use this fresh editable view to retry Edit directly when its lines= ranges cover every target; '
+            "do not Read the same lines again.</edit-recovery>\n" + rendered
+        )
 
     def tool_message(
         self,

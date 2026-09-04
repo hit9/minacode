@@ -310,7 +310,8 @@ class EditTool(Tool):
     DESCRIPTION = (
         "Create or patch one UTF-8 file. op=create writes a new file and is the only operation in its call; "
         "replace/delete cover the inclusive 1-based start..end range inside the named source view (source=view.N from "
-        "Read, Search, or InspectCode). Content is the complete final text of the named range; lines outside the range "
+        "Read, Search, or InspectCode); every start:end must appear in that view's lines= ranges, and the newest view for "
+        "a path may cover only a recent edit. Content is the complete final text of the named range; lines outside the range "
         "are preserved automatically and must not be copied in as context. An insertion is a replace over a single line: "
         "to add a line after line N, replace N:N with line N's text followed by the new line; to add one before it, put "
         "the new line first. To append to the end, replace the last line N:N with its text plus the new lines. To write "
@@ -698,7 +699,8 @@ class EditTool(Tool):
                 replacement = [] if edit.op == "delete" else self.content_lines(edit.content, found + len(target) < len(lines))
                 replacements.append((found, found + len(target), replacement))
             except ToolError as error:
-                raise ToolError(str(error), recovery=recover(edit) if recover else self.fresh_recovery(view, lines, edit)) from error
+                recovery = recover(edit) if recover else self.current_view_recovery_from_lines(view.path, edits, lines)
+                raise ToolError(str(error), recovery=recovery) from error
         return self.splice_lines(lines, replacements, relocations)
 
     @staticmethod
@@ -735,11 +737,6 @@ class EditTool(Tool):
         if relocated == index:
             return relocated, ""
         return relocated, f"relocated {view.key} lines {edit.start}:{edit.end} -> current lines {relocated + 1}:{relocated + len(target)}"
-
-    @staticmethod
-    def fresh_recovery(view: SourceView, lines: list[str], edit: Edit) -> ToolOutput:
-        """A fresh bounded view of `lines` around the coordinates the failed edit requested."""
-        return ToolOutput("", (SourceBlock.around(view.path, view.display_path, lines, edit.start - 1),))
 
     @classmethod
     def splice_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], relocations: list[str] | None = None) -> EditApplyResult:

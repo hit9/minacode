@@ -260,7 +260,7 @@ class EditBatchPlan:
             edits,
             view,
             locate=lambda edit, first, last: self.planned_start(state, view, edit, first, last),
-            recover=lambda edit: tool.fresh_recovery(view, state.original, edit),
+            recover=lambda _edit: tool.current_view_recovery_from_lines(view.path, edits, state.original),
         )
         lines = list(state.lines)
         consumed: set[tuple[str, int]] = set()

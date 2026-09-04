@@ -329,10 +329,45 @@ async def test_unseen_edit_range_returns_a_view_that_can_be_retried_directly(tmp
 
     assert "source range unseen lines 207:208" in s.tool_errors[0].error
     assert "207 | line 207" in s.tool_errors[0].error
+    assert '<edit-recovery source="view.2">' in s.tool_errors[0].error
+    assert "do not Read the same lines again" in s.tool_errors[0].error
     fresh = s.get_source_view("view.2")
     assert fresh is not None and fresh.range_lines(207, 208) == ("line 207\n", "line 208\n")
 
     await runner.run([ToolCall("retry", "Edit", ["image.py", "view.2", edits])])
 
     assert path.read_text(encoding="utf-8").splitlines()[206] == "changed"
+    assert len(s.tool_errors) == 1
+
+
+async def test_unseen_multi_edit_recovery_covers_every_target_for_one_retry(tmp_path, monkeypatch):
+    """Regression for a first Edit against a narrow view: recovery must authorize the whole call,
+    not just the first operation whose range validation failed."""
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
+    path = tmp_path / "base.py"
+    path.write_text("".join(f"line {number}\n" for number in range(1, 701)), encoding="utf-8")
+    rendered(ReadTool(s, [{"path": "base.py", "ranges": [[300, 386], [595, 620]]}]).call(), s)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda _text: None)
+    edits = [
+        {"op": "replace", "start": 16, "end": 16, "content": "sixteen\n"},
+        {"op": "replace", "start": 22, "end": 25, "content": "twenty-two through twenty-five\n"},
+    ]
+
+    await runner.run([ToolCall("unseen", "Edit", ["base.py", "view.1", edits])])
+
+    error = s.tool_errors[0].error
+    assert '<edit-recovery source="view.2">' in error
+    assert "13 | line 13" in error and "28 | line 28" in error
+    recovery = s.get_source_view("view.2")
+    assert recovery is not None
+    assert recovery.range_lines(16, 16) == ("line 16\n",)
+    assert recovery.range_lines(22, 25) == tuple(f"line {number}\n" for number in range(22, 26))
+
+    await runner.run([ToolCall("retry", "Edit", ["base.py", "view.2", edits])])
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[15] == "sixteen"
+    assert lines[21] == "twenty-two through twenty-five"
     assert len(s.tool_errors) == 1
