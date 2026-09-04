@@ -51,7 +51,7 @@ class WorkerFlow:
                     SESSION_EVENT_KEY: "worker_reset",
                 }
             )
-            self.loop.session.save_snapshot()
+            await self.loop.session.save_snapshot()
             if 'alive="false"' in result:
                 return "[worker] reset · no worker session to reset."
             return "[worker] reset · worker context cleared; file changes and merged diffs kept. The next delegation starts from scratch."

@@ -173,7 +173,7 @@ class Agent:
         user_text = user_input.display_text() if isinstance(user_input, UserInput) else self.session.images.label_text(user_message)
         turn_messages = [user_message, *await self.mention_messages(user_text)]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
-        self.checkpoint_turn(turn_messages, transcript_messages)
+        await self.checkpoint_turn(turn_messages, transcript_messages)
         failed_request: PreparedRequest | None = None
         try:
             for step in range(self.session.settings.max_steps):
@@ -252,7 +252,7 @@ class Agent:
                     transcript_messages.append(self.transcript_message(assistant_message))
                     if content.strip():
                         self.output_fn(content.strip())
-                    self.checkpoint_turn(turn_messages, transcript_messages)
+                    await self.checkpoint_turn(turn_messages, transcript_messages)
                     continue
                 if not tool_calls:
                     if not content.strip():
@@ -281,7 +281,7 @@ class Agent:
                     # counts as a tool batch, so the next ordinary batch is numbered ·2 instead
                     # of presenting as the first.
                     tool_batches += 1
-                    self.checkpoint_turn(turn_messages, transcript_messages)
+                    await self.checkpoint_turn(turn_messages, transcript_messages)
                     continue
                 assistant = self.assistant_turn_message(assistant, tool_calls, content)
                 turn_messages.append(assistant)
@@ -300,7 +300,7 @@ class Agent:
                 self._current_image_messages.extend(message for message in tool_messages if ImageInputs.input_refs(message))
                 transcript_messages.extend(SessionSnapshotCodec.transcript_messages(tool_messages))
                 self.raise_if_cancelled()
-                self.checkpoint_turn(turn_messages, transcript_messages)
+                await self.checkpoint_turn(turn_messages, transcript_messages)
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
             self.stopped_at_max_steps = True
             self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": stopped})
@@ -312,7 +312,7 @@ class Agent:
             # one settled or retracted turn, save it, and let the cancellation reach the runtime.
             self.session.release_user_inputs()
             self.settle_interrupted_turn(turn_messages, transcript_messages)
-            self.session.save_snapshot()
+            await self.session.save_snapshot()
             raise
         except Exception as error:
             if isinstance(error, ModelError):
@@ -344,7 +344,7 @@ class Agent:
             self.session._active_turn_messages.clear()
             self.session._active_transcript_messages.clear()
             self.session.state.turn_messages = 0
-            self.session.save_snapshot()
+            await self.session.save_snapshot()
             raise
 
     def _initial_user_message(self, user_input: str | UserInput) -> Json:
@@ -375,7 +375,7 @@ class Agent:
             correction: Json = {"role": "user", "content": self.tool_call_correction(textual_tool), SESSION_EVENT_KEY: "tool_call_correction"}
             corrections.append(correction)
             turn_messages.append(correction)
-            self.checkpoint_turn(turn_messages, transcript_messages)
+            await self.checkpoint_turn(turn_messages, transcript_messages)
             correction_messages = [*base_messages, *corrections]
             while True:
                 try:
@@ -406,10 +406,10 @@ class Agent:
             if isinstance(source, dict):
                 self.turn_sources.append(source)
 
-    def checkpoint_turn(self, turn_messages: list[Json], transcript_messages: list[Json]) -> None:
+    async def checkpoint_turn(self, turn_messages: list[Json], transcript_messages: list[Json]) -> None:
         self.session._active_turn_messages = list(turn_messages)
         self.session._active_transcript_messages = list(transcript_messages)
-        self.session.save_snapshot()
+        await self.session.save_snapshot()
 
     def finish_turn(self, turn_messages: list[Json], transcript_messages: list[Json], assistant: Json | None = None) -> None:
         if assistant is not None:

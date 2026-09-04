@@ -184,7 +184,7 @@ async def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, 
     parent.config.worker_model = "worker-model"
     parent.config.worker_reasoning = "high"
     parent.messages.append({"role": "user", "content": "parent request"})
-    parent.save_snapshot()
+    await parent.save_snapshot()
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
@@ -204,7 +204,7 @@ async def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, 
     # Resume: the worker comes back through SessionSnapshotStore.load with the same freshly built
     # config, so a current override applies to the restored worker too.
     parent.worker.messages.append({"role": "user", "content": "worker request"})
-    parent.worker.save_snapshot()
+    await parent.worker.save_snapshot()
     model.script.append(({"role": "assistant", "content": "two"}, [], "two"))
     parent.config.worker_model = "resumed-model"
     fresh = SessionSnapshotStore.load(parent.uid, config=parent.config, settings=parent.settings, cwd=str(tmp_path))
@@ -396,7 +396,7 @@ async def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_
 
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
-    worker.save_snapshot()
+    await worker.save_snapshot()
     parent.worker = worker
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
@@ -419,7 +419,7 @@ async def test_delegate_reset_finish_worker_rule_label(tmp_path):
 
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
-    worker.save_snapshot()
+    await worker.save_snapshot()
     parent.worker = worker
     outputs = []
     labels = []
@@ -516,7 +516,7 @@ async def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_pat
     assert worker.state.compaction_count == 1
 
     # Persistence: the snapshot holds the compacted state, not the pre-compaction history.
-    worker.save_snapshot()
+    await worker.save_snapshot()
     loaded = SessionSnapshotStore.load(worker.uid, config=worker.config, settings=worker.settings, cwd=worker.cwd)
     assert loaded.state.compaction_count == 1
     assert PREVIOUS_CONTEXT_TRIMMED in loaded.state.summary

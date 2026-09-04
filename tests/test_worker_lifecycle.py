@@ -95,7 +95,7 @@ async def test_delegate_reset_stops_worker_jobs_before_dropping_runtime(tmp_path
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.messages.append({"role": "user", "content": "worker request"})
-    worker.save_snapshot()
+    await worker.save_snapshot()
     parent.worker = worker
 
     class Job:
@@ -121,7 +121,7 @@ async def test_delegate_reset_keeps_worker_when_snapshot_delete_fails(tmp_path, 
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.messages.append({"role": "user", "content": "worker request"})
-    worker.save_snapshot()
+    await worker.save_snapshot()
     parent.worker = worker
     snapshot = SessionSnapshotStore.session_path(parent.config.data_dir, str(tmp_path), worker.uid)
     real_unlink = os.unlink
@@ -144,7 +144,7 @@ async def test_delegate_reset_deletes_disk_only_worker_after_parent_resume(tmp_p
     parent = _delegate_session(tmp_path)
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.messages.append({"role": "user", "content": "worker request"})
-    worker.save_snapshot()
+    await worker.save_snapshot()
     snapshot = SessionSnapshotStore.session_path(parent.config.data_dir, str(tmp_path), worker.uid)
     assert parent.worker is None and os.path.isfile(snapshot)
 
@@ -514,9 +514,9 @@ async def test_worker_reset_appends_event_message(tmp_path):
     parent.messages.append({"role": "user", "content": "parent request"})
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.messages.append({"role": "user", "content": "worker request"})
-    worker.save_snapshot()
+    await worker.save_snapshot()
     parent.worker = worker
-    parent.save_snapshot()
+    await parent.save_snapshot()
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
@@ -533,7 +533,7 @@ async def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatc
 
     parent = _delegate_session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
-    parent.save_snapshot()
+    await parent.save_snapshot()
     model = FakeModelClient([({"role": "assistant", "content": "one"}, [], "one")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
@@ -561,13 +561,13 @@ async def test_snapshot_restored_worker_shares_parent_skills_and_mcp(tmp_path, m
 
     parent = _delegate_session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
-    parent.save_snapshot()
+    await parent.save_snapshot()
     model = FakeModelClient([({"role": "assistant", "content": "one"}, [], "one")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     await _delegate_call(parent, runner, action="send", order="o")
     parent.worker.messages.append({"role": "user", "content": "worker request"})
-    parent.worker.save_snapshot()
+    await parent.worker.save_snapshot()
 
     # Resume: the worker now comes back through SessionSnapshotStore.load, not the fresh-branch.
     model.script.append(({"role": "assistant", "content": "two"}, [], "two"))

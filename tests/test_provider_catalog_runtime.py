@@ -178,7 +178,7 @@ def test_stale_explicit_dialect_is_a_config_error_not_a_key_error():
         policy.resolve(config)
 
 
-def test_snapshot_default_load_validates_config_against_the_active_cached_catalog(tmp_path, monkeypatch):
+async def test_snapshot_default_load_validates_config_against_the_active_cached_catalog(tmp_path, monkeypatch):
     data = catalog_data()
     data["version"] += 1
     data["defaults"]["reasoning_dialects"]["future-dialect"] = "off"
@@ -188,7 +188,7 @@ def test_snapshot_default_load_validates_config_against_the_active_cached_catalo
 
     saved = Session(cwd=str(tmp_path), config=Config(data_dir=str(tmp_path)))
     saved.messages.append({"role": "user", "content": "before catalog update"})
-    saved.save_snapshot()
+    await saved.save_snapshot()
     raw_config = {
         "paths": {"data_dir": str(tmp_path)},
         "provider": {"model": "future-model", "chat_reasoning": "future-dialect"},

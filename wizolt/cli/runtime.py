@@ -9,6 +9,7 @@ import signal
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from wizolt.base import MalformedToolCallError, TurnBox, WizoltError, fail_if_running_loop
@@ -31,6 +32,18 @@ class _TurnCancelled(Exception):
 
     CancelledError cannot cross that boundary as itself -- `asyncio.run` treats it as the runner
     being torn down -- and the runtime needs to tell a cancelled turn apart from a failed one."""
+
+
+@dataclass(frozen=True)
+class _Submission:
+    """One thing a prompt-toolkit callback accepted and could not persist itself.
+
+    `value` is an input to queue before saving; a submission with none is a queue mutation the
+    callback already applied and only needs written down. `resume_notice` prints the paste-ready
+    resume line once the save that carries it has returned a uid."""
+
+    value: UserInput | None = None
+    resume_notice: bool = False
 
 
 class ScrollbackWriter:
@@ -132,6 +145,12 @@ class TuiRuntime:
         # Submitted user input, on the runtime loop. TUI callbacks run there too, so they enqueue
         # directly; anything arriving from another thread schedules the put instead.
         self.pending: asyncio.Queue[UserInput] = asyncio.Queue()
+        # Work a prompt-toolkit callback accepted but must not do inline: queueing an input and
+        # persisting it. One FIFO and one consumer, because submit order is the persistence order
+        # and task scheduling order is not a contract.
+        self.submissions: asyncio.Queue[_Submission] = asyncio.Queue()
+        self.submissions_task: asyncio.Task | None = None
+        self.accepting = False
         self.cancel_pending = False
         self.force_exit_timer: threading.Timer | None = None
         self.error: BaseException | None = None
@@ -192,12 +211,62 @@ class TuiRuntime:
         if not value.images and "\n" not in text and text.startswith("/"):
             self.spawn(self.loop.run_queued_command(text), name="queued-command")
         else:
-            self.loop.session.enqueue_user_input(value)
-            self.loop.session.save_snapshot()
+            self.submit_accepted(_Submission(value))
         self.tui.invalidate()
 
     def recall(self) -> str | UserInput:
-        return self.loop.recall_pending_input(self._request_model_retry)
+        recalled = self.loop.recall_pending_input(self._request_model_retry)
+        if recalled:
+            # The queue already changed; only writing it down is left, and this key handler owes
+            # the editor an answer now rather than after a file write.
+            self.submit_accepted(_Submission())
+        return recalled
+
+    def submit_accepted(self, submission: _Submission) -> None:
+        """Hand one accepted callback result to the consumer, in submit order.
+
+        Refused once shutdown has closed admission: a save scheduled then would land after the
+        session said it was finished."""
+
+        if self.accepting:
+            self.submissions.put_nowait(submission)
+
+    async def _consume_submissions(self) -> None:
+        """Apply accepted submissions one at a time, each fully persisted before the next.
+
+        One consumer rather than a task per keystroke: two saves racing would make task scheduling
+        order the order of the log, and the second could capture a queue the first had not written
+        yet."""
+
+        while True:
+            submission = await self.submissions.get()
+            try:
+                if submission.value is not None:
+                    self.loop.session.enqueue_user_input(submission.value)
+                uid = await self.loop.session.save_snapshot()
+                if submission.resume_notice:
+                    self.loop.emit_resume_line(uid)
+            finally:
+                self.submissions.task_done()
+
+    async def _close_submissions(self) -> None:
+        """Stop accepting, let the consumer finish what it already accepted, then end it."""
+
+        self.accepting = False
+        task, self.submissions_task = self.submissions_task, None
+        if task is None:
+            return
+        drained = asyncio.ensure_future(self.submissions.join())
+        try:
+            # Raced against the consumer itself: if it died, its work is never going to drain and
+            # waiting for the join would hold shutdown open forever.
+            await asyncio.wait({drained, task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not drained.done():
+                drained.cancel()
+                await asyncio.wait({drained})
+            task.cancel()
+            await asyncio.wait({task})
 
     def expand_output(self) -> None:
         """Ctrl-O: open the tool-output browser as one runtime task on the TUI's own loop.
@@ -265,7 +334,9 @@ class TuiRuntime:
         away from output that was already accepted."""
 
         self.request_shutdown()
-        self.loop.save_and_emit_resume()
+        # Through the consumer, not inline: this is a key handler, and the drain that shutdown runs
+        # before it cancels anything is what keeps the resume line on screen.
+        self.submit_accepted(_Submission(resume_notice=True))
 
     def force_exit(self) -> None:
         """The emergency escape hatch: ask for the graceful path, then arm a deadline.
@@ -404,7 +475,7 @@ class TuiRuntime:
             self.loop.ui.emit_answer(footer, rule=False, indent=TurnBox.CONTENT_LEVEL)
         if not malformed_tool_call:
             self.loop.ui.emit_turn_end(started)
-        self.loop.session.save_snapshot()
+        await self.loop.session.save_snapshot()
         self.submit_next(self.loop.take_pending_inputs())
 
     async def run_agent_loop(self) -> None:
@@ -487,12 +558,15 @@ class TuiRuntime:
 
         self.runtime_loop = asyncio.get_running_loop()
         self.loop.open_background()
+        self.submissions = asyncio.Queue()
+        self.accepting = True
         self.shutdown = asyncio.Event()
         self.application_ready = asyncio.Event()
         self.loop.tui = self.build_tui()
         self.tui.on_ready = self.application_ready.set
         application = self.spawn(self._run_application(), name="tui-application")
         assert application is not None
+        self.submissions_task = self.spawn(self._consume_submissions(), name="submissions")
         try:
             await self._await_ready(application)
             self.scrollback = ScrollbackWriter(self.runtime_loop, self.tui.write_to_scrollback, self.loop.ui.write_direct)
@@ -538,7 +612,8 @@ class TuiRuntime:
     async def _shutdown(self, application: asyncio.Task) -> None:
         """Unwind in a fixed order, so nothing is closed while something still needs it.
 
-        Stop taking new work; cancel and await the active turn, including tool quiescence and turn
+        Stop taking new work; close submission admission and let the consumer finish the saves it
+        already accepted; cancel and await the active turn, including tool quiescence and turn
         settlement; drain the tasks this runtime started; then close output -- admission first,
         then the accepted writes -- and only then exit the application and await it. The loop is
         closed by `asyncio.run` after this returns, which is why every close happens here."""
@@ -547,6 +622,9 @@ class TuiRuntime:
             self.shutdown.set()
         if self.force_exit_timer is not None:
             self.force_exit_timer.cancel()
+        # Before anything is cancelled: an accepted submission is a keystroke the reader already
+        # sent, and its save is bounded. Cancelling the consumer first would drop it.
+        await self._close_submissions()
         self.loop.agent.cancel()
         owned = [task for task in self.tasks if task is not application]
         for task in owned:

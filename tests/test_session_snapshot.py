@@ -9,22 +9,22 @@ from wizolt.base import SESSION_EVENT_KEY
 from wizolt.session import Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
 
 
-def test_transcript_diff_preview_is_bounded(tmp_path):
+async def test_transcript_diff_preview_is_bounded(tmp_path):
     s = session_with_data_dir(tmp_path)
     key = s.store_tool_result("Edit", ["x.py"], "done")
     s.store_turn_diff(key, 1, "x.py", "+line\n" * 20_000)
-    s.save_snapshot()
+    await s.save_snapshot()
 
     preview = read_jsonl(log_path(s))[0]["transcript_turn_diffs"][0]["diff"]
     assert len(preview) < TurnDiff.TRANSCRIPT_CHAR_LIMIT + 100
     assert preview.endswith("see /diff for the retained session diff")
 
-def test_loading_legacy_snapshot_migrates_surviving_history_before_later_compaction(tmp_path):
+async def test_loading_legacy_snapshot_migrates_surviving_history_before_later_compaction(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.messages.extend([{"role": "user", "content": "legacy request"}, {"role": "assistant", "content": "legacy answer"}])
     key = s.store_tool_result("Bash", ["pwd"], str(tmp_path))
     s.store_turn_diff(key, 1, "x.py", "-old\n+new\n")
-    s.save_snapshot()
+    await s.save_snapshot()
 
     lines = read_lines(log_path(s))
     for line in lines[1:]:
@@ -43,15 +43,15 @@ def test_loading_legacy_snapshot_migrates_surviving_history_before_later_compact
     assert [diff.key for diff in restored.transcript_turn_diffs] == [key]
 
     restored.messages[:] = [{"role": "user", "content": "new compacted context", SESSION_EVENT_KEY: "compaction_checkpoint"}]
-    restored.save_snapshot()
+    await restored.save_snapshot()
     migrated = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert [message["content"] for message in migrated.transcript_messages] == ["legacy request", "legacy answer"]
 
-def test_active_transcript_is_replaced_separately_then_committed_once(tmp_path):
+async def test_active_transcript_is_replaced_separately_then_committed_once(tmp_path):
     s = session_with_data_dir(tmp_path)
     user = {"role": "user", "content": "working request"}
     s._active_transcript_messages = [user]
-    s.save_snapshot()
+    await s.save_snapshot()
 
     first = read_jsonl(log_path(s))[0]
     assert first["transcript_messages"] == []
@@ -59,7 +59,7 @@ def test_active_transcript_is_replaced_separately_then_committed_once(tmp_path):
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert restored.transcript_messages == [user]
-    restored.save_snapshot()
+    await restored.save_snapshot()
 
     merged, _, _ = SessionSnapshotStore.read_merged(log_path(s))
     assert merged["transcript_messages"] == [user]
@@ -67,10 +67,10 @@ def test_active_transcript_is_replaced_separately_then_committed_once(tmp_path):
     loaded_again = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert loaded_again.transcript_messages == [user]
 
-def test_transcript_checkpoint_does_not_hash_the_saved_prefix(tmp_path, monkeypatch):
+async def test_transcript_checkpoint_does_not_hash_the_saved_prefix(tmp_path, monkeypatch):
     s = session_with_data_dir(tmp_path)
     s.transcript_messages.extend({"role": "user", "content": str(index)} for index in range(2_000))
-    s.save_snapshot()
+    await s.save_snapshot()
     saved_prefix = s.transcript_messages
     original_digest = SessionSnapshotCodec.digest
 
@@ -81,7 +81,7 @@ def test_transcript_checkpoint_does_not_hash_the_saved_prefix(tmp_path, monkeypa
 
     monkeypatch.setattr(SessionSnapshotCodec, "digest", guarded_digest)
     s.transcript_messages.append({"role": "assistant", "content": "new"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     assert read_jsonl(log_path(s))[-1]["transcript_messages"] == [{"role": "assistant", "content": "new"}]
 
@@ -120,11 +120,11 @@ def test_transcript_projection_strips_provider_state_and_keeps_semantic_tool_res
     assert projected["tool_calls"][0]["function"]["arguments"] == "{}"
     assert projected["tool_calls"][0]["arguments_truncated"] is True
 
-def test_old_version_write_after_transcript_sync_is_detected(tmp_path):
+async def test_old_version_write_after_transcript_sync_is_detected(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "first"})
     s.transcript_messages.append({"role": "user", "content": "first"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     SessionSnapshotStore.write_jsonl(
         log_path(s),
@@ -136,27 +136,27 @@ def test_old_version_write_after_transcript_sync_is_detected(tmp_path):
     assert restored.transcript_incomplete is True
     assert [message["content"] for message in restored.transcript_messages] == ["first"]
 
-def test_delta_omits_messages_when_nothing_new(tmp_path):
+async def test_delta_omits_messages_when_nothing_new(tmp_path):
     """Delta line omits the messages key when no new messages."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hi"})
-    s.save_snapshot()  # init
+    await s.save_snapshot()  # init
 
     # No new messages
-    s.save_snapshot()  # delta
+    await s.save_snapshot()  # delta
 
     lines = read_jsonl(log_path(s))
     delta = lines[1]
     assert "messages" not in delta
 
-def test_delta_omits_tool_records_when_nothing_new(tmp_path):
+async def test_delta_omits_tool_records_when_nothing_new(tmp_path):
     """Delta line omits tool_records when no new tool calls."""
     s = session_with_data_dir(tmp_path)
     s.store_tool_result("Bash", ["pwd"], "/home")
-    s.save_snapshot()  # init
+    await s.save_snapshot()  # init
 
     s.messages.append({"role": "user", "content": "more"})
-    s.save_snapshot()  # delta
+    await s.save_snapshot()  # delta
 
     lines = read_jsonl(log_path(s))
     delta = lines[1]
@@ -164,30 +164,30 @@ def test_delta_omits_tool_records_when_nothing_new(tmp_path):
     assert "tool_records" not in delta  # No new tool calls since init
     assert "tool_results" not in delta
 
-def test_delta_omits_unchanged_turn_diffs_without_serializing_payload(tmp_path, monkeypatch):
+async def test_delta_omits_unchanged_turn_diffs_without_serializing_payload(tmp_path, monkeypatch):
     s = session_with_data_dir(tmp_path)
     s.store_turn_diff("tr.1", 1, "large.py", "-old\n+new\n", before="old\n" * 1000, after="new\n" * 1000, round=1)
-    s.save_snapshot()  # init
+    await s.save_snapshot()  # init
 
     def fail_turn_diff(_diff, _blobs):
         raise AssertionError("unchanged turn diffs should not be serialized")
 
     monkeypatch.setattr(SessionSnapshotCodec, "turn_diff", fail_turn_diff)
     s.messages.append({"role": "user", "content": "next"})
-    s.save_snapshot()  # delta
+    await s.save_snapshot()  # delta
 
     lines = read_jsonl(log_path(s))
     assert "turn_diffs" not in lines[1]
     assert "turn_diffs_replace" not in lines[1]
 
-def test_file_snapshots_are_stored_once_by_content_hash(tmp_path):
+async def test_file_snapshots_are_stored_once_by_content_hash(tmp_path):
     """Editing a file repeatedly makes each version appear twice — one edit's `after` is the next
     edit's `before`. The log stores each version once and references it by hash."""
     s = session_with_data_dir(tmp_path)
     versions = [f"v{i}\n" for i in range(4)]
     for turn, (before, after) in enumerate(itertools.pairwise(versions), start=1):
         s.store_turn_diff(f"tr.{turn}", turn, "x.py", f"-{before}+{after}", before=before, after=after, round=turn)
-        s.save_snapshot()
+        await s.save_snapshot()
 
     lines = read_lines(log_path(s))
     blobs = [line for line in lines if "blob" in line]
@@ -198,17 +198,17 @@ def test_file_snapshots_are_stored_once_by_content_hash(tmp_path):
     assert entry["before_blob"] and entry["after_blob"]
     assert "before" not in entry and "after" not in entry
 
-def test_turn_diff_snapshots_survive_a_roundtrip(tmp_path):
+async def test_turn_diff_snapshots_survive_a_roundtrip(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.store_turn_diff("tr.1", 1, "x.py", "-old\n+new\n", before="old\n", after="new\n", round=1)
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
 
     assert [(d.key, d.path, d.before, d.after) for d in restored.turn_diffs] == [("tr.1", "x.py", "old\n", "new\n")]
 
 
-def test_source_views_survive_a_snapshot_roundtrip(tmp_path):
+async def test_source_views_survive_a_snapshot_roundtrip(tmp_path):
     """A view the model was shown survives save/load, so a resumed assistant can still edit with it."""
     from wizolt.tools import ReadTool
 
@@ -217,7 +217,7 @@ def test_source_views_survive_a_snapshot_roundtrip(tmp_path):
     path.write_text("one\ntwo\nthree\n")
     out = ReadTool(s, [{"path": "a.py"}]).call()
     key = s.register_source_drafts(list(out.drafts))[0]
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     view = restored.get_source_view(key)
@@ -228,7 +228,7 @@ def test_source_views_survive_a_snapshot_roundtrip(tmp_path):
     assert [line for span in view.spans for line in span.lines] == ["one\n", "two\n", "three\n"]
 
 
-def test_an_edit_still_resolves_its_view_after_a_restart(tmp_path):
+async def test_an_edit_still_resolves_its_view_after_a_restart(tmp_path):
     """The point of persisting views: a turn interrupted after a Read must be resumable. A fresh
     process loads the session and the id the model was shown still edits the file it named, with
     the counter continuing past it rather than reissuing a live key."""
@@ -239,7 +239,7 @@ def test_an_edit_still_resolves_its_view_after_a_restart(tmp_path):
     path.write_text("alpha\nbeta\ngamma\n")
     key = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py"}]).call().drafts))[0]
     s.messages.append({"role": "assistant", "content": f"about to edit {key}"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     EditTool(restored, ["a.py", key, [{"op": "replace", "start": 2, "end": 2, "content": "BETA\n"}]]).call()
@@ -249,7 +249,7 @@ def test_an_edit_still_resolves_its_view_after_a_restart(tmp_path):
     assert restored.register_source_drafts(list(ReadTool(restored, [{"path": "a.py"}]).call().drafts)) == ["view.2"]
 
 
-def test_source_view_span_text_uses_content_addressed_blobs(tmp_path):
+async def test_source_view_span_text_uses_content_addressed_blobs(tmp_path):
     """Span text is stored as a content-addressed blob, deduplicating equal text across views and diffs."""
     from wizolt.tools import ReadTool
 
@@ -258,7 +258,7 @@ def test_source_view_span_text_uses_content_addressed_blobs(tmp_path):
     path.write_text("one\ntwo\nthree\n")
     s.register_source_drafts(list(ReadTool(s, [{"path": "a.py"}]).call().drafts))
     s.store_turn_diff("tr.1", 1, "a.py", "-one\n+ONE\n", before="one\n", after="ONE\n", round=1)
-    s.save_snapshot()
+    await s.save_snapshot()
 
     lines = read_lines(log_path(s))
     blobs = sorted(line["text"] for line in lines if "blob" in line)
@@ -268,7 +268,7 @@ def test_source_view_span_text_uses_content_addressed_blobs(tmp_path):
     assert "lines" not in entry["spans"][0]
 
 
-def test_source_view_delta_appends_new_views_and_drops_pruned(tmp_path):
+async def test_source_view_delta_appends_new_views_and_drops_pruned(tmp_path):
     """A second save appends newly registered views; after pruning, the delta replaces the set."""
     from wizolt.tools import ReadTool
 
@@ -276,19 +276,19 @@ def test_source_view_delta_appends_new_views_and_drops_pruned(tmp_path):
     path = tmp_path / "a.py"
     path.write_text("one\ntwo\nthree\n")
     keep = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py", "ranges": [[1, 1]]}]).call().drafts))[0]
-    s.save_snapshot()
+    await s.save_snapshot()
 
     dropped = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py", "ranges": [[2, 2]]}]).call().drafts))[0]
-    s.save_snapshot()
+    await s.save_snapshot()
     s.prune_source_views({keep})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert restored.get_source_view(keep) is not None
     assert restored.get_source_view(dropped) is None
 
 
-def test_source_view_counter_survives_pruning_and_restart(tmp_path):
+async def test_source_view_counter_survives_pruning_and_restart(tmp_path):
     """Expired public ids are never reassigned to different evidence after a restart."""
     from wizolt.tools import ReadTool
 
@@ -300,7 +300,7 @@ def test_source_view_counter_survives_pruning_and_restart(tmp_path):
     assert (first, second) == ("view.1", "view.2")
     s.prune_source_views(set())
     s.messages.append({"role": "user", "content": "keep this session durable"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     new = restored.register_source_drafts(list(ReadTool(restored, [{"path": "a.py", "ranges": [[3, 3]]}]).call().drafts))[0]
@@ -310,7 +310,7 @@ def test_source_view_counter_survives_pruning_and_restart(tmp_path):
     assert new == "view.3"
 
 
-def test_loading_drops_a_view_whose_span_blob_is_gone(tmp_path):
+async def test_loading_drops_a_view_whose_span_blob_is_gone(tmp_path):
     """A view is only as good as the text behind it. When the blob its span points at is missing
     from the log, the view is dropped rather than restored empty: an id that resolves to no
     content would let an Edit validate against nothing."""
@@ -320,7 +320,7 @@ def test_loading_drops_a_view_whose_span_blob_is_gone(tmp_path):
     path = tmp_path / "a.py"
     path.write_text("one\n")
     key = s.register_source_drafts(list(ReadTool(s, [{"path": "a.py"}]).call().drafts))[0]
-    s.save_snapshot()
+    await s.save_snapshot()
 
     lines = [line for line in read_lines(log_path(s)) if "blob" not in line]  # drop every stored blob
     with open(log_path(s), "w") as file:

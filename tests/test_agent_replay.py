@@ -308,7 +308,7 @@ def test_silent_tool_failure_still_emits_a_log_line(tmp_path):
     assert len(messages) == 1
     assert "at least one non-empty" in messages[0]["content"]
 
-def test_agent_followup_turn_snapshot_resume_invariant(tmp_path, monkeypatch):
+async def test_agent_followup_turn_snapshot_resume_invariant(tmp_path, monkeypatch):
     """Save and reload a turn that took a live follow-up and a protocol correction: both appear once
     as durable user messages, pending is empty, and no assistant tool call lacks its result."""
     s = session(tmp_path)
@@ -343,9 +343,9 @@ def test_agent_followup_turn_snapshot_resume_invariant(tmp_path, monkeypatch):
         return responses.pop(0)
 
     monkeypatch.setattr(agent.model, "api_request", fake_api_request)
-    assert agent.run_sync("initial request") == "done"
+    assert await agent.run("initial request") == "done"
 
-    s.save_snapshot()
+    await s.save_snapshot()
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
 
     # The live follow-up and the correction each appear once as durable user messages

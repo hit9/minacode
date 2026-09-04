@@ -428,7 +428,11 @@ Full documentation: https://wizolt.readthedocs.io
         return texts
 
     def recall_pending_input(self, on_inflight: Callable[[], None]) -> str | UserInput:
-        """Move the newest queued input back to the editor, retrying if it was already claimed."""
+        """Move the newest queued input back to the editor, retrying if it was already claimed.
+
+        The mutation only; persisting it is the caller's, because this runs inside a prompt-toolkit
+        key handler that has to answer with the recalled text and cannot await a file write."""
+
         with self.session._queue_lock:
             item = next(reversed(self.session.pending_user_inputs), None)
             if item is None:
@@ -441,7 +445,6 @@ Full documentation: https://wizolt.readthedocs.io
         if was_inflight:
             on_inflight()
         self.session.images.retain(item.images)
-        self.session.save_snapshot()
         return item.user_input()
 
     def run(self) -> int:
@@ -583,7 +586,7 @@ Full documentation: https://wizolt.readthedocs.io
                 user_input = await self.read_input(initial_text=initial_input)
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
-                self.save_and_emit_resume()
+                await self.save_and_emit_resume()
                 return 0
             except KeyboardInterrupt:
                 continue
@@ -625,7 +628,7 @@ Full documentation: https://wizolt.readthedocs.io
                 self.ui.emit_answer(footer, rule=False, indent=TurnBox.CONTENT_LEVEL)
             if not malformed_tool_call:
                 self.ui.emit_turn_end(started)
-            self.session.save_snapshot()
+            await self.session.save_snapshot()
 
     async def discover_mcp(self) -> None:
         """Connect the auto_connect servers, as a task the caller's runtime owns.
@@ -879,8 +882,11 @@ Full documentation: https://wizolt.readthedocs.io
                 return record, tool_record_index
         return None, tool_record_index
 
-    def save_and_emit_resume(self) -> None:
-        uid = self.session.save_snapshot()
+    async def save_and_emit_resume(self) -> None:
+        self.emit_resume_line(await self.session.save_snapshot())
+
+    def emit_resume_line(self, uid: str) -> None:
+        """The paste-ready resume line for a session that has just been persisted."""
         if uid:
             # The name goes in the sentence, never in the command: the line below is meant to be
             # pasted, and only the uid is guaranteed to still mean this session tomorrow.
@@ -1268,7 +1274,7 @@ Full documentation: https://wizolt.readthedocs.io
         other handler is local and bounded, and runs directly."""
 
         if text in {"/exit", "/quit", "exit", "quit"}:
-            self.save_and_emit_resume()
+            await self.save_and_emit_resume()
             return True, True
         if not text.startswith("/"):
             return False, False

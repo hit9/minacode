@@ -473,8 +473,7 @@ async def test_session_snapshot_turn_diff_roundtrip(tmp_path):
     s.messages.append({"role": "user", "content": "seed"})
     s.store_turn_diff("tr.1", 2, "x.py", "-a\n+b\n", round=1)
 
-    store = SessionSnapshotStore(s)
-    uid = store.save()
+    uid = await s.save_snapshot()
     loaded = SessionSnapshotStore.load(uid, s.config, s.settings)
 
     assert len(loaded.turn_diffs) == 1
@@ -491,7 +490,7 @@ async def test_resume_renders_turn_diffs_from_the_snapshot(tmp_path):
     (tmp_path / "x.py").write_text("new\n")
     s.messages.append({"role": "user", "content": "edit it"})
     s.store_turn_diff("tr.1", 1, "x.py", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-old\n+new\n", before="old\n", after="new\n", round=1)
-    s.save_snapshot()
+    await s.save_snapshot()
 
     loaded = Session.load_snapshot(s.uid, config=s.config, settings=s.settings, cwd=str(tmp_path))
     result = await diff_command(loop(loaded), "")

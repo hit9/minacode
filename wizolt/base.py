@@ -75,7 +75,7 @@ def fail_if_running_loop(hint: str) -> None:
     raise RuntimeError(f"this synchronous entry point cannot be called from a running event loop; {hint}")
 
 
-async def run_blocking(invoke: Callable[[], _BlockingT]) -> _BlockingT:
+async def run_blocking(invoke: Callable[[], _BlockingT], *, commit: Callable[[_BlockingT], None] | None = None) -> _BlockingT:
     """Await one synchronous callable on the loop's executor, and never abandon it.
 
     `asyncio.to_thread` returns as soon as the *awaiter* is cancelled, leaving the worker running
@@ -86,7 +86,13 @@ async def run_blocking(invoke: Callable[[], _BlockingT]) -> _BlockingT:
     The same contract as `ToolRunner._run_in_executor`, without tool capacity or `request_stop()`;
     the two stay separate because their cancellation policies differ. Callers keep session, TUI,
     and registry mutation on the loop -- the worker computes or performs one atomic file operation
-    and returns."""
+    and returns.
+
+    `commit` exists for the transactional writers -- snapshot markers, edit receipts -- whose worker
+    has an effect on disk that the loop must record even when cancellation is already pending. It
+    runs on the loop after a successful worker, before the cancellation is re-raised, and it must be
+    bounded, synchronous, and do no I/O: it installs values that were already validated. A commit
+    that raises is an invariant failure, not a storage error, and is allowed to propagate."""
 
     loop = asyncio.get_running_loop()
     future = loop.run_in_executor(None, invoke)
@@ -102,10 +108,17 @@ async def run_blocking(invoke: Callable[[], _BlockingT]) -> _BlockingT:
         # The worker's own failure is a cleanup detail once cancellation is under way; it must not
         # replace the cancellation the caller is unwinding on. Reading the future keeps that
         # exception observed rather than leaving it to the loop's exception handler.
-        with contextlib.suppress(BaseException):
-            future.result()
+        try:
+            result = future.result()
+        except BaseException:  # noqa: BLE001 - observed so it is not left unretrieved, then dropped for the cancellation.
+            raise cancel_error from None
+        if commit is not None:
+            commit(result)
         raise cancel_error
-    return future.result()
+    result = future.result()
+    if commit is not None:
+        commit(result)
+    return result
 
 
 MAX_TOOL_OUTPUT_TOKENS = 6_000

@@ -169,18 +169,18 @@ def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, m
 
 
 @pytest.mark.parametrize("api", ["chat", "responses"])
-def test_resume_event_keeps_old_breakpoint_and_becomes_part_of_the_next_one(tmp_path, monkeypatch, api):
+async def test_resume_event_keeps_old_breakpoint_and_becomes_part_of_the_next_one(tmp_path, monkeypatch, api):
     session = _session(tmp_path, api=api)
     server = OpenAIMockServer(["before resume", "resumed answer", "next answer"])
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
 
-    assert Agent(session, output_fn=lambda _text: None).run_sync("first request") == "before resume"
-    session.save_snapshot()
+    assert await Agent(session, output_fn=lambda _text: None).run("first request") == "before resume"
+    await session.save_snapshot()
     resumed = Session.load_snapshot(session.uid, config=session.config, cwd=session.cwd)
     resumed.skills = SkillLibrary({})
     agent = Agent(resumed, output_fn=lambda _text: None)
-    assert agent.run_sync("after resume") == "resumed answer"
-    assert agent.run_sync("next request") == "next answer"
+    assert await agent.run("after resume") == "resumed answer"
+    assert await agent.run("next request") == "next answer"
 
     assert len(server.cache_events) == 3
     assert server.cache_events[1][1] > 0

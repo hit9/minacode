@@ -44,14 +44,14 @@ def test_history_segments_keep_only_the_newest_window(tmp_path):
     assert [segment.text for segment in s.history] == [f"user:\nspan {index}" for index in range(5, limit + 5)]
 
 
-def test_pruned_history_survives_a_snapshot_round_trip(tmp_path):
+async def test_pruned_history_survives_a_snapshot_round_trip(tmp_path):
     """The snapshot writes segments as an append-only delta while the list only grows; pruning
     shortens it, and the digest guard has to notice and rewrite the whole list instead."""
     s = session(tmp_path)
     context = ContextManager(s)
     for index in range(ContextManager.MAX_HISTORY_SEGMENTS + 3):
         context.store_history_segment([{"role": "user", "content": f"span {index}"}], scope="history", trigger="auto", fallback=False)
-        s.save_snapshot()
+        await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
 

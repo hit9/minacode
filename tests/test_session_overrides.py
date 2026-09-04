@@ -23,7 +23,7 @@ async def test_provider_overrides_persist_and_restore(tmp_path):
         "providers": {"other": {"model": "model-x", "reasoning": "high", "api": "responses"}},
     }
     s.messages.append({"role": "user", "content": "hi"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     lines = read_jsonl(log_path(s))
     assert lines[0]["provider_overrides"] == s.provider_overrides
@@ -33,7 +33,7 @@ async def test_provider_overrides_persist_and_restore(tmp_path):
     entry = restored.config.providers["other"]
     assert (entry.model, entry.reasoning, entry.api) == ("model-x", "high", "responses")
 
-    restored.save_snapshot()
+    await restored.save_snapshot()
     assert "provider_overrides" not in read_jsonl(log_path(s))[-1]
 
 async def test_provider_overrides_stale_values_are_skipped(tmp_path):
@@ -46,7 +46,7 @@ async def test_provider_overrides_stale_values_are_skipped(tmp_path):
         "providers": {"other": {"model": "model-x", "reasoning": "bogus", "api": "bogus"}},
     }
     s.messages.append({"role": "user", "content": "hi"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.config.active_provider == "default"
@@ -59,7 +59,7 @@ async def test_legacy_snapshot_without_provider_overrides_loads(tmp_path):
     """Snapshots written before this feature carry no provider_overrides key and load unchanged."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hi"})
-    s.save_snapshot()
+    await s.save_snapshot()
     path = log_path(s)
     lines = read_lines(path)
     for line in lines:
@@ -77,11 +77,11 @@ async def test_provider_overrides_survive_delta_saves(tmp_path):
     later must be merged back on load, not dropped with the rest of the un-listed delta keys."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hi"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     s.provider_overrides = {"providers": {"default": {"model": "model-y"}}}
     s.messages.append({"role": "user", "content": "more"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.config.provider.model == "model-y"
@@ -93,7 +93,7 @@ async def test_provider_overrides_alone_do_not_force_a_save(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.provider_overrides = {"providers": {"default": {"model": "model-z"}}}
 
-    s.save_snapshot()
+    await s.save_snapshot()
 
     assert not os.path.exists(log_path(s))
 
@@ -112,7 +112,7 @@ async def test_provider_switch_chain_round_trips_through_commands(tmp_path):
     await set_model(loop, "m-on-a")
     await provider(loop, "b")
     s.messages.append({"role": "user", "content": "hi"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.config.active_provider == "b"
@@ -126,14 +126,14 @@ async def test_resumed_session_switch_writes_a_new_delta(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.provider_overrides = {"providers": {"default": {"model": "model-1"}}}
     s.messages.append({"role": "user", "content": "hi"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.config.provider.model == "model-1"
 
     restored.provider_overrides = {"providers": {"default": {"model": "model-2"}}}
     restored.messages.append({"role": "user", "content": "more"})
-    restored.save_snapshot()
+    await restored.save_snapshot()
 
     again = Session.load_snapshot(s.uid, config=s.config)
     assert again.config.provider.model == "model-2"
@@ -143,11 +143,11 @@ async def test_switch_then_first_message_carries_the_override(tmp_path):
     once the session gains its first message, the full snapshot is written with the override intact."""
     s = session_with_data_dir(tmp_path)
     s.provider_overrides = {"providers": {"default": {"model": "model-z"}}}
-    s.save_snapshot()
+    await s.save_snapshot()
     assert not os.path.exists(log_path(s))
 
     s.messages.append({"role": "user", "content": "hi"})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.config.provider.model == "model-z"
@@ -157,7 +157,7 @@ async def test_pending_user_inputs_persist_and_restore(tmp_path):
     s.enqueue_user_input("queued one")
     s.enqueue_user_input("queued two")
 
-    s.save_snapshot()
+    await s.save_snapshot()
 
     lines = read_jsonl(log_path(s))
     assert lines[0]["pending_user_inputs"] == ["queued one", "queued two"]
@@ -168,11 +168,11 @@ async def test_pending_user_inputs_persist_and_restore(tmp_path):
 async def test_pending_user_input_delta_replaces_queue_state(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "active"})
-    s.save_snapshot()
+    await s.save_snapshot()
     s.enqueue_user_input("queued")
-    s.save_snapshot()
+    await s.save_snapshot()
     s.pending_user_inputs.clear()
-    s.save_snapshot()
+    await s.save_snapshot()
 
     lines = read_jsonl(log_path(s))
     assert lines[1]["pending_user_inputs"] == ["queued"]

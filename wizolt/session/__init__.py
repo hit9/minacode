@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import threading
@@ -18,6 +19,7 @@ from wizolt.base import (
     Text,
     ToolArgs,
     UpdateStatus,
+    run_blocking,
 )
 from wizolt.config import PROVIDER_API_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
 from wizolt.image import ImageInputs, UserInput
@@ -322,9 +324,15 @@ class Session:
     _meta_written: dict = field(default_factory=dict)
     _active_turn_messages: list[Json] = field(default_factory=list)
     _active_transcript_messages: list[Json] = field(default_factory=list)
+    # Retained because one queue mutator is genuinely cross-thread: `NextHints` (tools/memory.py)
+    # calls `add_quick_hints` from a synchronous tool body on the runner's executor while the loop
+    # reads the same fields. Everything else that touches the queue now runs on the owning loop.
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
-    _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
     _gitignore_lock: threading.RLock = field(default_factory=threading.RLock)
+    # The save gate and the loop it belongs to. Rebound lazily by `_save_gate`, never serialized:
+    # an asyncio primitive is meaningful only to the loop that created it.
+    _snapshot_gate: asyncio.Lock | None = field(default=None, repr=False, compare=False)
+    _snapshot_gate_loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.images = ImageInputs(self)
@@ -635,11 +643,44 @@ class Session:
     def clip_name(cls, text: str) -> str:
         return Text.clip_width(" ".join(str(text).split()), cls.NAME_WIDTH)
 
-    def save_snapshot(self) -> str:
-        # Session owns the persistence boundary; callers should not depend on the snapshot store.
-        with self._snapshot_lock, self._queue_lock:
+    def _save_gate(self) -> asyncio.Lock:
+        """The per-session save gate, bound to the loop that is running now.
+
+        A `Session` outlives loops -- embedding and tests reuse one across separate `asyncio.run`
+        invocations -- and a lock created on a loop that has closed is not a lock. So the gate is
+        rebound lazily, and never while the previous one is held on a loop that is still alive:
+        replacing a held gate would drop exactly the serialization it exists for."""
+
+        loop = asyncio.get_running_loop()
+        gate, owner = self._snapshot_gate, self._snapshot_gate_loop
+        if gate is not None and owner is loop:
+            return gate
+        if gate is not None and gate.locked() and owner is not None and not owner.is_closed():
+            raise RuntimeError("this session's snapshot gate is held by another running event loop")
+        self._snapshot_gate = gate = asyncio.Lock()
+        self._snapshot_gate_loop = loop
+        return gate
+
+    async def save_snapshot(self) -> str:
+        """Persist this session, serialized against its own concurrent saves.
+
+        Session owns the persistence boundary; callers should not depend on the snapshot store. The
+        plan is frozen and the markers are installed while the gate is held, so a later save always
+        computes its delta from the last successfully written captured state rather than from
+        whatever happens to be current when some worker finishes.
+
+        Cancellation waits for an accepted write and still installs its markers: the bytes are on
+        disk either way, and a marker that did not advance would make the next save write the same
+        records again."""
+
+        async with self._save_gate():
             self.refresh_name()
-            return SessionSnapshotStore(self).save()
+            store = SessionSnapshotStore(self)
+            plan = store.plan()
+            if plan is None:
+                return ""
+            receipt = await run_blocking(plan.execute, commit=lambda receipt: store.commit(plan, receipt))
+            return receipt.uid
 
     @classmethod
     def load_snapshot(

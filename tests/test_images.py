@@ -84,14 +84,14 @@ def test_animated_gif_is_not_recognized(tmp_path):
     assert value.images == ()
 
 
-def test_session_stores_content_addressed_image_and_persists_refs(tmp_path):
+async def test_session_stores_content_addressed_image_and_persists_refs(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "screen.png", size=(640, 480))
     value = s.images.recognize(f"describe {path.name}")
 
     message = s.images.message(value)
     s.messages.append(message)
-    s.save_snapshot()
+    await s.save_snapshot()
 
     image = ImageRef.from_json(message[IMAGE_REFS_KEY][0])
     assert image is not None
@@ -131,12 +131,12 @@ def test_missing_stored_asset_is_a_local_model_error(tmp_path):
         s.images.responses_content(message)
 
 
-def test_session_queue_round_trips_images_and_garbage_collects_assets(tmp_path):
+async def test_session_queue_round_trips_images_and_garbage_collects_assets(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "queued.jpg", image_format="JPEG")
     value = s.images.prepare(s.images.recognize(path.name))
     s.enqueue_user_input(value)
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     queued = restored.pending_user_inputs[0]
@@ -146,15 +146,15 @@ def test_session_queue_round_trips_images_and_garbage_collects_assets(tmp_path):
     assets = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
     assert os.path.isdir(assets)
     s.pending_user_inputs.clear()
-    s.save_snapshot()
+    await s.save_snapshot()
     assert not os.path.exists(assets)
 
 
-def test_garbage_collect_spares_dotfile_staging_and_drops_stray_files(tmp_path):
+async def test_garbage_collect_spares_dotfile_staging_and_drops_stray_files(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "kept.png")
     s.messages.append(s.images.message(s.images.recognize(path.name)))
-    s.save_snapshot()
+    await s.save_snapshot()
 
     assets = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
     staged = os.path.join(assets, ".image-93e8u1vn")
@@ -164,21 +164,21 @@ def test_garbage_collect_spares_dotfile_staging_and_drops_stray_files(tmp_path):
     with open(stray, "w") as file:
         file.write("stray")
 
-    s.save_snapshot()
+    await s.save_snapshot()
 
     assert os.path.isfile(staged)  # .image-* staging from ImageInputs._store survives GC
     assert not os.path.exists(stray)  # unreferenced non-dotfile is still collected
     assert os.listdir(assets)  # the referenced asset is kept
 
 
-def test_garbage_collect_clears_stale_image_staging_and_spares_fresh(tmp_path):
+async def test_garbage_collect_clears_stale_image_staging_and_spares_fresh(tmp_path):
     """GC clears a .image-* staging file left by a crashed save, but spares one that could still
     be inside the copy+replace window: residue cannot pile up (or block the assets directory's
     removal) without racing a real write."""
     s = session(tmp_path)
     path = image_file(tmp_path / "kept.png")
     s.messages.append(s.images.message(s.images.recognize(path.name)))
-    s.save_snapshot()
+    await s.save_snapshot()
 
     assets = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
     stale = os.path.join(assets, ".image-93e8u1vn")
@@ -189,18 +189,18 @@ def test_garbage_collect_clears_stale_image_staging_and_spares_fresh(tmp_path):
         file.write("in flight")
     os.utime(stale, (time.time() - 3600, time.time() - 3600))
 
-    s.save_snapshot()
+    await s.save_snapshot()
 
     assert not os.path.exists(stale)  # crash residue is collected
     assert os.path.isfile(fresh)  # a staging file inside the copy+replace window is spared
     assert any(name for name in os.listdir(assets) if not name.startswith("."))  # the referenced asset is kept
 
 
-def test_store_survives_snapshot_gc_between_mkstemp_and_replace(tmp_path, monkeypatch):
+async def test_store_survives_snapshot_gc_between_mkstemp_and_replace(tmp_path, monkeypatch):
     s = session(tmp_path)
     settled = image_file(tmp_path / "settled.png", color=(1, 2, 3))
     s.messages.append(s.images.message(s.images.recognize(settled.name)))
-    s.save_snapshot()  # a real snapshot, so the save during the race reaches garbage collection
+    await s.save_snapshot()  # a real snapshot, so the save during the race reaches garbage collection
 
     racing = image_file(tmp_path / "racing.png", color=(4, 5, 6))
     value = s.images.recognize(racing.name)
@@ -211,7 +211,13 @@ def test_store_survives_snapshot_gc_between_mkstemp_and_replace(tmp_path, monkey
     def racing_replace(source, destination):
         if not intercepted["hit"] and os.path.basename(source).startswith(".image-"):
             intercepted["hit"] = True
-            s.save_snapshot()  # the agent thread's snapshot GC runs while staging is unreferenced
+            # The snapshot worker's asset collector runs while the staging file is unreferenced --
+            # exactly the window this guards. Driven directly rather than through `save_snapshot`
+            # because the interception point is a synchronous callback, which is also where the
+            # real race comes from: a worker collecting assets under a staging replace.
+            racing_plan = SessionSnapshotStore(s).plan()
+            assert racing_plan is not None
+            racing_plan.execute()
         return real_replace(source, destination)
 
     monkeypatch.setattr(os, "replace", racing_replace)
@@ -224,11 +230,11 @@ def test_store_survives_snapshot_gc_between_mkstemp_and_replace(tmp_path, monkey
         assert file.read() == racing.read_bytes()
 
 
-def test_recalling_image_follow_up_keeps_asset_until_resubmission(tmp_path):
+async def test_recalling_image_follow_up_keeps_asset_until_resubmission(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "recall.png")
     s.enqueue_user_input(s.images.prepare(s.images.recognize(path.name)))
-    s.save_snapshot()
+    await s.save_snapshot()
     command_loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
 
     recalled = command_loop.recall_pending_input(lambda: None)
@@ -263,11 +269,11 @@ def test_simple_cli_preserves_images_when_combining_pending_inputs(tmp_path, mon
     assert [image.name for image in received[0].images] == ["queued.png"]
 
 
-def test_expired_session_removes_its_image_assets(tmp_path):
+async def test_expired_session_removes_its_image_assets(tmp_path):
     old = session(tmp_path)
     path = image_file(tmp_path / "expired.png")
     old.messages.append(old.images.message(old.images.recognize(path.name)))
-    old.save_snapshot()
+    await old.save_snapshot()
     log = SessionSnapshotStore.session_path(old.config.data_dir, old.cwd, old.uid)
     assets = log[: -len(".jsonl")] + ".assets"
     stale = time.time() - 3 * 86400
@@ -396,7 +402,7 @@ def test_view_image_observation_round_trips_all_provider_protocols(tmp_path):
     assert [part["type"] for part in anthropic[-1]["content"]] == ["tool_result", "image", "text"]
 
 
-def test_agent_persists_view_image_observation_without_replaying_it_as_user_input(tmp_path):
+async def test_agent_persists_view_image_observation_without_replaying_it_as_user_input(tmp_path):
     s = session(tmp_path)
     image_file(tmp_path / "screen.png")
     agent = Agent(s, output_fn=lambda _text: None)
@@ -413,7 +419,7 @@ def test_agent_persists_view_image_observation_without_replaying_it_as_user_inpu
 
     agent.model = Model()
 
-    assert agent.run_sync("inspect the screenshot") == "done"
+    assert await agent.run("inspect the screenshot") == "done"
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user", "assistant"]
     observation = s.messages[-2]
     assert ImageInputs.is_tool_observation(observation)
@@ -426,7 +432,7 @@ def test_agent_persists_view_image_observation_without_replaying_it_as_user_inpu
     command_loop.render_transcript_message(observation)
     assert rendered == []
 
-    s.save_snapshot()
+    await s.save_snapshot()
     restored = Session.load_snapshot(s.uid, config=s.config)
     restored_observation = next(message for message in restored.messages if ImageInputs.is_tool_observation(message))
     assert ImageInputs.is_tool_observation(restored_observation)

@@ -13,7 +13,7 @@ from wizolt.prompts import LIVE_FOLLOWUP_PREFIX
 from wizolt.session import HistorySegment, Session
 
 
-def test_resume_replays_full_transcript_after_model_context_and_retained_records_are_pruned(tmp_path):
+async def test_resume_replays_full_transcript_after_model_context_and_retained_records_are_pruned(tmp_path):
     s = session_with_data_dir(tmp_path)
     call_message = {
         "role": "assistant",
@@ -30,13 +30,13 @@ def test_resume_replays_full_transcript_after_model_context_and_retained_records
     s.transcript_messages.extend(visible)
     s.store_tool_result("Edit", ["x.py"], "updated")
     s.store_turn_diff("tr.1", 1, "x.py", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-old\n+new\n")
-    s.save_snapshot()
+    await s.save_snapshot()
 
     s.messages[:] = [{"role": "user", "content": "compacted model context", SESSION_EVENT_KEY: "compaction_checkpoint"}]
     s.tool_records.clear()
     s.tool_results.clear()
     s.turn_diffs.clear()
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     output = []
@@ -60,7 +60,7 @@ async def test_compact_command_persists_the_compacted_history(tmp_path):
         s.messages.append({"role": "assistant", "content": f"step {i}"})
     s.messages.append({"role": "user", "content": "current request"})
     s.messages.append({"role": "assistant", "content": "working on it"})
-    s.save_snapshot()
+    await s.save_snapshot()
     before = len(s.messages)
 
     loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
@@ -86,11 +86,11 @@ async def test_compact_command_persists_the_compacted_history(tmp_path):
     assert [segment.key for segment in restored.history] == ["seg.1"]
     assert "older request" in restored.history[0].text
 
-def test_history_segments_persist_and_restore(tmp_path):
+async def test_history_segments_persist_and_restore(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     s.history.append(HistorySegment(key="seg.1", title="earlier task", text="user:\nfind the bug\n\nassistant:\nfixed it"))
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
 
@@ -100,13 +100,13 @@ def test_history_segments_persist_and_restore(tmp_path):
     assert segment.title == "earlier task"
     assert "find the bug" in segment.text
 
-def test_history_delta_appends_new_segments(tmp_path):
+async def test_history_delta_appends_new_segments(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     s.history.append(HistorySegment(key="seg.1", title="first", text="one"))
-    s.save_snapshot()
+    await s.save_snapshot()
     s.history.append(HistorySegment(key="seg.2", title="second", text="two"))
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert [segment.key for segment in restored.history] == ["seg.1", "seg.2"]
@@ -116,7 +116,7 @@ def test_history_delta_appends_new_segments(tmp_path):
     assert any("history" in line and [seg["key"] for seg in line["history"]] == ["seg.2"] for line in lines)
     assert not any("history_replace" in line for line in lines)
 
-def test_history_delta_rewrites_when_saved_segments_change(tmp_path):
+async def test_history_delta_rewrites_when_saved_segments_change(tmp_path):
     """History is append-only in practice, so the digest-delta normally appends. If the saved segments
     ever disagree with the current ones (a reordered or trimmed history), the save must fall back to a
     full history_replace so the log still reconstructs the current set."""
@@ -124,11 +124,11 @@ def test_history_delta_rewrites_when_saved_segments_change(tmp_path):
     s.messages.append({"role": "user", "content": "hello"})
     s.history.append(HistorySegment(key="seg.1", title="first", text="one"))
     s.history.append(HistorySegment(key="seg.2", title="second", text="two"))
-    s.save_snapshot()
+    await s.save_snapshot()
 
     # Mutate the saved history out of band: the prefix digest no longer matches the last save.
     s.history[0], s.history[1] = s.history[1], s.history[0]
-    s.save_snapshot()
+    await s.save_snapshot()
 
     lines = read_jsonl(log_path(s))
     assert any("history_replace" in line and [seg["key"] for seg in line["history_replace"]] == ["seg.2", "seg.1"] for line in lines)
@@ -136,12 +136,12 @@ def test_history_delta_rewrites_when_saved_segments_change(tmp_path):
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert [segment.key for segment in restored.history] == ["seg.2", "seg.1"]
 
-def test_resume_recomputes_the_context_percent(tmp_path):
+async def test_resume_recomputes_the_context_percent(tmp_path):
     """`context_percent` is derived rather than persisted, so a resumed session would report an
     empty context until its first turn."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "x" * 40000})
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert restored.state.context_percent == 0
@@ -151,9 +151,9 @@ def test_resume_recomputes_the_context_percent(tmp_path):
 
     assert restored.state.context_percent > 0
 
-def test_resumed_transcript_replays_the_edit_diff(tmp_path):
+async def test_resumed_transcript_replays_the_edit_diff(tmp_path):
     """A resumed session shows what each Edit changed, not just that an Edit ran."""
-    text = _resumed_transcript(tmp_path, "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
+    text = await _resumed_transcript(tmp_path, "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
 
     assert "preview" in text
     assert "-a" in text and "+b" in text
@@ -161,17 +161,17 @@ def test_resumed_transcript_replays_the_edit_diff(tmp_path):
     # The preview block carries the call line, so it is not repeated by the result line.
     assert text.count("Edit") == 1
 
-def test_resumed_transcript_trims_long_diffs(tmp_path):
+async def test_resumed_transcript_trims_long_diffs(tmp_path):
     diff = "--- x.py\n+++ x.py\n" + "\n".join(f"+line {i}" for i in range(40))
-    text = _resumed_transcript(tmp_path, diff, lines_cap=10)
+    text = await _resumed_transcript(tmp_path, diff, lines_cap=10)
 
     assert "+line 7" in text
     assert "+line 30" not in text
     assert "more lines, see /diff" in text
 
-def test_resumed_transcript_without_a_stored_diff_shows_the_call_only(tmp_path):
+async def test_resumed_transcript_without_a_stored_diff_shows_the_call_only(tmp_path):
     """Edits whose diff has been evicted still render as a plain call line."""
-    text = _resumed_transcript(tmp_path, "")
+    text = await _resumed_transcript(tmp_path, "")
 
     assert "preview" not in text
     assert "Edit" in text

@@ -525,7 +525,7 @@ async def sessions_command(loop: CommandLoop, args: str) -> str | None:
     if not isinstance(chosen, str) or chosen == loop.session.uid:
         return None
     loop.resume_request = chosen
-    loop.save_and_emit_resume()
+    await loop.save_and_emit_resume()
     return None
 
 
@@ -613,7 +613,7 @@ def session_preview(entry: SessionEntry, *, summary: list[tuple[str, str]] | Non
     return parts
 
 
-def name_command(loop: CommandLoop, args: str) -> str:
+async def name_command(loop: CommandLoop, args: str) -> str:
     """Show or set the session's name, the label a later `--resume` can be given instead of a uid."""
     text = args.strip()
     if not text:
@@ -622,7 +622,7 @@ def name_command(loop: CommandLoop, args: str) -> str:
         described = source.get(loop.session.state.name_source, "")
         return f"Session name: {current} ({described})" if current and described else f"Session name: {current or '(unnamed)'}"
     name = loop.session.rename(text)
-    loop.session.save_snapshot()
+    await loop.session.save_snapshot()
     return f"Session named: {name}\nResume with: wizolt --resume {shlex.quote(name)}"
 
 
@@ -745,7 +745,7 @@ async def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
     loop.agent.context.update_current_tokens(loop.agent.session.system_prompt)
     # Compaction rewrites the history in place. Persist it now: leaving the session without
     # running another turn would otherwise resume from the log's pre-compaction state.
-    loop.session.save_snapshot()
+    await loop.session.save_snapshot()
     fallback_note = f" (fallback: {fallback_error})" if fallback else ""
     return (
         f"Compacted context: messages {before} -> {len(loop.session.messages)}, "

@@ -398,15 +398,15 @@ def test_vision_failure_propagates_without_retry_loop(tmp_path):
 # --- persistence ------------------------------------------------------------------------------
 
 
-def test_learned_evidence_not_serialized_and_observation_survives_resume(tmp_path):
+async def test_learned_evidence_not_serialized_and_observation_survives_resume(tmp_path):
     s = session(tmp_path, model="main-model", vision=True)
     image_file(tmp_path / "shot.png")
     model = FallbackModel([ModelError("Error code: 400 - image input unsupported"), ("recovered", [])])
     agent, _ = run_with(s, model)
 
-    assert agent.run_sync(s.images.recognize("inspect shot.png")) == "recovered"
+    assert await agent.run(s.images.recognize("inspect shot.png")) == "recovered"
     assert s.image_route.state() == "text_only_learned"
-    s.save_snapshot()
+    await s.save_snapshot()
 
     resumed = Session.load_snapshot(s.uid, config=s.config)
     # learned evidence is runtime-only: a resumed session starts unknown again

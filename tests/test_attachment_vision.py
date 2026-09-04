@@ -170,7 +170,7 @@ def test_failed_queued_image_is_committed_text_only_instead_of_requeued(tmp_path
     assert FAILED_IMAGE_CONTEXT_PREFIX in settled[0]["content"]
 
 
-def test_multiple_failed_images_survive_snapshot_as_text_only_assets(tmp_path):
+async def test_multiple_failed_images_survive_snapshot_as_text_only_assets(tmp_path):
     s = session(tmp_path)
     image_file(tmp_path / "one.png")
     image_file(tmp_path / "two.png", color=(65, 43, 21))
@@ -178,8 +178,8 @@ def test_multiple_failed_images_survive_snapshot_as_text_only_assets(tmp_path):
     agent.model = SequenceModel([ModelError("no images")])
 
     with pytest.raises(ModelError):
-        agent.run_sync(s.images.recognize("compare one.png two.png"))
-    s.save_snapshot()
+        await agent.run(s.images.recognize("compare one.png two.png"))
+    await s.save_snapshot()
     resumed = Session.load_snapshot(s.uid, config=s.config)
 
     failed = resumed.messages[0]

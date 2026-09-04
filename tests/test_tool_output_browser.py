@@ -411,7 +411,7 @@ async def test_tool_output_list_rows_are_coloured_by_part(tmp_path):
 async def test_tool_output_viewer_reads_resumed_history(tmp_path):
     saved = session(tmp_path)
     saved.store_tool_result("Bash", ["printf persisted"], Tool.process_result("BashToolResult", 0, "persisted output", ""))
-    saved.save_snapshot()
+    await saved.save_snapshot()
     restored = Session.load_snapshot(saved.uid, config=saved.config)
     command_loop = CommandLoop(Agent(restored, output_fn=lambda _text: None), input_fn=lambda prompt="": "", output_fn=lambda _text: None)
     modal = ModalHarness(["enter", "c-o"], consumed=True)

@@ -26,7 +26,9 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     saved = session(tmp_path)
     saved.enqueue_user_input("queued one")
     saved.enqueue_user_input("queued two")
-    saved.save_snapshot()
+    # Setup, before the scenario's own loop exists: this test drives a real application through
+    # `run_tui`, which is itself the one synchronous entry point.
+    asyncio.run(saved.save_snapshot())
     restored = Session.load_snapshot(saved.uid, config=saved.config)
     command_loop = CommandLoop(
         Agent(restored, output_fn=lambda _text: None),

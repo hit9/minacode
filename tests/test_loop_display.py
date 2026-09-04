@@ -134,12 +134,15 @@ def test_recall_pending_input_can_revise_latest_inflight_message(tmp_path):
     assert s.pending_user_inputs[0].inflight is False
     assert retried == [True]
 
-def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
+async def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
     s = session(tmp_path)
     queue(s, "first", "delete me")
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
     assert loop.recall_pending_input(lambda: None) == "delete me"
+    # Recall mutates the queue; persisting it is the runtime's submission consumer, which is what
+    # the await stands in for here.
+    await s.save_snapshot()
 
     assert queued_texts(s) == ["first"]
     restored = Session.load_snapshot(s.uid, config=s.config)

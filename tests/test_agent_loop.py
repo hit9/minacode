@@ -81,7 +81,7 @@ def test_file_mentions_land_as_their_own_user_message(tmp_path):
     assert len(mentions) == 1
     assert "[small.py] 1 lines" in mentions[0]
 
-def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
+async def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
     s = session(tmp_path)
     s.skills = SkillLibrary({})
     agent = Agent(s, output_fn=lambda _text: None)
@@ -109,10 +109,10 @@ def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run_sync("finish") == "done"
+    assert await agent.run("finish") == "done"
     assert s.messages[-1]["_responses_output"][0]["type"] == "reasoning"
     assert s.transcript_messages[-1] == {"role": "assistant", "content": "done"}
-    s.save_snapshot()
+    await s.save_snapshot()
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     restored_assistant = next(message for message in reversed(restored.messages) if message.get("role") == "assistant")
     assert restored_assistant["_responses_output"] == s.messages[-1]["_responses_output"]
@@ -208,7 +208,7 @@ def test_interrupted_unfinished_tool_call_gets_semantic_transcript_result(tmp_pa
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     assert restored.transcript_messages[-1] == s.transcript_messages[-1]
 
-def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_path, monkeypatch):
+async def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_path, monkeypatch):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     s.skills = SkillLibrary({})
@@ -236,14 +236,14 @@ def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_path, m
 
     agent.model = Model()
 
-    assert agent.run_sync("read the file") == "done"
+    assert await agent.run("read the file") == "done"
     assert [message.get("content") for message in s.messages] == ["compacted current turn", "done"]
     assert [message["role"] for message in s.transcript_messages] == ["user", "assistant", "tool", "assistant"]
     assert s.transcript_messages[0]["content"] == "read the file"
     assert s.transcript_messages[1]["content"] == "checking"
     assert s.transcript_messages[-1]["content"] == "done"
 
-    s.save_snapshot()
+    await s.save_snapshot()
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     assert [message["role"] for message in restored.transcript_messages] == ["user", "assistant", "tool", "assistant"]
     assert restored.transcript_messages[0]["content"] == "read the file"

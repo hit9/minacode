@@ -47,13 +47,13 @@ async def test_exit_command_prints_resume_command(tmp_path):
     assert output[-1] == f"Resume 'hello' with:\nwizolt --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
-def stored_session(tmp_path, text, *, name=""):
+async def stored_session(tmp_path, text, *, name=""):
     """A saved session in the same project, so /sessions has something to list."""
     other = Session(cwd=str(tmp_path), config=Config(data_dir=str(tmp_path / "data")))
     other.messages.append({"role": "user", "content": text})
     if name:
         other.rename(name)
-    other.save_snapshot()
+    await other.save_snapshot()
     return other
 
 async def test_resume_is_an_alias_for_sessions(tmp_path):
@@ -76,9 +76,9 @@ async def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
 
     assert await sessions_command(loop, "") == "No saved sessions yet."
 
-    older = stored_session(tmp_path, "sort the picker by date")
+    older = await stored_session(tmp_path, "sort the picker by date")
     s.messages.append({"role": "user", "content": "current work"})
-    s.save_snapshot()
+    await s.save_snapshot()
     listed = await sessions_command(loop, "")
 
     assert older.uid in listed and "sort the picker by date" in listed
@@ -90,8 +90,8 @@ async def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_pat
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
-    s.save_snapshot()
-    target = stored_session(tmp_path, "the one we want", name="picked")
+    await s.save_snapshot()
+    target = await stored_session(tmp_path, "the one we want", name="picked")
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     loop.tui = TuiApp()
     loop.interactive_input = True
@@ -107,7 +107,7 @@ async def test_sessions_command_choosing_the_current_session_changes_nothing(tmp
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
-    s.save_snapshot()
+    await s.save_snapshot()
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     loop.tui = TuiApp()
     loop.interactive_input = True
@@ -121,12 +121,12 @@ async def test_sessions_command_choosing_the_current_session_changes_nothing(tmp
     assert await loop.command("/sessions") == (True, False)
     assert loop.resume_request == ""
 
-def test_session_labels_carry_age_and_size(tmp_path):
+async def test_session_labels_carry_age_and_size(tmp_path):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
     s.state.round_count = 4
-    s.save_snapshot()
+    await s.save_snapshot()
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
     entry = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]
@@ -136,7 +136,7 @@ def test_session_labels_carry_age_and_size(tmp_path):
     assert row.startswith("current work")
     assert "just now" in row and "4 rounds" in row and "current" in row
     s.state.round_count = 1
-    s.save_snapshot()
+    await s.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]
     rows, widths = session_table(loop, [entry])
     row = session_rows(rows, widths)[0]
@@ -152,9 +152,9 @@ async def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatc
     loop.tui = TuiApp()
     loop.interactive_input = True
     for text in ("a", "中文名", "quite a long session name"):
-        other = stored_session(tmp_path, text)
+        other = await stored_session(tmp_path, text)
         other.state.round_count = 3
-        other.save_snapshot()
+        await other.save_snapshot()
 
     captured: dict[str, dict[str, str]] = {}
     monkeypatch.setattr(commands_mod, "choice_application", async_callable(lambda _loop, *args, **kwargs: captured.update(labels=args[2]) or None))
@@ -173,10 +173,10 @@ async def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(t
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
-    s.save_snapshot()
-    target = stored_session(tmp_path, "the one we want", name="picked")
+    await s.save_snapshot()
+    target = await stored_session(tmp_path, "the one we want", name="picked")
     target.messages.append({"role": "assistant", "content": "the latest answer"})
-    target.save_snapshot()
+    await target.save_snapshot()
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     loop.tui = TuiApp()
     loop.interactive_input = True
@@ -199,33 +199,33 @@ async def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(t
     assert any(style == "class:choice.user" for style, _ in parts)
     assert parts[-1] == ("", "  the latest answer\n")
 
-def test_session_summary_tails_the_recent_messages(tmp_path):
-    other = stored_session(tmp_path, "opening")
+async def test_session_summary_tails_the_recent_messages(tmp_path):
+    other = await stored_session(tmp_path, "opening")
     other.messages.append({"role": "user", "content": "one"})
     other.messages.append({"role": "assistant", "content": "two"})
     other.messages.append({"role": "assistant", "content": "three"})
-    other.save_snapshot()
+    await other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "three"), ("assistant", "two"), ("user", "one"), ("user", "opening")]
     assert SessionSnapshotStore.tail_summary(entry.path, limit=2) == [("assistant", "three"), ("assistant", "two")]
 
-def test_session_summary_skips_internal_events(tmp_path):
+async def test_session_summary_skips_internal_events(tmp_path):
     """Session-resume markers are stored as user-role messages; the preview must not show them as
     conversation, or the 'recent messages' read as a wall of <session_event ...> lines."""
-    other = stored_session(tmp_path, "opening")
+    other = await stored_session(tmp_path, "opening")
     other.messages.append({SESSION_EVENT_KEY: "resumed", "content": '<session_event type="resumed" at="2026-08-20" />'})
     other.messages.append({"role": "user", "content": "real question"})
     other.messages.append({"role": "assistant", "content": "real answer"})
-    other.save_snapshot()
+    await other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     summary = SessionSnapshotStore.tail_summary(entry.path)
     assert summary[:2] == [("assistant", "real answer"), ("user", "real question")]
     assert all("<session_event" not in text for _, text in summary)
 
-def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path):
+async def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path):
     """A tool-heavy session has almost no assistant text; the preview shows the tool names of
     textless turns so it still says something useful."""
-    other = stored_session(tmp_path, "investigate")
+    other = await stored_session(tmp_path, "investigate")
     other.messages.append(
         {
             "role": "assistant",
@@ -237,39 +237,39 @@ def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path):
         }
     )
     other.messages.append({"role": "assistant", "content": "found it"})
-    other.save_snapshot()
+    await other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "found it"), ("user", "investigate"), ("tool", "→ Bash, Read")]
 
-def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
+async def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
     """Tool-only turns collapse into one counted line at the end, and when the preview is already
     full of text no tool line is added at all."""
-    other = stored_session(tmp_path, "q")
+    other = await stored_session(tmp_path, "q")
     for name in ("Bash", "Bash", "Read", "Bash"):
         other.messages.append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": name, "arguments": "{}"}}]})
     other.messages.append({"role": "assistant", "content": "answer"})
-    other.save_snapshot()
+    await other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "answer"), ("user", "q"), ("tool", "→ Bash ×3, Read")]
 
-    full = stored_session(tmp_path, "t0")
+    full = await stored_session(tmp_path, "t0")
     for i in range(1, 6):
         full.messages.append({"role": "user", "content": f"q{i}"})
     full.messages.append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "Bash", "arguments": "{}"}}]})
-    full.save_snapshot()
+    await full.save_snapshot()
     full_entry = SessionSnapshotStore.list_sessions(full.config.data_dir, full.cwd)[0]
     summary = SessionSnapshotStore.tail_summary(full_entry.path)
     assert len(summary) == 5
     assert all(not text.startswith("→") for _, text in summary)
 
-def test_session_summary_widens_the_window_to_reach_buried_text(tmp_path):
+async def test_session_summary_widens_the_window_to_reach_buried_text(tmp_path):
     """A tool result can bury the conversation under hundreds of kilobytes; the summary widens its
     tail window until it holds enough text, capped by the budget."""
-    other = stored_session(tmp_path, "q0")
+    other = await stored_session(tmp_path, "q0")
     for i in range(1, 6):
         other.messages.append({"role": "user", "content": f"q{i}"})
     other.messages.append({"role": "tool", "content": "x" * 200000})
-    other.save_snapshot()
+    await other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     assert SessionSnapshotStore.tail_summary(entry.path) == [("user", f"q{i}") for i in range(5, 0, -1)]
 
@@ -294,7 +294,7 @@ def test_session_summary_survives_a_seek_inside_a_cjk_character(tmp_path, monkey
     entry = SessionEntry(uid="torn", name="", opening="", rounds=0, cwd=str(tmp_path), updated_at=time.time(), path=str(path))
     assert SessionSnapshotStore.tail_summary(entry.path) == [("user", "latest")]
 
-def test_session_label_fn_matches_the_text_layout(tmp_path):
+async def test_session_label_fn_matches_the_text_layout(tmp_path):
     """The styled rows line up exactly like the plain ones: the styled text of every field is the
     padded table row, and the current marker takes the live colour. A second session whose round
     count is a different width than the current one's makes the last column not always the widest
@@ -303,10 +303,10 @@ def test_session_label_fn_matches_the_text_layout(tmp_path):
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
     s.state.round_count = 100
-    s.save_snapshot()
-    other = stored_session(tmp_path, "a different session")
+    await s.save_snapshot()
+    other = await stored_session(tmp_path, "a different session")
     other.state.round_count = 3
-    other.save_snapshot()
+    await other.save_snapshot()
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     entries = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)
     rows, widths = session_table(loop, entries)
@@ -327,20 +327,20 @@ def test_session_label_fn_matches_the_text_layout(tmp_path):
     assert parts[2][0] == "class:choice.meta"  # rounds dim
     assert parts[-1] == ("class:choice.live", "current")
 
-def test_name_command_shows_and_sets_the_session_name(tmp_path):
+async def test_name_command_shows_and_sets_the_session_name(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "make the divider smoother"})
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    s.save_snapshot()
+    await s.save_snapshot()
 
-    assert name_command(loop, "") == "Session name: make the divider smoother (from the opening message)"
+    assert await name_command(loop, "") == "Session name: make the divider smoother (from the opening message)"
 
-    assert name_command(loop, "divider polish").startswith("Session named: divider polish")
-    assert name_command(loop, "") == "Session name: divider polish (set by you)"
+    assert (await name_command(loop, "divider polish")).startswith("Session named: divider polish")
+    assert await name_command(loop, "") == "Session name: divider polish (set by you)"
     # The rename is durable on its own, without waiting for the next turn to save.
     assert Session.load_snapshot(s.uid, config=s.config).name == "divider polish"
 
-def test_name_command_reports_an_unnamed_session(tmp_path):
+async def test_name_command_reports_an_unnamed_session(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert name_command(loop, "") == "Session name: (unnamed)"
+    assert await name_command(loop, "") == "Session name: (unnamed)"

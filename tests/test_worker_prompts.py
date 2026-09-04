@@ -37,15 +37,15 @@ async def test_system_prompt_default_matches_prompts_module(tmp_path):
     assert system == SYSTEM_PROMPT.strip()
     assert ContextManager(session(tmp_path)).model_messages(SYSTEM_PROMPT)[0]["content"] == SYSTEM_PROMPT.strip()
 
-def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
+async def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
     from wizolt.session import Session, SessionSnapshotStore
 
     parent = session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
-    parent.save_snapshot()  # latest -> parent.uid
+    await parent.save_snapshot()  # latest -> parent.uid
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.messages.append({"role": "user", "content": "worker request"})
-    worker.save_snapshot()
+    await worker.save_snapshot()
 
     assert worker.uid.endswith(".w")
     assert SessionSnapshotStore.read_latest(SessionSnapshotStore.project_dir(parent.config.data_dir, str(tmp_path))) == parent.uid
@@ -56,16 +56,16 @@ def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
     # `-c` still resolves to the parent even though the worker log is newer on disk.
     assert SessionSnapshotStore.latest_uid(parent.config.data_dir, cwd=str(tmp_path)) == parent.uid
 
-def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tmp_path, monkeypatch):
+async def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tmp_path, monkeypatch):
     from wizolt.session import Session, SessionSnapshotStore
 
     parent = session(tmp_path)
     parent.settings.session_retention_days = 1
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.messages.append({"role": "user", "content": "worker request"})
-    worker.save_snapshot()  # create first: the worker is visited before its parent below
+    await worker.save_snapshot()  # create first: the worker is visited before its parent below
     parent.messages.append({"role": "user", "content": "parent request"})
-    parent.save_snapshot()
+    await parent.save_snapshot()
     directory = SessionSnapshotStore.project_dir(parent.config.data_dir, str(tmp_path))
     parent_path = os.path.join(directory, parent.uid + ".jsonl")
     worker_path = os.path.join(directory, worker.uid + ".jsonl")
@@ -127,15 +127,15 @@ def test_worker_config_parsing_and_validation(tmp_path):
     with pytest.raises(ConfigError, match="worker.provider"):
         Config.from_dict({"worker": {"provider": "nope"}})
 
-def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):
+async def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):
     from wizolt.session import Session, SessionSnapshotStore
 
     parent = session(tmp_path)
     parent.messages.append({"role": "user", "content": "parent request"})
-    parent.save_snapshot()
+    await parent.save_snapshot()
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.messages.append({"role": "user", "content": "worker request"})
-    worker.save_snapshot()
+    await worker.save_snapshot()
 
     resolved = SessionSnapshotStore.resolve_uid(parent.uid[:12], parent.config.data_dir, str(tmp_path))
     assert resolved == parent.uid

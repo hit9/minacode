@@ -348,13 +348,13 @@ async def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, 
     assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (120_000, 200_000)
 
 
-def test_compaction_usage_survives_a_resume(tmp_path):
+async def test_compaction_usage_survives_a_resume(tmp_path):
     config = Config.from_dict({"provider": {"active": "p", "p": {"url": "http://test", "key": "k", "model": "m"}}})
     config.data_dir = str(tmp_path / "data")
     s = Session(cwd=str(tmp_path), config=config)
     s.messages.append({"role": "user", "content": "hello"})
     s.compaction_usage.add({"prompt_tokens": 95_000, "completion_tokens": 700, "total_tokens": 95_700}, 200_000)
-    s.save_snapshot()
+    await s.save_snapshot()
 
     restored = Session.load_snapshot(s.uid, config=config, cwd=str(tmp_path))
 

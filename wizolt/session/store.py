@@ -61,6 +61,83 @@ class SessionEntry:
         return self.name or self.opening or self.uid
 
 
+@dataclass(frozen=True)
+class SnapshotWriteReceipt:
+    """What one completed snapshot write reports back to the loop."""
+
+    uid: str
+    meta_written: bool
+
+
+@dataclass(frozen=True)
+class SnapshotWritePlan:
+    """One snapshot write, frozen: every line already serialized, every path already resolved.
+
+    The worker executes this and nothing else. It holds no reference to the `Session`, so the loop
+    is free to keep accepting input while the write runs without any of it half-appearing in a
+    record that was captured before it arrived."""
+
+    uid: str
+    log_path: str
+    header_line: str  # "" on a delta save: the log already has its header
+    blob_lines: tuple[str, ...]
+    record_line: str
+    meta_path: str  # "" when the listing sidecar is already current, or this session is unlisted
+    meta_line: str
+    latest_dir: str  # "" when this session must not claim the project's latest pointer
+    assets_dir: str
+    asset_refs: frozenset[str]
+    # Installed by `SessionSnapshotStore.commit` once the write succeeds; never written by a worker.
+    snapshot_saved: Json
+    blobs_written: frozenset[str]
+    meta_written: Json
+
+    def execute(self) -> SnapshotWriteReceipt:
+        """Write the log, the pointer, the sidecar, and collect assets. Runs on a worker.
+
+        Append order is the format: the header opens the file, new blob lines precede the record
+        that references them, and the record closes the write. A failure here leaves the markers
+        alone, so the next save recomputes the same delta rather than skipping it."""
+
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        if self.header_line:
+            with open(self.log_path, "w", encoding="utf-8") as file:
+                file.write(self.header_line)
+        with open(self.log_path, "a", encoding="utf-8") as file:
+            file.writelines(self.blob_lines)
+            file.write(self.record_line)
+        meta_written = False
+        if self.latest_dir:
+            with open(os.path.join(self.latest_dir, "latest"), "w", encoding="utf-8") as file:
+                file.write(self.uid)
+        if self.meta_line:
+            with contextlib.suppress(OSError):
+                with open(self.meta_path, "w", encoding="utf-8") as file:
+                    file.write(self.meta_line)
+                meta_written = True
+        self._collect_assets()
+        return SnapshotWriteReceipt(self.uid, meta_written)
+
+    def _collect_assets(self) -> None:
+        if not os.path.isdir(self.assets_dir):
+            return
+        with contextlib.suppress(OSError):
+            for entry in os.scandir(self.assets_dir):
+                if entry.name.startswith("."):
+                    # ImageInputs._store stages uploads as ".image-*" (mkstemp in this dir) before
+                    # os.replace; deleting one mid-flight breaks the rename, so a recent staging
+                    # file is spared. One older than IMAGE_STAGING_MAX_AGE is crash residue -- the
+                    # copy+replace window is milliseconds -- and is collected so it cannot pile up
+                    # or block the assets directory's removal.
+                    if entry.name.startswith(".image-") and entry.is_file() and time.time() - entry.stat().st_mtime > IMAGE_STAGING_MAX_AGE:
+                        os.unlink(entry.path)
+                    continue
+                if entry.is_file() and entry.name not in self.asset_refs:
+                    os.unlink(entry.path)
+            if not any(os.scandir(self.assets_dir)):
+                os.rmdir(self.assets_dir)
+
+
 class SessionSnapshotStore:
     """Session logs live at `<data_dir>/projects/<project>/<uid>.jsonl`, one directory per working
     directory, each holding its own `latest` pointer. Sharding keeps a resume scoped to the project
@@ -86,88 +163,99 @@ class SessionSnapshotStore:
     def __init__(self, session: Session):
         self.session = session
 
-    def save(self) -> str:
-        if not self.session._snapshot_saved and not SessionSnapshotCodec.has_content(self.session):
-            return ""
-        path = self.session_path(self.session.config.data_dir, self.session.cwd, self.session.uid)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        blobs: dict[str, str] = {}
-        if not self.session._snapshot_saved:
-            self.write_jsonl(path, self.header(self.session), mode="w")
-            record = SessionSnapshotCodec.snapshot(self.session, blobs)
-        else:
-            record = SessionSnapshotCodec.delta(self.session, self.session._snapshot_saved, blobs)
-        self.write_blobs(path, blobs)
-        self.write_jsonl(path, record, mode="a")
-        self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
-        if self.session.listed:
-            # Workers never claim the latest pointer: `-c` must keep landing on the parent session.
-            self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
-            self.write_meta()
-        self.garbage_collect_assets()
-        return self.session.uid
+    def plan(self) -> SnapshotWritePlan | None:
+        """Freeze one save on the loop. None when there is nothing worth writing yet.
 
-    def write_meta(self) -> None:
-        """Keep what a listing shows beside the log, so browsing sessions never parses one.
+        Everything the write needs is serialized here -- the lines, the paths, the asset-reference
+        set, and the markers the session will carry afterwards -- so the worker never dereferences
+        the live session. That matters because the loop is free to accept queued input while the
+        write runs: whatever arrives is newer than the captured marker and lands in the next delta,
+        rather than half-appearing in this one."""
+
+        session = self.session
+        if not session._snapshot_saved and not SessionSnapshotCodec.has_content(session):
+            return None
+        blobs: dict[str, str] = {}
+        if not session._snapshot_saved:
+            header_line = self._jsonl(self.header(session))
+            record = SessionSnapshotCodec.snapshot(session, blobs)
+        else:
+            header_line = ""
+            record = SessionSnapshotCodec.delta(session, session._snapshot_saved, blobs)
+        new_blobs = {ref: text for ref, text in blobs.items() if ref not in session._blobs_written}
+        meta_line, meta_path, meta = "", "", session._meta_written
+        latest_dir = ""
+        if session.listed:
+            # Workers never claim the latest pointer: `-c` must keep landing on the parent session.
+            latest_dir = self.project_dir(session.config.data_dir, session.cwd)
+            meta = self._meta(session)
+            if meta != session._meta_written:
+                meta_line = self._jsonl(meta)
+                meta_path = self.meta_path(session.config.data_dir, session.cwd, session.uid)
+        return SnapshotWritePlan(
+            uid=session.uid,
+            log_path=self.session_path(session.config.data_dir, session.cwd, session.uid),
+            header_line=header_line,
+            blob_lines=tuple(self._jsonl({"blob": ref, "text": text}) for ref, text in new_blobs.items()),
+            record_line=self._jsonl(record),
+            meta_path=meta_path,
+            meta_line=meta_line,
+            latest_dir=latest_dir,
+            assets_dir=session.images.assets_dir(),
+            asset_refs=frozenset(self._asset_refs(session)),
+            snapshot_saved=SessionSnapshotCodec.marker(session),
+            blobs_written=frozenset(session._blobs_written | new_blobs.keys()),
+            meta_written=meta,
+        )
+
+    def commit(self, plan: SnapshotWritePlan, receipt: SnapshotWriteReceipt) -> None:
+        """Install exactly the markers this write captured. Runs on the loop, bounded, no I/O.
+
+        Exactly the captured ones, not the current state: session mutations that happened while the
+        worker ran are newer than this marker by construction, so they are still pending and the
+        next delta carries them."""
+
+        session = self.session
+        session._snapshot_saved = plan.snapshot_saved
+        session._blobs_written = set(plan.blobs_written)
+        if receipt.meta_written:
+            session._meta_written = plan.meta_written
+
+    @classmethod
+    def _meta(cls, session: Session) -> Json:
+        """What a listing shows, kept beside the log so browsing sessions never parses one.
 
         The log stays the source of truth; this is a cache of values derived from it, rewritten only
         when one of them changes. A missing or unreadable file costs a listing its labels for that
         session and nothing else, which is why it is never read back into a resumed session.
         """
-        meta: Json = {
-            "name": self.session.name,
-            "opening": self.session.clip_name(self.session.opening_text()),
-            "rounds": self.session.state.round_count,
-            "cwd": self.session.cwd,
+        return {
+            "name": session.name,
+            "opening": session.clip_name(session.opening_text()),
+            "rounds": session.state.round_count,
+            "cwd": session.cwd,
         }
-        if meta == self.session._meta_written:
-            return
-        path = self.meta_path(self.session.config.data_dir, self.session.cwd, self.session.uid)
-        with contextlib.suppress(OSError):
-            self.write_jsonl(path, meta, mode="w")
-            self.session._meta_written = meta
 
-    def garbage_collect_assets(self) -> None:
-        directory = self.session.images.assets_dir()
-        if not os.path.isdir(directory):
-            return
+    @staticmethod
+    def _asset_refs(session: Session) -> set[str]:
         refs: set[str] = set()
-        for message in SessionSnapshotCodec.snapshot_messages(self.session):
+        for message in SessionSnapshotCodec.snapshot_messages(session):
             raw_images = message.get(IMAGE_REFS_KEY)
             if not isinstance(raw_images, list):
                 continue
             refs.update(image.ref for raw in raw_images if (image := ImageRef.from_json(raw)) is not None)
-        refs.update(image.ref for item in self.session.pending_user_inputs for image in item.images)
-        refs.update(self.session.images.retained_refs)
+        refs.update(image.ref for item in session.pending_user_inputs for image in item.images)
+        refs.update(session.images.retained_refs)
         # Images are not the only thing in here: ContextManager.materialize_output writes a
         # truncated tool result's full text as "<key>.txt", and the marker in the conversation
         # promises that path. Retain one for as long as its tool result is retained, so the two
         # expire together and the promise is never left pointing at a deleted file.
-        refs.update(key + TOOL_OUTPUT_ASSET_SUFFIX for key in self.session.tool_results)
-        with contextlib.suppress(OSError):
-            for entry in os.scandir(directory):
-                if entry.name.startswith("."):
-                    # ImageInputs._store stages uploads as ".image-*" (mkstemp in this dir) before
-                    # os.replace; deleting one mid-flight breaks the rename, so a recent staging
-                    # file is spared. One older than IMAGE_STAGING_MAX_AGE is crash residue -- the
-                    # copy+replace window is milliseconds -- and is collected so it cannot pile up
-                    # or block the assets directory's removal.
-                    if entry.name.startswith(".image-") and entry.is_file() and time.time() - entry.stat().st_mtime > IMAGE_STAGING_MAX_AGE:
-                        os.unlink(entry.path)
-                    continue
-                if entry.is_file() and entry.name not in refs:
-                    os.unlink(entry.path)
-            if not any(os.scandir(directory)):
-                os.rmdir(directory)
+        refs.update(key + TOOL_OUTPUT_ASSET_SUFFIX for key in session.tool_results)
+        return refs
 
-    def write_blobs(self, path: str, blobs: dict[str, str]) -> None:
-        """Blob lines precede the record that references them, and each content hash is written to
-        the log once. Content the session has already stored costs nothing to reference again."""
-        for ref, text in blobs.items():
-            if ref in self.session._blobs_written:
-                continue
-            self.write_jsonl(path, {"blob": ref, "text": text}, mode="a")
-            self.session._blobs_written.add(ref)
+    @staticmethod
+    def _jsonl(data: Json) -> str:
+        return json.dumps(data, ensure_ascii=False) + "\n"
 
     @classmethod
     def header(cls, session: Session) -> Json:
