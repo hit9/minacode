@@ -12,6 +12,10 @@ from wizolt.tools import CodeIndex, EditTool, ReadTool
 from wizolt.tools.editplan import EditBatchPlan
 
 
+async def ignore_index_update(_index, _paths):
+    return ""
+
+
 def rendered(out, s):
     """Render a ToolOutput with fresh view keys, the way the runner presents it to the model."""
     assert isinstance(out, ToolOutput)
@@ -149,12 +153,17 @@ def test_edit_creates_and_patches_file(tmp_path):
     assert path.read_text(encoding="utf-8") == "ONE\ntwo\nTWO-AND-HALF\n"
 
 
-def test_edit_index_update_uses_call_path_when_output_path_is_unparseable(tmp_path, monkeypatch):
+async def test_edit_index_update_uses_call_path_when_output_path_is_unparseable(tmp_path, monkeypatch):
     s = session(tmp_path)
     updated = []
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
 
-    ToolRunner(s, ContextManager(s), output_fn=lambda text: None).update_code_index(
+    async def record_update(_index, paths):
+        updated.extend(paths)
+        return ""
+
+    monkeypatch.setattr(CodeIndex, "update", record_update)
+
+    await ToolRunner(s, ContextManager(s), output_fn=lambda text: None).update_code_index(
         ToolCall("edit", "Edit", ["made.py", "", [{"op": "create", "content": "x\n"}]]),
         "<Edit path=bad />",
     )
@@ -453,7 +462,7 @@ def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, mon
     ToolError handler, taking the turn with it."""
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -482,7 +491,7 @@ def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
     target by exact text."""
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("x\na\ntarget\nc\nd\n", encoding="utf-8")
     key = view(s, "code.txt")

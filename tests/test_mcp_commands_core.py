@@ -1,4 +1,5 @@
 """mcp commands core (split from tests/test_mcp_commands.py)."""
+
 import asyncio
 from types import SimpleNamespace
 from typing import ClassVar
@@ -18,14 +19,7 @@ from wizolt.config import (
 from wizolt.engine import Agent
 from wizolt.render import UiPrinter
 from wizolt.session import Session, SessionSnapshotStore, bootstrap_features
-from wizolt.tools import CodeIndex
 from wizolt.tui import TUI_MODAL_PENDING, ChoiceViewState
-
-
-async def _refuses_refresh(_index) -> bool:
-    """Stands in for the code index refresh: this scenario has no index to refresh."""
-    return False
-
 
 
 class TestMCPCommands:
@@ -37,7 +31,6 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "discover_auto", as_async(lambda: calls.append("auto")))
         monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
         monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-        monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
         command_loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
         command_loop.start_session()
@@ -347,13 +340,15 @@ class TestMCPCommands:
         monkeypatch.setattr(
             s.mcp,
             "_authenticate_oauth",
-            as_async(lambda config, notify=None: "\n".join(
-                [
-                    "MCP OAuth authentication failed for oauth: authorization denied",
-                    "No authorization URL was provided by the server.",
-                    "Open MCP URL: " + config.url,
-                ]
-            )),
+            as_async(
+                lambda config, notify=None: "\n".join(
+                    [
+                        "MCP OAuth authentication failed for oauth: authorization denied",
+                        "No authorization URL was provided by the server.",
+                        "Open MCP URL: " + config.url,
+                    ]
+                )
+            ),
         )
 
         async def tools(_config, _headers):
@@ -669,6 +664,7 @@ class TestMCPCommands:
         result = await mcp_command(loop, "")
         assert "not configured" in result
 
+
 class TestMCPCommandsByName:
     async def test_mcp_tools_specific_server(self, monkeypatch):
         """/mcp tools NAME points disconnected servers to connect."""
@@ -684,6 +680,7 @@ class TestMCPCommandsByName:
 
         assert discovered == []
         assert result == "MCP server 'a' is not connected; run /mcp connect a"
+
 
 class TestMCPTabCompletion:
     def test_mcp_command_completion(self):

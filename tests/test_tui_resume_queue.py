@@ -1,4 +1,5 @@
 """tui resume queue (split from tests/test_tui_runtime.py)."""
+
 import asyncio
 import threading
 import time
@@ -18,14 +19,7 @@ from wizolt.cli.update import UpdateChecker
 from wizolt.engine import Agent
 from wizolt.prompts import LIVE_FOLLOWUP_PREFIX
 from wizolt.session import Session, SessionSnapshotStore
-from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
-
-
-async def _refuses_refresh(_index) -> bool:
-    """Stands in for the code index refresh: this scenario has no index to refresh."""
-    return False
-
 
 
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):
@@ -51,7 +45,6 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
 
     command_loop.agent.model = RecordingModel()
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
     monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
@@ -77,6 +70,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     assert requests[0].index("queued one") < requests[0].index(marked_followup)
     assert restored.pending_user_inputs == []
 
+
 def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     first_request = threading.Event()
@@ -98,7 +92,6 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
 
     command_loop.agent.model = RecordingModel()
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
     monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
@@ -125,6 +118,7 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
 
     assert not driver.is_alive()
     assert "queued task" in requests[1]
+
 
 async def test_resend_command_only_resends_while_running(tmp_path):
     command_loop = loop(tmp_path)
@@ -155,6 +149,7 @@ async def test_resend_command_only_resends_while_running(tmp_path):
     command_loop.session.state.model_retry_until = 0.0
     await command_loop.command("/resend")
     assert retried == [True]
+
 
 def test_manual_resend_preserves_stream_driven_status(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -193,6 +188,7 @@ def test_manual_resend_with_no_attempt_in_flight_changes_nothing(tmp_path):
     assert command_loop.session.state.manual_model_retry_requested is False
     assert command_loop.session.state.model_retry_count == 0
 
+
 def test_recalling_sent_input_does_not_leave_revising_status(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
@@ -215,6 +211,7 @@ def test_recalling_sent_input_does_not_leave_revising_status(tmp_path, monkeypat
     assert "responding" in responding
     assert "revising" not in responding
     assert command_loop.session.state.manual_model_retry_requested is True
+
 
 def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -244,6 +241,7 @@ def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path,
 
     command_loop.session.state.current_model_call_started_at = 0.0
     assert all(text != "● " for _, text in command_loop.view.queue_divider_fragments())
+
 
 def test_retry_divider_shows_full_retry_text_while_waiting(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -281,6 +279,7 @@ def test_retry_divider_shows_full_retry_text_while_waiting(tmp_path, monkeypatch
     assert "retrying · attempt 3/6" in after_text
     assert "working" not in after_text
 
+
 def test_tui_activity_uses_transient_cancelling_status(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
@@ -290,6 +289,7 @@ def test_tui_activity_uses_transient_cancelling_status(tmp_path):
 
     assert "cancelling" in text
     assert "working" not in text
+
 
 def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -302,13 +302,16 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
     )
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
+    monkeypatch.setattr(
+        render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values)
+    )
 
     command_loop.render_resumed_session()
 
     text = "".join(printed)
     assert "most recent question" in text
     assert "most recent answer" in text
+
 
 def test_resume_redraws_only_the_recent_turns_and_says_so(tmp_path, monkeypatch):
     """A long session does not flood the terminal on resume: only the newest turns are redrawn,
@@ -322,7 +325,9 @@ def test_resume_redraws_only_the_recent_turns_and_says_so(tmp_path, monkeypatch)
     command_loop.session.messages.extend(messages)
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
+    monkeypatch.setattr(
+        render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values)
+    )
 
     command_loop.render_resumed_session()
 
@@ -331,6 +336,7 @@ def test_resume_redraws_only_the_recent_turns_and_says_so(tmp_path, monkeypatch)
     assert "question 22" in text and "answer 22" in text  # the newest turn is redrawn
     assert "question 3" in text  # the first visible turn is redrawn
     assert "question 0" not in text and "answer 0" not in text  # the earliest turns are not
+
 
 def test_resume_redraw_keeps_tool_pairing_after_truncation(tmp_path, monkeypatch):
     """Truncating the redraw still pairs the visible turns with their own tool results: the
@@ -353,7 +359,9 @@ def test_resume_redraw_keeps_tool_pairing_after_truncation(tmp_path, monkeypatch
     command_loop.session.messages.extend(messages)
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
+    monkeypatch.setattr(
+        render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values)
+    )
 
     command_loop.render_resumed_session()
 
@@ -361,6 +369,7 @@ def test_resume_redraw_keeps_tool_pairing_after_truncation(tmp_path, monkeypatch
     assert "2 earlier turns not redrawn (still in context)" in text
     assert "tr.2" in text  # the newest call pairs with its own record
     assert "tr.1" not in text  # the folded turn's record is not rendered
+
 
 async def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -370,7 +379,9 @@ async def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     status_entry = replace(loop_module.COMMAND_LOOKUP["/status"], handler=lambda _loop, _args: "status marker")
     monkeypatch.setattr(loop_module, "COMMAND_LOOKUP", {**loop_module.COMMAND_LOOKUP, "/status": status_entry})
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
+    monkeypatch.setattr(
+        render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values)
+    )
 
     assert await command_loop.command("/help") == (True, False)
     assert await command_loop.command("/status") == (True, False)

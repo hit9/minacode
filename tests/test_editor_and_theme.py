@@ -1,9 +1,11 @@
 """editor and theme (split from tests/test_ui_render.py)."""
+
 import asyncio
 import os
 import pathlib
 import signal
 import sys
+import threading
 
 import pytest
 from prompt_toolkit.formatted_text import to_formatted_text
@@ -27,8 +29,10 @@ def test_theme_palettes_have_identical_complete_keys():
     assert all(Theme.DARK.values())
     assert all(Theme.LIGHT.values())
 
+
 def test_status_roles_have_theme_entries():
     assert all(f"status.{role}" in Theme.DARK and f"status.{role}" in Theme.LIGHT for role in StatusBar.ROLE_KEYS)
+
 
 def test_editor_command_prefers_visual_then_editor_then_vim(monkeypatch):
     monkeypatch.delenv("VISUAL", raising=False)
@@ -41,6 +45,7 @@ def test_editor_command_prefers_visual_then_editor_then_vim(monkeypatch):
     monkeypatch.setenv("VISUAL", "nvim")
     assert TuiApp.editor_command() == ["nvim"]
 
+
 def fake_editor(tmp_path, monkeypatch, script: str) -> pathlib.Path:
     """Install a shell script as $EDITOR. `$1` is the temp file the editor is handed."""
     editor = tmp_path / "fake_editor.sh"
@@ -50,11 +55,13 @@ def fake_editor(tmp_path, monkeypatch, script: str) -> pathlib.Path:
     monkeypatch.delenv("VISUAL", raising=False)
     return editor
 
+
 async def test_edit_text_in_editor_roundtrips_edited_content(tmp_path, monkeypatch):
     # A fake $EDITOR that appends a marker to whatever file it is given.
     fake_editor(tmp_path, monkeypatch, 'printf " EDITED" >> "$1"\n')
 
     assert await TuiApp()._edit_text_in_editor("hello") == "hello EDITED"
+
 
 async def test_edit_text_in_editor_leaves_input_untouched_when_editor_missing(monkeypatch):
     monkeypatch.setenv("EDITOR", "definitely-not-an-editor-binary")
@@ -62,11 +69,13 @@ async def test_edit_text_in_editor_leaves_input_untouched_when_editor_missing(mo
 
     assert await TuiApp()._edit_text_in_editor("hello") is None
 
+
 async def test_edit_text_in_editor_leaves_input_untouched_on_nonzero_exit(tmp_path, monkeypatch):
     """A non-zero exit (`:cq`, a crash) means "throw this away": the file is not even read."""
     fake_editor(tmp_path, monkeypatch, 'printf " EDITED" >> "$1"\nexit 3\n')
 
     assert await TuiApp()._edit_text_in_editor("hello") is None
+
 
 async def test_edit_text_in_editor_removes_its_temp_file(tmp_path, monkeypatch):
     seen = tmp_path / "seen-path"
@@ -75,6 +84,7 @@ async def test_edit_text_in_editor_removes_its_temp_file(tmp_path, monkeypatch):
     await TuiApp()._edit_text_in_editor("hello")
 
     assert not os.path.exists(seen.read_text())
+
 
 async def test_a_missing_editor_still_removes_its_temp_file(tmp_path, monkeypatch):
     """The launch failed after the file existed; `finally` is what keeps /tmp from filling up."""
@@ -88,13 +98,39 @@ async def test_a_missing_editor_still_removes_its_temp_file(tmp_path, monkeypatc
 
     assert created and not os.path.exists(created[0].path)
 
+
+async def test_cancelling_temp_file_acquisition_removes_the_created_file(monkeypatch):
+    """Cancellation can arrive after mkstemp succeeded but before its worker returns ownership."""
+    entered = threading.Event()
+    release = threading.Event()
+    created = []
+    real_create = app_module._EditorTempFile.create
+
+    def slow_create(text):
+        temp = real_create(text)
+        created.append(temp)
+        entered.set()
+        release.wait(5)
+        return temp
+
+    monkeypatch.setattr(app_module._EditorTempFile, "create", classmethod(lambda _cls, text: slow_create(text)))
+    edit = asyncio.create_task(TuiApp()._edit_text_in_editor("hello"))
+    assert await asyncio.to_thread(entered.wait, 5)
+    edit.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await edit
+    assert created and not os.path.exists(created[0].path)
+
+
 async def test_cancelling_the_editor_terminates_reaps_and_cleans_up(tmp_path, monkeypatch):
     """Cancellation ends the editor rather than leaving it holding the terminal.
 
     It is not enough for the awaiting task to go away: the child is the runtime's own, so it is
     signalled, waited for, and its scratch file removed before the cancellation is reported."""
     started = tmp_path / "started"
-    fake_editor(tmp_path, monkeypatch, f'touch {started}\nsleep 30\n')
+    fake_editor(tmp_path, monkeypatch, f"touch {started}\nsleep 30\n")
     created: list = []
     real_create = app_module._EditorTempFile.create
     monkeypatch.setattr(app_module._EditorTempFile, "create", classmethod(lambda cls, text: created.append(real_create(text)) or created[-1]))
@@ -118,6 +154,7 @@ async def test_cancelling_the_editor_terminates_reaps_and_cleans_up(tmp_path, mo
 
     assert processes and processes[0].returncode is not None  # signalled and reaped, not orphaned
     assert created and not os.path.exists(created[0].path)
+
 
 async def test_an_editor_that_ignores_term_is_killed_after_the_grace_period(tmp_path, monkeypatch):
     """TERM first, because a real editor may want to save; KILL because it may also never leave."""
@@ -144,6 +181,7 @@ async def test_an_editor_that_ignores_term_is_killed_after_the_grace_period(tmp_
 
     assert processes[0].returncode == -signal.SIGKILL
 
+
 async def test_the_loop_keeps_running_while_the_editor_is_open(tmp_path, monkeypatch):
     """The editor is awaited, not waited on: a heartbeat task still advances while it is up."""
     fake_editor(tmp_path, monkeypatch, "sleep 0.3\n")
@@ -163,6 +201,7 @@ async def test_the_loop_keeps_running_while_the_editor_is_open(tmp_path, monkeyp
 
     assert beats > 5
 
+
 def test_editor_text_compose_and_strip_roundtrip():
     # The editor receives the draft plus the agent's reply below a scissors line; stripping
     # drops the reference context and returns exactly the (possibly edited) draft.
@@ -175,10 +214,12 @@ def test_editor_text_compose_and_strip_roundtrip():
     # Editing above the scissors line survives; everything below it is dropped.
     assert TuiApp._strip_editor_context(composed.replace("my draft", "edited draft"), marker) == "edited draft"
 
+
 def test_editor_text_compose_without_context_is_identity():
     assert TuiApp._compose_editor_text("draft", "") == ("draft", "")
     assert TuiApp._compose_editor_text("draft", "   ") == ("draft", "")
     assert TuiApp._strip_editor_context("plain text\n", "") == "plain text"
+
 
 def test_editor_strip_preserves_a_scissors_line_the_user_typed():
     # Only the marker this composition added is stripped; a scissors line already in the draft
@@ -187,6 +228,7 @@ def test_editor_strip_preserves_a_scissors_line_the_user_typed():
     assert TuiApp._strip_editor_context(draft, "") == draft
     composed, marker = TuiApp._compose_editor_text(draft, "reply")
     assert TuiApp._strip_editor_context(composed, marker) == draft
+
 
 def test_editor_context_returns_last_assistant_reply(tmp_path):
     command_loop = loop(tmp_path)
@@ -199,6 +241,7 @@ def test_editor_context_returns_last_assistant_reply(tmp_path):
 
     command_loop.session.messages = [{"role": "user", "content": "only a question"}]
     assert command_loop.editor_context() == ""
+
 
 def test_editor_context_combines_recent_replies(tmp_path):
     command_loop = loop(tmp_path)
@@ -215,6 +258,7 @@ def test_editor_context_combines_recent_replies(tmp_path):
     assert lines[2] == "long line 0"
     assert lines[-1] == "long line 149"
 
+
 def test_editor_context_caps_long_replies_to_recent_lines(tmp_path):
     command_loop = loop(tmp_path)
     total = command_loop.EDITOR_CONTEXT_MAX_LINES + 50
@@ -226,6 +270,7 @@ def test_editor_context_caps_long_replies_to_recent_lines(tmp_path):
     assert lines[0] == command_loop.EDITOR_CONTEXT_ELLIPSIS
     assert lines[1] == "line 51"
     assert lines[-1] == f"line {total - 1}"
+
 
 def test_editor_context_combined_budget_keeps_latest_without_note(tmp_path):
     command_loop = loop(tmp_path)
@@ -243,6 +288,7 @@ def test_editor_context_combined_budget_keeps_latest_without_note(tmp_path):
     assert not any(line.startswith("# [...") for line in lines)
     assert lines[-1] == f"latest {max_lines - 1}"
 
+
 def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     for mode, expected in (("dark", "#e0a96d"), ("light", "#9a5b2e")):
@@ -250,8 +296,10 @@ def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeyp
         assert UiPrinter.user_log_style() == expected
         assert command_loop.view.style().get_attrs_for_style_str("").color == ""
 
+
 def test_tool_labels_keep_legacy_green_style():
     assert UiPrinter.LOG_STYLES[LogRole.TOOL][0] == "ansigreen"
+
 
 @pytest.mark.parametrize(("mode", "rgb"), [("dark", "224;169;109"), ("light", "154;91;46")])
 def test_resumed_user_rendering_emits_desert_truecolor(mode, rgb, monkeypatch):
@@ -263,6 +311,7 @@ def test_resumed_user_rendering_emits_desert_truecolor(mode, rgb, monkeypatch):
         ui.render_message(console, "hello", "user", False, 0)
 
     assert f"\x1b[38;2;{rgb}m• hello\x1b[0m" in capture.get()
+
 
 @pytest.mark.parametrize(
     ("configured", "colorfgbg", "expected"),
@@ -280,6 +329,7 @@ def test_theme_resolution(configured, colorfgbg, expected, monkeypatch):
     monkeypatch.setenv("COLORFGBG", colorfgbg)
     assert Theme.resolve(configured) == expected
 
+
 def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch):
     line = LogLine("Search", '"needle" path=src 0:20', LogRole.TOOL, syntax="tool-args")
     block = LogBlock([line])
@@ -292,6 +342,7 @@ def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch)
 
     assert rendered[0][0] == rendered[1][0] == '  Search  "needle" path=src 0:20\n'
     assert rendered[0][1] != rendered[1][1]
+
 
 def test_standalone_turn_rows_carry_no_edge_glyph(tmp_path, monkeypatch):
     """Standalone turn-level rows must not draw an edge. A BRANCH on a row with no parent line
@@ -313,6 +364,7 @@ def test_standalone_turn_rows_carry_no_edge_glyph(tmp_path, monkeypatch):
     user_echo = "\u2022 [Image #1 \u00b7 ef739e37-....png]"
     # All three rows start their content in the same column (two-cell indent, no edge).
     assert builtin.index("search") == tool_root.index("Bash") == user_echo.index("[Image") == 2
+
 
 def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")

@@ -374,3 +374,17 @@ async def test_manual_sync_activates_a_newer_catalog_at_the_command_boundary(tmp
     assert snapshot.version == data["version"]
     assert runtime.snapshot.version == data["version"]
     assert runtime.source == "cached"
+
+
+async def test_manual_sync_persists_state_off_the_event_loop(tmp_path, monkeypatch):
+    runtime = CatalogRuntime(str(tmp_path))
+    loop_thread = threading.get_ident()
+    save_threads = []
+    real_save = runtime._save_state
+
+    monkeypatch.setattr(runtime.repository, "fetch", lambda: runtime.snapshot)
+    monkeypatch.setattr(runtime, "_save_state", lambda: save_threads.append(threading.get_ident()) or real_save())
+
+    await runtime.sync()
+
+    assert save_threads and save_threads[0] != loop_thread

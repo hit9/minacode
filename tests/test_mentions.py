@@ -4,7 +4,6 @@ the FILE MENTIONS resolver (T5), and the 50k-path performance guard (T7)."""
 import asyncio
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 
@@ -13,13 +12,23 @@ from agent_harness import session
 from prompt_toolkit.document import Document
 
 from wizolt.cli import TuiRuntime
-
 from wizolt.cli.view import CommandCompleter
 from wizolt.mentions import FileMentions, FzfPicker, active_mention, encode_file_mention, scan_mentions
 
 
 def completions(completer, text):
     return [c.text for c in completer.get_completions(Document(text), None)]
+
+
+async def run_git(cwd, *args):
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        cwd=cwd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    assert await process.wait() == 0
 
 
 # --- T1: grammar ---
@@ -142,13 +151,13 @@ async def test_path_source_non_git_walk(tmp_path):
 
 
 async def test_path_source_git_repo_and_untracked_appears(tmp_path):
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+    await run_git(tmp_path, "init", "-q")
+    await run_git(tmp_path, "config", "user.email", "test@example.com")
+    await run_git(tmp_path, "config", "user.name", "test")
     (tmp_path / "tracked.py").write_text("", encoding="utf-8")
     (tmp_path / "tracked.tmp").write_text("", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
+    await run_git(tmp_path, "add", ".")
+    await run_git(tmp_path, "commit", "-qm", "init")
     (tmp_path / "untracked.py").write_text("", encoding="utf-8")
     (tmp_path / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
     (tmp_path / "ignored.tmp").write_text("", encoding="utf-8")
@@ -162,7 +171,7 @@ async def test_path_source_git_repo_and_untracked_appears(tmp_path):
 
 
 async def test_path_source_git_nested_ignore_negation_and_unusual_names(tmp_path):
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    await run_git(tmp_path, "init", "-q")
     nested = tmp_path / "nested"
     nested.mkdir()
     (nested / ".gitignore").write_text("*.tmp\n!keep.tmp\n", encoding="utf-8")
@@ -316,8 +325,7 @@ def test_resolver_deduplicates_mentions(tmp_path):
 def fake_fzf(tmp_path, body):
     path = tmp_path / "fake-fzf"
     path.write_text(
-        "#!/usr/bin/env python3\n"
-        "import os, sys\n" + body,
+        "#!/usr/bin/env python3\nimport os, sys\n" + body,
         encoding="utf-8",
     )
     path.chmod(0o755)
@@ -436,6 +444,65 @@ async def test_concurrent_mention_refreshes_coalesce_onto_one_scan(tmp_path):
     assert {rel for _, rel in results[0]} == {"a.py"}
 
 
+async def test_cancelling_one_candidate_waiter_keeps_the_shared_scan_alive(tmp_path, monkeypatch):
+    """A picker owns only its wait: the CommandLoop-owned scan may have other consumers."""
+    from tui_harness import loop as command_loop_for
+
+    command_loop = command_loop_for(tmp_path)
+    mentions = command_loop.session.mentions
+    assert mentions is not None
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def refresh():
+        started.set()
+        await release.wait()
+        return (("a.py", "a.py"),)
+
+    monkeypatch.setattr(mentions, "refresh", refresh)
+    command_loop.open_background()
+    try:
+        shared = command_loop.refresh_mentions()
+        assert shared is not None
+        waiter = asyncio.create_task(mentions.candidates())
+        await started.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert not shared.done()
+        release.set()
+        assert await shared == (("a.py", "a.py"),)
+    finally:
+        await command_loop.close_background()
+
+
+async def test_command_loop_owns_and_settles_the_file_picker(tmp_path, monkeypatch):
+    from tui_harness import loop as command_loop_for
+
+    command_loop = command_loop_for(tmp_path)
+    mentions = command_loop.session.mentions
+    assert mentions is not None
+    started = asyncio.Event()
+    settled = asyncio.Event()
+
+    async def pick(_query):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            settled.set()
+
+    monkeypatch.setattr(mentions.picker, "pick", pick)
+    command_loop.open_background()
+    waiting = asyncio.create_task(command_loop.pick_file(""))
+    await started.wait()
+    await command_loop.close_background()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert settled.is_set()
+
+
 async def test_fzf_picker_uses_stale_snapshot_while_refreshing(monkeypatch, tmp_path):
     selected = "a.py"
     (tmp_path / selected).write_text("", encoding="utf-8")
@@ -445,9 +512,7 @@ async def test_fzf_picker_uses_stale_snapshot_while_refreshing(monkeypatch, tmp_
     monkeypatch.setattr(mentions, "refresh_owner", lambda: scheduled.append(True))
     executable = fake_fzf(
         tmp_path,
-        "items = sys.stdin.buffer.read().split(b'\\0')\n"
-        f"assert {selected!r}.encode() in items\n"
-        f"sys.stdout.buffer.write({selected!r}.encode() + b'\\0')\n",
+        f"items = sys.stdin.buffer.read().split(b'\\0')\nassert {selected!r}.encode() in items\nsys.stdout.buffer.write({selected!r}.encode() + b'\\0')\n",
     )
 
     result = await FzfPicker(mentions, executable).pick("")
@@ -476,10 +541,12 @@ async def test_a_newer_completion_query_supersedes_an_older_one(tmp_path, monkey
     mentions = session(tmp_path).mentions
     mentions._paths_cache = (time.monotonic(), (("notes.txt", "notes.txt"), ("other.txt", "other.txt")))
     ready = []
+    ranked = []
     release_first = asyncio.Event()
     real_matches = FileMentions._literal_matches
 
     def slow_first(paths, query):
+        ranked.append(query)
         if query == "n":
             while not release_first.is_set():
                 time.sleep(0.005)
@@ -491,9 +558,11 @@ async def test_a_newer_completion_query_supersedes_an_older_one(tmp_path, monkey
     await asyncio.sleep(0.02)
     second = asyncio.ensure_future(mentions.complete("other", lambda: ready.append("other")))
     await second
+    assert ranked == ["n"]  # the newer request replaced queued work; it did not start a second worker
     release_first.set()
     await first
 
+    assert ranked == ["n", "other"]
     assert ready == ["other"]  # the superseded query never notified
     assert mentions.cached_matches("other") == ("other.txt",)
     assert mentions.cached_matches("n") == ()

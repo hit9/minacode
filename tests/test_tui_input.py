@@ -1,4 +1,5 @@
 """tui input (split from tests/test_tui_app.py)."""
+
 import asyncio
 import os
 import signal
@@ -29,14 +30,7 @@ from wizolt.config import (
 )
 from wizolt.engine import Agent
 from wizolt.session import Session, SessionSnapshotStore
-from wizolt.tools import CodeIndex
 from wizolt.tui import CallbackPlaceholder, TuiApp
-
-
-async def _refuses_refresh(_index) -> bool:
-    """Stands in for the code index refresh: this scenario has no index to refresh."""
-    return False
-
 
 
 def test_invalidate_ignores_redraw_that_loses_application_shutdown_race():
@@ -100,7 +94,6 @@ def ctrl_c_queue_scenario(cwd, results):
 
     command_loop.agent.model = RecordingModel()
     SessionSnapshotStore.clean_expired = lambda _session: 0
-    CodeIndex.refresh_existing = _refuses_refresh
     CommandLoop.schedule_index_freshness = lambda _loop: None
     UpdateChecker.load_cached = lambda _checker: False
     real_application = Application
@@ -162,6 +155,7 @@ def ctrl_c_queue_scenario(cwd, results):
     except BaseException as error:  # noqa: BLE001 - surface every failure from the TUI thread onto the test
         results.put({"fatal": repr(error)})
 
+
 def test_tui_app_build_layout_composes_input_and_status():
     app = TuiApp()
     layout = app.build_layout()
@@ -170,6 +164,7 @@ def test_tui_app_build_layout_composes_input_and_status():
     # Layout is composable and the focused element accepts typed input via app.input_buffer.
     app.input_buffer.insert_text("hi")
     assert app.input_buffer.text == "hi"
+
 
 def test_tui_approval_prompt_keeps_connector_style_and_spinner(monkeypatch):
     app = TuiApp()
@@ -184,11 +179,13 @@ def test_tui_approval_prompt_keeps_connector_style_and_spinner(monkeypatch):
         ("class:approval.wait", "/ "),
     ]
 
+
 def test_tui_loading_models_prompt_is_simple_and_dim():
     app = TuiApp()
     app.set_dispatching("Loading models...")
 
     assert app.status_fragments() == [("ansibrightblack", "Loading models...")]
+
 
 def test_tui_non_editing_modes_clear_stale_input_errors():
     app = TuiApp()
@@ -200,6 +197,7 @@ def test_tui_non_editing_modes_clear_stale_input_errors():
     app.input_error = "another stale image error"
     app._set_mode("approval", "Continue? ")
     assert app.input_error_fragments() == []
+
 
 def test_stream_deltas_leave_the_frame_rate_to_the_animation_ticker(tmp_path):
     command_loop = loop(tmp_path)
@@ -222,6 +220,7 @@ def test_stream_deltas_leave_the_frame_rate_to_the_animation_ticker(tmp_path):
     command_loop.model_stream_output("output", "late token")
     assert frames == [True]
 
+
 def test_animation_ticker_only_asks_for_frames_while_the_running_region_is_up():
     app = TuiApp()
     frames = []
@@ -242,6 +241,7 @@ def test_animation_ticker_only_asks_for_frames_while_the_running_region_is_up():
     assert running >= 2  # the divider is animating: keep drawing it
     assert len(frames) == running  # the idle screen has nothing to animate: stop
     assert set(frames) == {"running"}
+
 
 def test_interactive_tui_uses_cpr_again_after_resize_without_warning(monkeypatch):
     class CprOutput(ResizableOutput):
@@ -280,6 +280,7 @@ def test_interactive_tui_uses_cpr_again_after_resize_without_warning(monkeypatch
 
     assert output.requests == 2
 
+
 def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
     received: list[str] = []
     cleared_before_callback = []
@@ -296,6 +297,7 @@ def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
     assert cleared_before_callback == [""]
     assert app.input_buffer.text == ""
 
+
 def test_tui_running_submit_clears_buffer_before_callback():
     received = []
     app = None
@@ -311,6 +313,7 @@ def test_tui_running_submit_clears_buffer_before_callback():
     assert received == [("queued task", "")]
     assert app.input_buffer.text == ""
 
+
 def test_interactive_tui_decodes_submit_and_eof(monkeypatch):
     received = []
     app = None
@@ -325,6 +328,7 @@ def test_interactive_tui_decodes_submit_and_eof(monkeypatch):
 
     assert received == ["hello from pipe"]
     assert app.app is None
+
 
 @pytest.mark.parametrize(
     ("mode", "draft", "expected_interrupts"),
@@ -364,6 +368,7 @@ def test_interactive_tui_ctrl_c_input_state_matrix(monkeypatch, tmp_path, mode, 
     assert interrupts == expected_interrupts
     assert output == []
 
+
 def test_tui_ctrl_u_clears_the_idle_draft_without_cancelling(monkeypatch):
     """Ctrl-U discards the line. Unlike Ctrl-C it carries no other meaning, so nothing is
     cancelled."""
@@ -385,6 +390,7 @@ def test_tui_ctrl_u_clears_the_idle_draft_without_cancelling(monkeypatch):
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert interrupted == []
+
 
 def test_tui_ctrl_u_clears_the_running_draft_without_interrupting(monkeypatch):
     """In the queued-input editor Ctrl-C interrupts the turn, so clearing a draft there needs its
@@ -408,6 +414,7 @@ def test_tui_ctrl_u_clears_the_running_draft_without_interrupting(monkeypatch):
 
     assert interrupted == []
 
+
 def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monkeypatch):
     scenario_session = session(tmp_path)
     scenario_session.messages.append({"role": "user", "content": "persist me"})
@@ -418,7 +425,6 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
         output_fn=output.append,
     )
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
     full_screen_modes = []
@@ -448,6 +454,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
     # second thread whose lifetime the exit path has to join, and none that could outlive it.
     assert "tui" not in threads_while_live
 
+
 def test_interactive_tui_control_backslash_forces_exit(monkeypatch):
     forced = []
     app = None
@@ -461,6 +468,7 @@ def test_interactive_tui_control_backslash_forces_exit(monkeypatch):
     run_interactive_tui(monkeypatch, app, text="\x1c")
 
     assert forced == [True]
+
 
 def test_interactive_tui_recalls_and_submits_queued_input(monkeypatch):
     received = []
@@ -482,6 +490,7 @@ def test_interactive_tui_recalls_and_submits_queued_input(monkeypatch):
 
     assert recalled == [True]
     assert received == ["edit queued message"]
+
 
 @pytest.mark.parametrize("history_key", ["\x10", "\x1b[A"])
 def test_interactive_tui_history_keys_recall_when_queue_is_empty(monkeypatch, tmp_path, history_key):
@@ -505,6 +514,7 @@ def test_interactive_tui_history_keys_recall_when_queue_is_empty(monkeypatch, tm
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert recalled == ["queued message"]
+
 
 def test_interactive_tui_history_recall_wins_the_race_with_the_async_history_loader(monkeypatch, tmp_path):
     """Ctrl-P right after Enter must recall the entry the submit just appended.
@@ -534,6 +544,7 @@ def test_interactive_tui_history_recall_wins_the_race_with_the_async_history_loa
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert app.input_buffer.text == "queued message"
+
 
 def test_interactive_tui_manual_history_load_matches_the_async_loader(monkeypatch, tmp_path):
     """The synchronous history load must reproduce the native async loader exactly.
@@ -598,6 +609,7 @@ def test_interactive_tui_manual_history_load_matches_the_async_loader(monkeypatc
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
+
 def test_interactive_tui_recall_over_a_draft_keeps_the_cursor(monkeypatch, tmp_path):
     """A recall over a draft that matches no history entry recalls nothing and leaves the cursor.
 
@@ -629,6 +641,7 @@ def test_interactive_tui_recall_over_a_draft_keeps_the_cursor(monkeypatch, tmp_p
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
+
 
 def test_interactive_tui_ctrl_r_search_enter_fills_input_without_submitting(monkeypatch, tmp_path):
     received = []
@@ -668,6 +681,7 @@ def test_interactive_tui_ctrl_r_search_enter_fills_input_without_submitting(monk
 
     assert received == ["earlier prompt", "earlier prompt"]
 
+
 @pytest.mark.parametrize("abort_key", ["\x03", "\x15"])
 def test_interactive_tui_search_abort_keys_restore_pre_search_input(monkeypatch, tmp_path, abort_key):
     received = []
@@ -703,6 +717,7 @@ def test_interactive_tui_search_abort_keys_restore_pre_search_input(monkeypatch,
 
     assert received == ["earlier prompt"]
 
+
 def test_interactive_tui_tab_inserts_single_completion_without_menu(monkeypatch):
     app = TuiApp(completer=CommandCompleter())
 
@@ -716,6 +731,7 @@ def test_interactive_tui_tab_inserts_single_completion_without_menu(monkeypatch)
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert app.input_buffer.text == "/provider"
+
 
 def test_interactive_tui_bracketed_paste_displays_all_lines(monkeypatch):
     app = TuiApp()
@@ -744,6 +760,7 @@ def test_interactive_tui_bracketed_paste_displays_all_lines(monkeypatch):
     assert app.input_buffer.text == pasted
     assert input_heights and input_heights[-1] == 10
 
+
 def test_interactive_tui_keeps_legacy_padding_around_input(monkeypatch):
     app = TuiApp()
     frames = []
@@ -769,6 +786,7 @@ def test_interactive_tui_keeps_legacy_padding_around_input(monkeypatch):
     prompt, status = frames[0]
     assert prompt.ypos == 1
     assert status.ypos == prompt.ypos + prompt.height + 1
+
 
 def test_interactive_tui_keeps_padding_around_running_queue(monkeypatch):
     app = TuiApp(activity_fragments_fn=lambda: [("", "working\n+ queued")])
@@ -799,6 +817,7 @@ def test_interactive_tui_keeps_padding_around_running_queue(monkeypatch):
     assert prompt.ypos == activity.ypos + activity.height + 1
     assert status.ypos == prompt.ypos + prompt.height + 1
 
+
 def test_interactive_tui_approval_has_no_leading_blank_row(monkeypatch):
     app = TuiApp()
     app._set_mode("approval", "    ├ [Y/n or reason] ")
@@ -826,6 +845,7 @@ def test_interactive_tui_approval_has_no_leading_blank_row(monkeypatch):
     assert prompt.ypos == 0
     assert status.ypos == prompt.ypos + prompt.height + 1
 
+
 def test_tui_running_input_queues_one_multiline_message():
     received: list[str] = []
     app = TuiApp(on_running_submit=received.append)
@@ -837,6 +857,7 @@ def test_tui_running_input_queues_one_multiline_message():
     assert received == ["first\nsecond\nthird"]
     assert app.input_buffer.text == ""
 
+
 def test_tui_running_input_drops_whitespace_only_draft():
     received: list[str] = []
     app = TuiApp(on_running_submit=received.append)
@@ -847,6 +868,7 @@ def test_tui_running_input_drops_whitespace_only_draft():
 
     assert received == []
     assert app.input_buffer.text == ""
+
 
 def test_tui_running_input_shows_contextual_placeholder():
     hint = {"text": "Enter queues follow-up"}
@@ -869,6 +891,7 @@ def test_tui_running_input_shows_contextual_placeholder():
     assert transform("") == [("class:queue.hint", "Enter queues follow-up")]
     assert transform("draft") == []
 
+
 def test_tui_running_queue_hint_shows_recall_and_interrupt(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
@@ -876,6 +899,7 @@ def test_tui_running_queue_hint_shows_recall_and_interrupt(tmp_path):
     command_loop.session.enqueue_user_input("queued")
 
     assert command_loop.view.tui_input_hint() == "↑ recalls queued · Ctrl-C interrupts"
+
 
 def test_edit_delta_frames_minimal_edit():
     delta = tui_module._edit_delta("please refactor the auth module", "please refactor the auth")
@@ -886,6 +910,7 @@ def test_edit_delta_frames_minimal_edit():
     assert (delta.prefix, delta.removed, delta.inserted) == (4, "", "")
     delta = tui_module._edit_delta("", "added")
     assert (delta.prefix, delta.removed, delta.inserted) == (0, "", "added")
+
 
 def test_tui_sigint_interrupts_dispatch_and_running_modes():
     interrupted = []
@@ -901,6 +926,7 @@ def test_tui_sigint_interrupts_dispatch_and_running_modes():
 
     assert interrupted == [True, True]
 
+
 def test_tui_ctrl_o_opens_latest_bash_output():
     expanded = []
     app = TuiApp(on_expand_output=lambda: expanded.append(True))
@@ -909,6 +935,7 @@ def test_tui_ctrl_o_opens_latest_bash_output():
     binding.handler(type("Event", (), {})())
 
     assert expanded == [True]
+
 
 @pytest.mark.parametrize("mode", ["chat", "running"])
 def test_tui_ctrl_d_deletes_at_cursor_when_input_is_nonempty(mode):
@@ -921,6 +948,7 @@ def test_tui_ctrl_d_deletes_at_cursor_when_input_is_nonempty(mode):
     binding.handler(event)
 
     assert app.input_buffer.text == "ac"
+
 
 @pytest.mark.parametrize("recall_key", [(Keys.Up,), (Keys.ControlP,)])
 def test_tui_running_recall_removes_latest_pending_message(recall_key):
@@ -939,6 +967,7 @@ def test_tui_running_recall_removes_latest_pending_message(recall_key):
 
     assert pending == ["first"]
     assert app.input_buffer.text == "second"
+
 
 def test_tui_running_recall_with_draft_walks_history_when_nothing_queued(monkeypatch):
     recalled = []
@@ -967,6 +996,7 @@ def test_tui_running_recall_with_draft_walks_history_when_nothing_queued(monkeyp
     assert auto_up == [1]
     assert cursor_up == []
     assert app.input_buffer.text == "draft text"
+
 
 def test_model_retry_wait_status_labels_live_phase(tmp_path):
     """The model's retry-wait hook is wired to the live phase label: the wait shows as its own

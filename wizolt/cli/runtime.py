@@ -298,7 +298,7 @@ class TuiRuntime:
             input_hint_fn=self.loop.view.tui_input_hint,
             quick_hints_fn=lambda: self.loop.session.quick_hints,
             file_picker_available_fn=self.loop.session.mentions.picker.available if self.loop.session.mentions else None,
-            file_picker_fn=self.loop.session.mentions.picker.pick if self.loop.session.mentions else None,
+            file_picker_fn=self.loop.pick_file if self.loop.session.mentions else None,
             file_complete_fn=self.complete_mentions if self.loop.session.mentions else None,
             editor_context_fn=self.loop.editor_context,
             images=self.loop.session.images,

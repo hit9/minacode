@@ -17,6 +17,10 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 
+async def ignore_index_update(_index, _paths):
+    return ""
+
+
 def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s = session(tmp_path)
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -250,7 +254,7 @@ async def test_cancelling_default_pipe_input_removes_the_reader(tmp_path, monkey
 def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
     s = session(tmp_path)
     outputs = []
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
     content = "".join(f"line {index}\n" for index in range(50))
 

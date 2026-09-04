@@ -10,6 +10,10 @@ from wizolt.runner import ToolRunner
 from wizolt.tools import CodeIndex
 
 
+async def ignore_index_update(_index, _paths):
+    return ""
+
+
 def test_approval_segments_highlight_inline_edit_preview():
     preview = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42"
     block = LogBlock.hierarchy(
@@ -33,7 +37,7 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     # Edit's "auto …" pre-line carries the approval preview; the result line is tagged [auto].
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     (tmp_path / "a.txt").write_text("hello\nworld\n", encoding="utf-8")
     key = view(s, "a.txt")
     out = []
@@ -50,7 +54,7 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
 def test_batch_edit_no_change_reports_no_change(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -66,7 +70,7 @@ def test_batch_edit_no_change_reports_no_change(tmp_path, monkeypatch):
 def test_batch_edit_stale_reports_source_target_changed(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -84,7 +88,12 @@ def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
     updated = []
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
+
+    async def record_update(_index, paths):
+        updated.extend(paths)
+        return ""
+
+    monkeypatch.setattr(CodeIndex, "update", record_update)
     runner = ToolRunner(
         s,
         ContextManager(s),

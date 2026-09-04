@@ -1,4 +1,5 @@
 """code index and update (split from tests/test_core_logic.py)."""
+
 import asyncio
 import threading
 import time
@@ -25,12 +26,6 @@ from wizolt.session import SessionSnapshotStore
 from wizolt.tools import CodeIndex
 
 
-async def _refuses_refresh(_index) -> bool:
-    """Stands in for the code index refresh: this scenario has no index to refresh."""
-    return False
-
-
-
 def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
     s = session(tmp_path)
     inside = tmp_path / "inside.py"
@@ -43,6 +38,7 @@ def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
     paths = CodeIndex(s).update_paths([str(inside), str(outside), str(directory), str(tmp_path / "missing.py")])
 
     assert paths == [str(inside)]
+
 
 async def test_code_index_update_pending_updates_small_batches_and_skips_large_batches(tmp_path, monkeypatch):
     (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
@@ -70,84 +66,98 @@ async def test_code_index_update_pending_updates_small_batches_and_skips_large_b
     assert await CodeIndex(session(tmp_path)).update_pending() == ""
     assert updates == []
 
+
 async def test_code_index_sync_uses_python_api_and_updates_status(tmp_path, monkeypatch):
     calls = []
+    loop_thread = threading.get_ident()
+    status_read_threads = []
 
     monkeypatch.setattr(csi, "clean", lambda root: calls.append(("clean", root)))
     monkeypatch.setattr(csi, "index", lambda root: calls.append(("index", root)))
     monkeypatch.setattr(
         csi,
         "status",
-        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
+        lambda root, *, check=False, max_pending_files=20: (
+            status_read_threads.append(threading.get_ident()) or SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=())
+        ),
     )
 
     s = session(tmp_path)
-    result = await CodeIndex(s).sync(force=True)
+    index = CodeIndex(s)
+    published_threads = []
+    real_set_status = index.set_status
+    monkeypatch.setattr(index, "set_status", lambda *args: published_threads.append(threading.get_ident()) or real_set_status(*args))
+    result = await index.sync(force=True)
 
     assert calls == [("clean", str(tmp_path)), ("index", str(tmp_path))]
     assert "code_index: rebuilt" in result
     assert s.state.code_index_status == "synced"
+    assert status_read_threads and status_read_threads[-1] != loop_thread
+    assert published_threads and published_threads[-1] == loop_thread
 
-async def test_code_index_refresh_existing_awaits_the_library_worker(tmp_path, monkeypatch):
-    """wizolt owns no waiter thread: the library's own worker is polled for having ended."""
-    calls = []
-    finished = threading.Event()
 
-    class Worker:
-        def is_alive(self):
-            return not finished.is_set()
+async def test_cancelling_code_index_update_waits_then_clears_refreshing(tmp_path, monkeypatch):
+    path = tmp_path / "a.py"
+    path.write_text("x = 1\n", encoding="utf-8")
+    entered = threading.Event()
+    release = threading.Event()
 
     monkeypatch.setattr(
         csi,
         "status",
-        lambda root, *, check=False, max_pending_files=20: (
-            calls.append(("status", check)) or SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=())
+        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(
+            status="ready", message="", reason="", pending_changes=0, pending_files=()
         ),
     )
-    monkeypatch.setattr(csi, "refresh_async", lambda root: calls.append(("refresh_async", root)) or Worker())
 
-    s = session(tmp_path)
-    refresh = asyncio.ensure_future(CodeIndex(s).refresh_existing())
-    await asyncio.sleep(0.02)
-    assert s.state.code_index_refreshing is True  # truthful while the worker is up
-    finished.set()
+    def update(_paths, *, root):
+        entered.set()
+        release.wait(5)
 
-    assert await refresh is True
-    assert ("refresh_async", str(tmp_path)) in calls
-    assert ("status", True) in calls
-    assert s.state.code_index_refreshing is False
-    assert s.state.code_index_status == "synced"
+    monkeypatch.setattr(csi, "update", update)
+    index = CodeIndex(session(tmp_path))
+    task = asyncio.create_task(index.update([str(path)]))
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert index.session.state.code_index_refreshing is True
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert index.session.state.code_index_refreshing is False
+    assert index.session.state.code_index_status == "synced"
 
 
-async def test_cancelling_a_refresh_does_not_claim_the_worker_stopped(tmp_path, monkeypatch):
-    """Cancellation is reported only after the upstream worker really ends. Clearing the refreshing
-    flag early would invite the next turn to query an index still being rewritten under it."""
-    finished = threading.Event()
+async def test_cancelling_code_index_sync_waits_then_clears_refreshing(tmp_path, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
 
-    class Worker:
-        def is_alive(self):
-            return not finished.is_set()
+    def index_tree(_root):
+        entered.set()
+        release.wait(5)
 
+    monkeypatch.setattr(csi, "index", index_tree)
     monkeypatch.setattr(
         csi,
         "status",
-        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
+        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(
+            status="ready", message="", reason="", pending_changes=0, pending_files=()
+        ),
     )
-    monkeypatch.setattr(csi, "refresh_async", lambda root: Worker())
+    index = CodeIndex(session(tmp_path))
+    task = asyncio.create_task(index.sync())
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert index.session.state.code_index_refreshing is True
+    release.set()
 
-    s = session(tmp_path)
-    refresh = asyncio.ensure_future(CodeIndex(s).refresh_existing())
-    await asyncio.sleep(0.02)
-    refresh.cancel()
-    await asyncio.sleep(0.05)
-
-    assert not refresh.done()
-    assert s.state.code_index_refreshing is True
-
-    finished.set()
     with pytest.raises(asyncio.CancelledError):
-        await refresh
-    assert s.state.code_index_refreshing is False
+        await task
+    assert index.session.state.code_index_refreshing is False
+    assert index.session.state.code_index_status == "synced"
+
 
 def test_status_bar_animates_refreshing_code_index(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -164,6 +174,7 @@ def test_status_bar_animates_refreshing_code_index(tmp_path, monkeypatch):
     assert first in StatusBar.INDEX_SPINNER
     assert second in StatusBar.INDEX_SPINNER
 
+
 def test_loading_the_cache_claims_the_due_remote_check(tmp_path):
     """`load_cached` is the whole synchronous half: publish the cached version, say if a check is
     due, and claim it so a second caller does not stack a duplicate request."""
@@ -174,12 +185,14 @@ def test_loading_the_cache_claims_the_due_remote_check(tmp_path):
 
     assert UpdateChecker(s).load_cached() is False
 
+
 def test_update_status_signals_newer_version_in_status_bar(tmp_path):
     s = data_session(tmp_path)
     s.update.latest = "99.0.0"
     assert UpdateStatus.version_tuple("1.2") == (1, 2, 0)
     assert s.update.newer_than(__version__)
     assert s.update.latest in StatusBar(s).update_status()
+
 
 def mock_pypi(monkeypatch, handler, seen: dict | None = None):
     """Route the checker's async client at `handler`, recording how it was constructed."""
@@ -208,6 +221,7 @@ async def test_update_check_uses_the_bounded_timeout_and_user_agent(monkeypatch)
     assert seen["user_agent"] == HTTP_USER_AGENT
     assert seen["timeout"] == UpdateChecker.TIMEOUT
 
+
 async def test_update_check_records_a_malformed_response_as_a_status_error(tmp_path, monkeypatch):
     """A proxy that answers with HTML is an expected failure: it leaves a status, not a crash."""
     s = data_session(tmp_path)
@@ -217,6 +231,7 @@ async def test_update_check_records_a_malformed_response_as_a_status_error(tmp_p
 
     assert s.update.error and s.update.checking is False
     assert s.update.latest == ""
+
 
 async def test_update_check_records_a_timeout_as_a_status_error(tmp_path, monkeypatch):
     s = data_session(tmp_path)
@@ -230,6 +245,7 @@ async def test_update_check_records_a_timeout_as_a_status_error(tmp_path, monkey
 
     assert "timed out" in s.update.error
     assert s.update.checking is False
+
 
 async def test_cancelling_the_update_check_closes_the_client(tmp_path, monkeypatch):
     """The request is the runtime's, so cancelling it must close the pool rather than leave a
@@ -258,6 +274,7 @@ async def test_cancelling_the_update_check_closes_the_client(tmp_path, monkeypat
 
     assert closed == [True]
 
+
 def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch):
     s = data_session(tmp_path)
     s.update.latest = "999.0.0"
@@ -265,11 +282,10 @@ def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     monkeypatch.setattr(UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "wizolt"])
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
-
     CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=emitted.append).start_session()
 
     assert any("upgrade with `uv tool upgrade wizolt`" in line for line in emitted)
+
 
 def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
     s = session(tmp_path)
@@ -277,6 +293,7 @@ def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
     assert s.tool_records == []
     assert s.tool_results == {}
     assert len(s.tool_errors) == 1
+
 
 def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     s = session(tmp_path)
@@ -288,6 +305,7 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1
     assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "ok\n"
+
 
 def test_retry_status_renders_countdown_from_model_retry_until(tmp_path, monkeypatch):
     """The status bar formats the wait deadline published by the model; a passed deadline never

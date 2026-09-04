@@ -389,9 +389,6 @@ class CodeIndex:
     """
 
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
-    # How often the library's refresh thread is checked for having ended. Short enough that the
-    # status stops lying promptly, long enough that a minute-long refresh is not a poll storm.
-    REFRESH_POLL_INTERVAL: ClassVar[float] = 0.05
     # fmt: off
     SYMBOLS: ClassVar[dict[str, str]] = {
         "ready": "✓", "synced": "✓", "stale": "*", "syncing": "~",
@@ -436,11 +433,25 @@ class CodeIndex:
         self.session.state.code_index_error, self.session.state.code_index_status = "", status
 
     def status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str]:
+        """Read and publish index status on the calling thread."""
+
+        return self._publish_status(*self._read_status(check=check, max_pending_files=max_pending_files))
+
+    def _publish_status(self, status: str, message: str, pending: object) -> tuple[str, str]:
+        """Apply one status read to Session on its owning thread."""
+
+        preserves_stale = status == "ready" and pending == "unknown" and self.session.state.code_index_status == "stale"
+        if not self.session.state.code_index_refreshing and not preserves_stale:
+            self.set_status(status, message)
+        return status, message
+
+    def _read_status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str, object]:
+        """Blocking third-party status read. It returns data and never mutates Session."""
+
         try:
             data = csi.status(self.session.cwd, check=check, max_pending_files=max_pending_files)
         except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
-            self.set_status("error", str(error))
-            return "error", str(error)
+            return "error", str(error), None
         status = str(getattr(data, "status", "") or "error")
         message = str(getattr(data, "message", None) or getattr(data, "reason", None) or "")
         pending = getattr(data, "pending_changes", None)
@@ -448,10 +459,7 @@ class CodeIndex:
         if pending and pending != "unknown":
             sample = ", ".join(str(path) for path in (files or [])[:3])
             message = (message + "; " if message else "") + "pending " + str(pending) + ((" (" + sample + ")") if sample else "")
-        preserves_stale = status == "ready" and pending == "unknown" and self.session.state.code_index_status == "stale"
-        if not self.session.state.code_index_refreshing and not preserves_stale:
-            self.set_status(status, message)
-        return status, message
+        return status, message, pending
 
     async def sync(self, *, force: bool = False) -> str:
         """Index or rebuild the whole tree, keeping the prompt live while it runs.
@@ -464,10 +472,13 @@ class CodeIndex:
         self.notice("syncing", refreshing=True)
         try:
             await run_blocking(lambda: self._sync_worker(force))
+        except asyncio.CancelledError:
+            await self._settle_cancelled_operation()
+            raise
         except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             return "code_index: error\n" + self.fail(error)
         self.finish()
-        status, message = await run_blocking(lambda: self.status(check=True))
+        status, message = self._publish_status(*await run_blocking(lambda: self._read_status(check=True)))
         index_path = os.path.join(self.session.cwd, ".code-symbol-index", "index.sqlite")
         lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + index_path]
         if message:
@@ -480,17 +491,16 @@ class CodeIndex:
             csi.clean(self.session.cwd)
         csi.index(self.session.cwd)
 
-    def update(self, paths: list[str]) -> str:
+    async def update(self, paths: list[str]) -> str:
+        """Update edited paths without blocking the loop or publishing state from a worker."""
+
         paths = self.update_paths(paths)
-        if not paths or self.session.state.code_index_refreshing or not self.available():
+        if not paths or self.session.state.code_index_refreshing:
             return ""
-        self.notice("updating", refreshing=True)
-        try:
-            csi.update(paths, root=self.session.cwd)
-        except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
-            return self.fail(error)
-        self.finish()
-        return "updated " + str(len(paths)) + " file(s)"
+        status, _ = self._publish_status(*await run_blocking(self._read_status))
+        if status not in {"ready", "stale"}:
+            return ""
+        return await self._update(paths)
 
     async def update_pending(self) -> str:
         """Check the working tree for drift and apply a small update, off the answer path.
@@ -526,47 +536,19 @@ class CodeIndex:
         self.notice("updating", refreshing=True)
         try:
             await run_blocking(lambda: csi.update(paths, root=self.session.cwd))
+        except asyncio.CancelledError:
+            await self._settle_cancelled_operation()
+            raise
         except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             return self.fail(error)
         self.finish()
         return "updated " + str(len(paths)) + " file(s)"
 
-    async def refresh_existing(self) -> bool:
-        """Ask the library to refresh an existing index, and own the wait for its worker.
+    async def _settle_cancelled_operation(self) -> None:
+        """Publish the real index state after a cancelled await has quiesced its worker."""
 
-        The library hands back a `threading.Thread`, so the ending is observed by polling
-        `is_alive()` on bounded sleeps rather than by occupying a second thread on `join()`.
-
-        Cancellation does not get to claim the worker stopped: the refreshing status stays true
-        until the thread really ends, and only then is the cancellation surfaced. Saying otherwise
-        would let the next turn query an index that is still being rewritten under it."""
-
-        if self.session.state.code_index_refreshing:
-            return False
-        status = (await run_blocking(self.status))[0]
-        if status not in {"ready", "stale"}:
-            return False
-        self.notice("syncing", refreshing=True)
-        try:
-            worker = csi.refresh_async(self.session.cwd)
-        except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
-            self.fail(error)
-            return False
-        cancelled: asyncio.CancelledError | None = None
-        while worker.is_alive():
-            try:
-                await asyncio.sleep(self.REFRESH_POLL_INTERVAL)
-            except asyncio.CancelledError as error:
-                cancelled = cancelled or error
-        self.session.state.code_index_refreshing = False
-        self.session.state.code_index_notice = ""
-        try:
-            await run_blocking(lambda: self.status(check=True))
-        except Exception as error:  # noqa: BLE001 - isolate background code-index failures.
-            self.fail(error)
-        if cancelled is not None:
-            raise cancelled
-        return True
+        self.notice("")
+        self._publish_status(*await run_blocking(lambda: self._read_status(check=True)))
 
     def update_paths(self, paths: list[str]) -> list[str]:
         paths = [self.session.resolve_path(path) for path in paths]

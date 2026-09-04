@@ -1,4 +1,5 @@
 """tui startup side effects (split from tests/test_tui_runtime.py)."""
+
 import asyncio
 import os
 import threading
@@ -19,12 +20,6 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 
-async def _refuses_refresh(_index) -> bool:
-    """Stands in for the code index refresh: this scenario has no index to refresh."""
-    return False
-
-
-
 def test_background_output_is_closed_before_final_output(tmp_path):
     command_loop = loop(tmp_path)
     emitted = []
@@ -34,6 +29,7 @@ def test_background_output_is_closed_before_final_output(tmp_path):
     command_loop.emit_background("late worker output")
 
     assert emitted == ["final"]
+
 
 def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -45,11 +41,10 @@ def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch
         "status",
         lambda _index, *, check=False, max_pending_files=20: status_checks.append(check) or ("ready", ""),
     )
-    monkeypatch.setattr(CodeIndex, "refresh_existing", lambda _index: pytest.fail("startup refreshed the code index"))
-
     command_loop.start_session()
 
     assert status_checks == [False]
+
 
 async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monkeypatch):
     """MCP discovery is a task the runtime owns, never a wait on the startup path: an unreachable
@@ -71,7 +66,6 @@ async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monke
     )
 
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
 
     started = asyncio.Event()
@@ -93,6 +87,7 @@ async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monke
         allow_finish.set()
         await discovery
 
+
 def test_input_history_is_trimmed_to_a_bounded_size(tmp_path):
     path = history_file(tmp_path / "history.txt", 5000)
     assert os.path.getsize(path) > CommandLoop.INPUT_HISTORY_BYTES
@@ -106,6 +101,7 @@ def test_input_history_is_trimmed_to_a_bounded_size(tmp_path):
     assert not any(entry.startswith("0-") for entry in kept)
     assert all(entry.split("-")[0].isdigit() for entry in kept)
 
+
 def test_input_history_trim_cuts_only_at_an_entry_boundary(tmp_path):
     path = history_file(tmp_path / "history.txt", 4000)
 
@@ -118,6 +114,7 @@ def test_input_history_trim_cuts_only_at_an_entry_boundary(tmp_path):
         text = file.read()
     assert all(line.startswith(("#", "+")) for line in text.splitlines() if line)
 
+
 def test_input_history_under_the_cap_is_left_alone(tmp_path):
     path = history_file(tmp_path / "history.txt", 10)
     with open(path, "rb") as file:
@@ -127,6 +124,7 @@ def test_input_history_under_the_cap_is_left_alone(tmp_path):
 
     with open(path, "rb") as file:
         assert file.read() == before
+
 
 def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):
     CommandLoop.trim_input_history(str(tmp_path / "absent.txt"))  # must not raise
@@ -139,6 +137,7 @@ def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):
     CommandLoop.trim_input_history(str(path))
 
     assert path.read_bytes() == before
+
 
 async def test_expired_session_cleanup_reports_what_it_removed(monkeypatch, tmp_path):
     """The traversal runs off the loop; the notice is emitted here, once the count comes back."""
@@ -156,6 +155,7 @@ async def test_expired_session_cleanup_reports_what_it_removed(monkeypatch, tmp_
     assert "7 days" in lines[0]
     assert "session_retention_days" in lines[0]
 
+
 async def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
@@ -165,6 +165,7 @@ async def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
     await command_loop.clean_expired_sessions()
 
     assert lines == []
+
 
 async def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path):
     """A failing sweep must not escape the task; retention is not worth a broken session."""
@@ -176,6 +177,7 @@ async def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path)
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", boom)
 
     await command_loop.clean_expired_sessions()
+
 
 async def test_cancelling_the_retention_sweep_finishes_the_deletion_pass(monkeypatch, tmp_path):
     """Retention removes unrecoverable work, so an accepted pass is never abandoned half-done."""
@@ -200,11 +202,13 @@ async def test_cancelling_the_retention_sweep_finishes_the_deletion_pass(monkeyp
         await sweep
     assert finished.is_set()
 
+
 def test_expired_session_notice_reads_correctly_when_singular(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.settings.session_retention_days = 1
 
     assert "removed 1 saved session inactive for over 1 day " in command_loop.expired_sessions_notice(1) + " "
+
 
 def test_toolscript_phase_shows_on_divider_and_yields_to_compaction(tmp_path):
     command_loop = loop(tmp_path)

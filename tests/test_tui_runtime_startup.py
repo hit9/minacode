@@ -1,4 +1,5 @@
 """tui runtime startup (split from tests/test_tui_runtime.py)."""
+
 import asyncio
 import threading
 import time
@@ -21,14 +22,7 @@ from wizolt.cli.runtime import RESUME_STATUS_LABEL
 from wizolt.cli.update import UpdateChecker
 from wizolt.engine import Agent
 from wizolt.session import SessionSnapshotStore
-from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
-
-
-async def _refuses_refresh(_index) -> bool:
-    """Stands in for the code index refresh: this scenario has no index to refresh."""
-    return False
-
 
 
 async def _returns_immediately():
@@ -65,7 +59,6 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
     )
     command_loop.ui.color = True
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
     emitted_while_running = []
@@ -100,6 +93,7 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
     assert not driver.is_alive()
     assert emitted_while_running == [True]
 
+
 def test_batched_emits_join_the_scrollback_queue_in_order(monkeypatch):
     """A batched block's exit flushes through the scrollback queue: its parts land after emits
     already queued for the live application instead of printing over them, so the scrollback
@@ -115,9 +109,7 @@ def test_batched_emits_join_the_scrollback_queue_in_order(monkeypatch):
         printed.append("".join(fragment_list_to_text(to_formatted_text(value)) for value in values))
 
     monkeypatch.setattr(render_module, "print_formatted_text", capture)
-    thread = threading.Thread(
-        target=lambda: (asyncio.set_event_loop(loop), loop.run_forever()), daemon=True
-    )
+    thread = threading.Thread(target=lambda: (asyncio.set_event_loop(loop), loop.run_forever()), daemon=True)
     thread.start()
     try:
         ui.emit("queued first")
@@ -135,10 +127,12 @@ def test_batched_emits_join_the_scrollback_queue_in_order(monkeypatch):
     # One flush, in emit order: nothing landed ahead of the line queued before the batch.
     assert "".join(printed) == "queued first\nbatched second\nbatched third\n"
 
+
 @pytest.mark.parametrize("entered", [" /help", "exit "])
 async def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
     command_loop = loop(tmp_path)
     dispatched = []
+
     async def record(text):
         dispatched.append(text)
         return True, False
@@ -149,6 +143,7 @@ async def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entere
 
     assert await runtime.dispatch(entered)
     assert dispatched == [entered.strip()]
+
 
 def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -182,6 +177,7 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
 
     assert runtime.run_sync() == 0
     assert warmed == [True]
+
 
 def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     """While a resumed session's transcript is being restored the TUI shows a resuming status, and
@@ -229,6 +225,7 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     assert runtime.run_sync() == 0
     assert calls == [("running", RESUME_STATUS_LABEL), ("start_session",), ("idle",)]
 
+
 async def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
@@ -245,6 +242,7 @@ async def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
     assert runtime.pending.get_nowait() == "followup A"
     assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup B"]
 
+
 async def test_tui_dispatch_command_flushes_single_followup_completely(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.command = handled_command()
@@ -258,11 +256,13 @@ async def test_tui_dispatch_command_flushes_single_followup_completely(tmp_path)
     assert runtime.pending.get_nowait() == "only followup"
     assert command_loop.session.pending_user_inputs == []
 
+
 async def test_tui_dispatch_failed_command_still_flushes_followup(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
     command_loop.session.enqueue_user_input("followup after error")
+
     async def fail(_text):
         raise WizoltError("command failed")
 
@@ -272,6 +272,7 @@ async def test_tui_dispatch_failed_command_still_flushes_followup(tmp_path):
 
     assert runtime.pending.get_nowait() == "followup after error"
     assert command_loop.session.pending_user_inputs == []
+
 
 async def test_tui_dispatch_queues_older_followup_before_restoring_idle(tmp_path):
     command_loop = loop(tmp_path)
@@ -299,6 +300,7 @@ async def test_tui_dispatch_queues_older_followup_before_restoring_idle(tmp_path
     assert events == ["submit", "idle"]
     assert runtime.pending.get_nowait() == "older followup"
 
+
 async def test_tui_dispatch_command_with_empty_queue_stays_idle(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.command = handled_command()
@@ -309,6 +311,7 @@ async def test_tui_dispatch_command_with_empty_queue_stays_idle(tmp_path):
 
     assert runtime.pending.qsize() == 0
     assert command_loop.session.pending_user_inputs == []
+
 
 async def test_tui_dispatch_non_command_leaves_followups_for_agent_turn(tmp_path):
     command_loop = loop(tmp_path)
@@ -322,6 +325,7 @@ async def test_tui_dispatch_non_command_leaves_followups_for_agent_turn(tmp_path
 
     assert runtime.pending.qsize() == 0
     assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup A"]
+
 
 async def test_tui_dispatch_exit_does_not_flush_queued_followups(tmp_path):
     command_loop = loop(tmp_path)

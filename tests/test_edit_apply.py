@@ -10,6 +10,10 @@ from wizolt.tools import CodeIndex, EditTool
 from wizolt.tools.editplan import EditBatchPlan
 
 
+async def ignore_index_update(_index, _paths):
+    return ""
+
+
 @pytest.mark.parametrize(
     ("original", "raw_edits"),
     [
@@ -99,7 +103,7 @@ def test_split_lines_matches_readlines_only_on_newline():
 def test_tool_runner_batch_edit_accepts_drifted_view(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -123,7 +127,7 @@ def test_tool_runner_relocates_view_drifted_before_batch(tmp_path, monkeypatch):
     # This is the ordinary stale-read case, and it runs through the plan like every other Edit.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("x\na\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -143,7 +147,7 @@ def test_tool_runner_refuses_changed_target_drifted_before_batch(tmp_path, monke
     # exactly, so the call is refused and the file is left alone.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("x\na\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -159,7 +163,7 @@ def test_tool_runner_refuses_changed_target_drifted_before_batch(tmp_path, monke
 def test_tool_runner_batch_edit_barrier_rejects_ambiguous_relocation(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -181,7 +185,7 @@ def test_tool_runner_batch_edit_barrier_rejects_ambiguous_relocation(tmp_path, m
 def test_tool_runner_batch_edit_can_create_empty_then_patch_same_file(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     # create the empty file, then write into it with create: an existing zero-byte file has
@@ -200,7 +204,7 @@ def test_tool_runner_batch_edit_rejects_inline_patch_without_read(tmp_path, monk
     # does not exist yet and the call is refused instead of guessing at line numbers.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     runner.run_sync(
@@ -218,7 +222,7 @@ def test_tool_runner_batch_edit_rejects_inline_patch_without_read(tmp_path, monk
 def test_tool_runner_batch_edit_can_create_then_patch_same_file(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     runner.run_sync([ToolCall("create", "Edit", ["new.txt", "", [{"op": "create", "content": "a\nb\n"}]])])
@@ -233,7 +237,7 @@ def test_tool_runner_batch_edit_can_create_then_patch_same_file(tmp_path, monkey
 def test_tool_runner_batch_edit_create_and_existing_file_edit_are_independent(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     (tmp_path / "old.txt").write_text("a\nb\n", encoding="utf-8")
     key = view(s, "old.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
@@ -254,7 +258,7 @@ def test_tool_runner_batch_edit_create_and_existing_file_edit_are_independent(tm
 def test_tool_runner_batch_edit_maps_original_view_after_delete(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\nd\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -274,7 +278,7 @@ def test_tool_runner_batch_edit_maps_original_view_after_delete(tmp_path, monkey
 def test_tool_runner_batch_edit_maps_original_view_after_insert(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -294,7 +298,7 @@ def test_tool_runner_batch_edit_maps_original_view_after_insert(tmp_path, monkey
 def test_tool_runner_batch_edit_plans_files_independently(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     (tmp_path / "a.txt").write_text("a\nb\n", encoding="utf-8")
     (tmp_path / "b.txt").write_text("x\ny\n", encoding="utf-8")
     key_a = view(s, "a.txt")
@@ -316,7 +320,7 @@ def test_tool_runner_batch_edit_plans_files_independently(tmp_path, monkeypatch)
 def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -343,7 +347,7 @@ def test_inserting_past_an_unterminated_last_line_does_not_join_it(tmp_path, mon
     # last line and the added line is part of the content, not something a splice has to fix.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb", encoding="utf-8")
     key = view(s, "code.txt")
@@ -362,7 +366,7 @@ def test_batch_separates_a_consumed_target_from_a_shifted_one(tmp_path, monkeypa
     # and applied, with no relocation reported because nothing needed relocating.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\nb\n", encoding="utf-8")  # line 2 is duplicated at line 4
     key = view(s, "code.txt")
@@ -445,7 +449,7 @@ def test_boundary_duplicate_advisory_warns_in_rendered_envelope(tmp_path, monkey
     # the duplicated pair, and the fresh view below it already describes the corrupted result.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")

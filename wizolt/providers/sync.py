@@ -258,7 +258,7 @@ class CatalogRuntime:
         self.sync_state.last_source = self.source
         self.sync_state.last_version = self.snapshot.version
         self.sync_state.error = ""
-        self._save_state()
+        await run_blocking(self._save_state)
         return self.snapshot
 
     def refresh_due(self) -> bool:

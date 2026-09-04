@@ -77,8 +77,17 @@ class _EditorTempFile:
     @classmethod
     def create(cls, text: str) -> _EditorTempFile:
         fd, path = tempfile.mkstemp(prefix="wizolt-input-", suffix=".md")
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except BaseException:
+            # `mkstemp` has already made the path. A failed open/write must not strand it before
+            # the caller has received the adapter whose finally block normally owns removal.
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            raise
         return cls(path)
 
     def read(self) -> str:
@@ -1428,7 +1437,22 @@ class TuiApp:
         step goes through `_EditorTempFile` on a worker -- creating, writing, reading back and
         unlinking are all blocking calls -- while the process itself stays native asyncio."""
 
-        temp = await run_blocking(lambda: _EditorTempFile.create(text))
+        created: list[_EditorTempFile] = []
+
+        def create() -> _EditorTempFile:
+            temp = _EditorTempFile.create(text)
+            created.append(temp)
+            return temp
+
+        try:
+            temp = await run_blocking(create)
+        except BaseException:
+            # run_blocking deliberately re-raises cancellation instead of returning the worker's
+            # value. The holder recovers ownership of a file created just before that cancellation
+            # arrived, so even acquisition has a cleanup path.
+            if created:
+                await run_blocking(created[0].remove)
+            raise
         try:
             try:
                 process = await asyncio.create_subprocess_exec(*self.editor_command(), temp.path)

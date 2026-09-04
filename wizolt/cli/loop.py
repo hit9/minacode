@@ -48,6 +48,7 @@ from wizolt.cli.update import UpdateChecker
 from wizolt.cli.view import CommandCompleter, View
 from wizolt.engine import Agent
 from wizolt.image import ImageInputs, UserInput
+from wizolt.mentions import FilePick
 from wizolt.prompts import LIVE_FOLLOWUP_PREFIX
 from wizolt.render import BashLivePreview, StatusBar, UiPrinter, search_sources_footer
 from wizolt.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
@@ -502,6 +503,19 @@ Full documentation: https://wizolt.readthedocs.io
             return task
         self._mention_refresh = task = self.spawn_background(mentions.refresh(), name="mention-candidates")
         return task
+
+    async def pick_file(self, query: str) -> FilePick:
+        """Run the interactive picker as work owned and settled by this session."""
+
+        mentions = self.session.mentions
+        if mentions is None:
+            return FilePick(unavailable=True)
+        task = self.spawn_background(mentions.picker.pick(query), name="file-picker")
+        if task is None:
+            return FilePick(unavailable=True)
+        result = await task
+        assert isinstance(result, FilePick)
+        return result
 
     def spawn_background(self, coroutine: Coroutine[Any, Any, object], *, name: str) -> asyncio.Task | None:
         """Admit one background coroutine, and keep it until its outcome has been observed.

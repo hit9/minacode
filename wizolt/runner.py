@@ -797,7 +797,9 @@ class ToolRunner:
             return "failed", self.reject(call, f"ToolError: {error}", d=d, recovery=error.recovery), None
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
             return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d), None
-        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d), observation
+        message = self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d)
+        await self.update_code_index(call, message)
+        return "ok", message, observation
 
     def reject(
         self,
@@ -848,18 +850,16 @@ class ToolRunner:
             key = self.session.store_tool_result(call.name, call.args, model_text) if retain else ""
         if failed:
             self.session.record_tool_error(key or "-", call.name, call.args, model_text)
-        elif key:
-            self.update_code_index(call, model_text)
-            if turn_diff and turn_diff.path and turn_diff.diff:
-                self.session.store_turn_diff(
-                    key,
-                    self.session.state.turn_step,
-                    turn_diff.path,
-                    turn_diff.diff,
-                    before=turn_diff.before,
-                    after=turn_diff.after,
-                    round=self.session.state.round_count,
-                )
+        elif key and turn_diff and turn_diff.path and turn_diff.diff:
+            self.session.store_turn_diff(
+                key,
+                self.session.state.turn_step,
+                turn_diff.path,
+                turn_diff.diff,
+                before=turn_diff.before,
+                after=turn_diff.after,
+                round=self.session.state.round_count,
+            )
         if not (tool_class is not None and tool_class.SILENT) or failed:
             self.emit(toolblocks.finish_display(self.session, call, key, model_text, failed=failed, elapsed=elapsed, d=d, worker_rule=self.worker_rule))
         return self.tool_message(call, key, model_text, failed=failed, display=d.display, bound=bound)
@@ -911,14 +911,14 @@ class ToolRunner:
         rows.extend(["output:", body])
         return "\n".join(rows).strip()
 
-    def update_code_index(self, call: ToolCall, output: str) -> None:
+    async def update_code_index(self, call: ToolCall, output: str) -> None:
         if call.name != "Edit":
             return
         paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
         for match in tooloutput.EDIT_PATH_RE.finditer(output):
             with contextlib.suppress(json.JSONDecodeError):
                 paths.append(str(json.loads(match.group(1))))
-        CodeIndex(self.session).update(list(dict.fromkeys(paths)))
+        await CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
     async def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         always_option = isinstance(tool, DelegateTool) and tool.always_confirms()

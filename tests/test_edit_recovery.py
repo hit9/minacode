@@ -12,6 +12,10 @@ from wizolt.source import ToolOutput
 from wizolt.tools import CodeIndex, EditTool
 
 
+async def ignore_index_update(_index, _paths):
+    return ""
+
+
 def rendered(out, s):
     assert isinstance(out, ToolOutput)
     return out.render(s.register_source_drafts(list(out.drafts)))
@@ -110,7 +114,7 @@ def test_success_fresh_block_clamps_to_file_bounds(tmp_path):
 def test_failed_edit_error_text_keeps_fresh_view_for_the_model(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\nd\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -127,7 +131,7 @@ def test_failed_edit_error_text_keeps_fresh_view_for_the_model(tmp_path, monkeyp
 def test_batch_stale_range_does_not_guess_after_prior_shift(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -166,7 +170,7 @@ def test_deletion_fresh_view_shows_the_seam_it_left(tmp_path, monkeypatch):
     # covers the seam instead, and is a real view: the next edit can name it.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\nd\n", encoding="utf-8")
     key = view(s, "code.txt")
@@ -187,7 +191,7 @@ def test_deleting_the_whole_file_leaves_an_empty_file_view(tmp_path, monkeypatch
     # Deleting every line leaves a view with no spans; the emptied file is then written with create.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     (tmp_path / "code.txt").write_text("a\nb\n", encoding="utf-8")
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
@@ -206,7 +210,7 @@ def test_empty_file_create_rejects_once_another_writer_filled_it(tmp_path, monke
     # that is no longer empty by the time it runs: the non-empty file is refused, not clobbered.
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "empty.txt"
     path.write_text("", encoding="utf-8")
     path.write_text("written elsewhere\n", encoding="utf-8")
@@ -225,7 +229,7 @@ def test_expired_view_is_answered_with_the_current_lines_it_asked_for(tmp_path, 
     retry. The returned view is a real one: the same edit against it applies."""
     s = session(tmp_path)
     s.settings.yolo = True
-    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     path = tmp_path / "app.py"
     path.write_text("".join(f"line {index}\n" for index in range(1, 21)), encoding="utf-8")
     key = view(s, "app.py")

@@ -135,9 +135,12 @@ class FileMentions:
         self._paths_cache: tuple[float, tuple[tuple[str, str], ...]] | None = None
         self._generation = 0
         self._last_match: tuple[int, str, tuple[str, ...]] | None = None
-        # Ordinal of the newest completion request. A plain counter, not an asyncio object: it is
-        # what makes the latest query win without keeping loop-bound state on session-owned data.
+        # Plain request state, never a task/future: FileMentions outlives event loops. One admitted
+        # coroutine drains the latest request, so rapid keystrokes replace queued ranking work
+        # instead of filling the executor with obsolete queries.
         self._match_request = 0
+        self._pending_match: tuple[int, str, Callable[[], None] | None] | None = None
+        self._match_worker_running = False
         # Installed by CommandLoop while its background owner is open, and cleared when it closes.
         # A callable, never a task: the coalescing task is loop-bound and this object outlives
         # loops, so a future kept here would be a handle onto a loop the next run cannot await.
@@ -175,7 +178,9 @@ class FileMentions:
                 self.schedule_refresh()
             return cached[1]
         scan = self.schedule_refresh()
-        return await scan if scan is not None else await self.refresh()
+        # A caller waiting for the owner's shared scan does not own it. In particular, Escape from
+        # a cold fzf picker cancels that picker, not the startup scan another waiter may still use.
+        return await asyncio.shield(scan) if scan is not None else await self.refresh()
 
     async def complete(self, query: str, ready: Callable[[], None] | None = None) -> None:
         """Rank the literal fallback candidates for one query and publish the newest result.
@@ -186,17 +191,29 @@ class FileMentions:
         had typed when the scan started."""
 
         self._match_request += 1
-        request = self._match_request
-        paths = await self.candidates()
-        generation = self._generation
-        matches = await run_blocking(lambda: self._literal_matches(paths, query))
-        if request != self._match_request:
+        self._pending_match = (self._match_request, query, ready)
+        if self._match_worker_running:
             return
-        if generation == self._generation:
-            self._last_match = (generation, query, matches)
-        if ready is not None:
-            with suppress(Exception):
-                ready()
+        self._match_worker_running = True
+        try:
+            while self._pending_match is not None:
+                request, requested, callback = self._pending_match
+                self._pending_match = None
+                paths = await self.candidates()
+                generation = self._generation
+                matches = await run_blocking(lambda paths=paths, requested=requested: self._literal_matches(paths, requested))
+                # Anything queued while this query was ranking supersedes it. Skip both its cache
+                # publication and callback, then compute only the newest request next.
+                if self._pending_match is not None or request != self._match_request:
+                    continue
+                if generation == self._generation:
+                    self._last_match = (generation, requested, matches)
+                if callback is not None:
+                    with suppress(Exception):
+                        callback()
+        finally:
+            self._pending_match = None
+            self._match_worker_running = False
 
     @staticmethod
     def _literal_matches(paths: tuple[tuple[str, str], ...], query: str) -> tuple[str, ...]:
