@@ -241,26 +241,28 @@ class TestMCPManagerDiscovery:
         assert s.mcp.parse_configs() == []
         assert s.mcp.tools == {}
 
-    def test_async_runner_reuses_one_loop(self):
-        """MCP async work is scheduled onto one manager-owned event loop."""
+    async def test_operations_run_on_the_callers_loop(self):
+        """Every MCP operation is a coroutine on whichever loop awaited it.
+
+        There is no manager-owned loop left to schedule onto: that is what let a client be entered
+        on one loop and torn down on another, and what kept a cancelled turn from reaching it."""
         s = session("/tmp")
 
         async def loop_id():
             return id(asyncio.get_running_loop())
 
-        assert s.mcp.run_async(loop_id()) == s.mcp.run_async(loop_id())
+        assert await s.mcp._bounded(loop_id()) == id(asyncio.get_running_loop())
 
-    def test_timed_out_call_swallows_its_late_failure(self):
-        """A call abandoned at the timeout stays quiet when its teardown then fails — nobody is
-        left to retrieve that exception, so asyncio would otherwise print it at collection."""
+    async def test_timed_out_call_swallows_its_late_failure(self):
+        """A call abandoned at the timeout stays quiet when its teardown then fails — the caller
+        already has its timeout, and asyncio would otherwise print that error at collection."""
         import gc
 
         from wizolt.base import ToolError
 
         s = session("/tmp")
-        loop = s.mcp._async_loop()
         unretrieved: list[dict] = []
-        loop.call_soon_threadsafe(loop.set_exception_handler, lambda _loop, context: unretrieved.append(context))
+        asyncio.get_running_loop().set_exception_handler(lambda _loop, context: unretrieved.append(context))
 
         async def fails_while_cancelled():
             try:
@@ -269,9 +271,8 @@ class TestMCPManagerDiscovery:
                 raise RuntimeError("client teardown timed out") from None
 
         with pytest.raises(ToolError, match="timed out after 1s"):
-            s.mcp.run_async(fails_while_cancelled(), timeout=1)
+            await s.mcp._bounded(fails_while_cancelled(), timeout=1)
 
-        time.sleep(0.2)  # let the loop finish cancelling before the task is collected
         gc.collect()
         assert unretrieved == []
 
@@ -283,19 +284,17 @@ class TestMCPManagerDiscovery:
 
         assert same_path_store.lock is store.lock
 
-    def test_token_store_put_get_roundtrip(self, tmp_path):
+    async def test_token_store_put_get_roundtrip(self, tmp_path):
         """put persists a value that get returns — put is the OAuth storage protocol's writer."""
-        import asyncio
-
         store = MCPFileTokenStore(str(tmp_path / "tokens.json"))
 
         async def roundtrip():
             await store.put("k", {"v": 1}, collection="mcp-oauth-token")
             return await store.get("k", collection="mcp-oauth-token")
 
-        assert asyncio.run(roundtrip()) == {"v": 1}
+        assert await roundtrip() == {"v": 1}
 
-    def test_clear_server_matches_fastmcp_oauth_storage_contract(self, tmp_path):
+    async def test_clear_server_matches_fastmcp_oauth_storage_contract(self, tmp_path):
         from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
         url = "https://mcp.example.com/mcp"
@@ -315,7 +314,7 @@ class TestMCPManagerDiscovery:
             s.mcp._oauth_token_store.clear_server(url)
             return await adapter.get_tokens(), await adapter.get_client_info(), await adapter.get_token_expiry()
 
-        assert asyncio.run(roundtrip()) == (None, None, None)
+        assert await roundtrip() == (None, None, None)
 
     def test_oauth_redirect_requires_explicit_interactive_connection(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
@@ -406,7 +405,7 @@ class TestMCPManagerDiscovery:
         assert raised, "save should propagate fdopen failure"
         assert closed, "fd must be closed when fdopen raises, otherwise it leaks"
 
-    def test_discover_auto_stale_to_discovering(self, monkeypatch):
+    async def test_discover_auto_stale_to_discovering(self, monkeypatch):
         """discover_auto sets status to discovering then ready."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -419,10 +418,10 @@ class TestMCPManagerDiscovery:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
 
         assert s.mcp.discovery_status == "stale"
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
         assert s.mcp.discovery_status == "ready"
 
-    def test_discover_auto_error_sets_status(self, monkeypatch):
+    async def test_discover_auto_error_sets_status(self, monkeypatch):
         """Failed discovery sets error status."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -433,11 +432,11 @@ class TestMCPManagerDiscovery:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_fail)
 
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
         assert s.mcp.discovery_status == "ready"
         assert s.mcp.server_errors.get("test") is not None
 
-    def test_discover_auto_ignores_cancelled_server(self, monkeypatch):
+    async def test_discover_auto_ignores_cancelled_server(self, monkeypatch):
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
@@ -447,7 +446,7 @@ class TestMCPManagerDiscovery:
 
         monkeypatch.setattr(s.mcp, "_gather_assets", cancelled)
 
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         assert s.mcp.discovery_status == "ready"
         assert "test" not in s.mcp.server_errors
@@ -464,20 +463,20 @@ class TestMCPManagerDiscovery:
         assert not MCPManager.is_cancelled_error(mixed)
         assert not MCPManager.is_cancelled_error(first)
 
-    def test_discover_auto_skips_missing_bearer_env(self, monkeypatch):
+    async def test_discover_auto_skips_missing_bearer_env(self, monkeypatch):
         """Missing bearer_token_env_var skips discovery without an error log."""
         monkeypatch.delenv("MISSING_TOKEN", raising=False)
         raw = mcp_cfg(bearer_token_env_var="MISSING_TOKEN")
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
 
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         assert "test" not in s.mcp.server_errors
         assert "test" in s.mcp.server_skips
         assert "missing environment variable MISSING_TOKEN" in s.mcp.render_server_status()
 
-    def test_discover_auto_loads_servers_in_parallel(self, monkeypatch):
+    async def test_discover_auto_loads_servers_in_parallel(self, monkeypatch):
         """Multiple automatic servers are discovered in parallel."""
         raw = {
             "mcp": {
@@ -495,13 +494,13 @@ class TestMCPManagerDiscovery:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
         started = time.monotonic()
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
         elapsed = time.monotonic() - started
 
         assert elapsed < 0.18
         assert s.mcp.discovery_status == "ready"
 
-    def test_discover_auto_skips_manual_servers(self, monkeypatch):
+    async def test_discover_auto_skips_manual_servers(self, monkeypatch):
         raw = {
             "mcp": {
                 "automatic": {"url": "http://a/mcp", "auto_connect": True},
@@ -512,19 +511,19 @@ class TestMCPManagerDiscovery:
         bootstrap_features(s)
         discovered = []
 
-        def fake_discover(config):
+        async def fake_discover(config):
             discovered.append(config.name)
             s.mcp.tools[config.name] = []
             s.mcp.resources[config.name] = []
 
-        monkeypatch.setattr(s.mcp, "_discover_one", fake_discover)
+        monkeypatch.setattr(s.mcp, "_discover_one_async", fake_discover)
 
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         assert discovered == ["automatic"]
         assert "manual" not in s.mcp.tools
 
-    def test_tools_are_cached_after_discovery(self, monkeypatch):
+    async def test_tools_are_cached_after_discovery(self, monkeypatch):
         """Listed tools are cached after discovery."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -540,13 +539,13 @@ class TestMCPManagerDiscovery:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         assert "test" in s.mcp.tools
         assert len(s.mcp.tools["test"]) == 1
         assert s.mcp.tools["test"][0].name == "echo"
 
-    def test_discover_auto_preserves_manual_and_removes_stale_servers(self, monkeypatch):
+    async def test_discover_auto_preserves_manual_and_removes_stale_servers(self, monkeypatch):
         raw = {
             "mcp": {
                 "auto_server": {"url": "http://a/mcp", "auto_connect": True},
@@ -566,7 +565,7 @@ class TestMCPManagerDiscovery:
         s.mcp.tools["manual_server"] = [mcp_tool_info("manual_server", "kept")]
         s.mcp.tools["stale_server"] = [mcp_tool_info("stale_server", "old")]
 
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         assert "stale_server" not in s.mcp.tools
         assert "manual_server" in s.mcp.tools
@@ -579,20 +578,20 @@ class TestMCPManagerDiscovery:
 
 
 class TestMCPDiscoverServer:
-    def test_discover_nonexistent_server_sets_error(self):
+    async def test_discover_nonexistent_server_sets_error(self):
         """discover_server for a server not in config sets server_errors."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
-        s.mcp.discover_server("nonexistent")
+        await s.mcp.discover_server_async("nonexistent")
         assert "nonexistent" in s.mcp.server_errors
         assert "not found" in s.mcp.server_errors["nonexistent"]
 
-    def test_discover_nonexistent_server_removes_tools(self):
+    async def test_discover_nonexistent_server_removes_tools(self):
         """discover_server for a server not in config clears its stale tools."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         s.mcp.tools["gone"] = [mcp_tool_info("gone", "old_tool")]
-        s.mcp.discover_server("gone")
+        await s.mcp.discover_server_async("gone")
         assert "gone" not in s.mcp.tools
         assert "gone" in s.mcp.server_errors
 
@@ -656,7 +655,7 @@ class TestServerStatusRendering:
         status = s.mcp.render_server_status()
         assert status == "(no MCP servers configured)"
 
-    def test_render_server_status_connected(self, monkeypatch):
+    async def test_render_server_status_connected(self, monkeypatch):
         """Connected server shows mode and tool count."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -672,7 +671,7 @@ class TestServerStatusRendering:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         status = s.mcp.render_server_status()
         assert "test" in status
@@ -711,7 +710,7 @@ class TestServerStatusRendering:
         assert "● connected" in lines[2]
         assert "● disconnected" in lines[3]
 
-    def test_render_tool_listing_all(self, monkeypatch):
+    async def test_render_tool_listing_all(self, monkeypatch):
         """render_tool_listing shows connected servers."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -727,14 +726,14 @@ class TestServerStatusRendering:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         listing = s.mcp.render_tool_listing()
         assert "### `test`" in listing
         assert "| tool | args | description |" in listing
         assert "echo" in listing
 
-    def test_render_tool_listing_specific_server(self, monkeypatch):
+    async def test_render_tool_listing_specific_server(self, monkeypatch):
         """render_tool_listing('test') filters to one server."""
         raw = {"mcp": {"a": {"url": "http://a/mcp", "auto_connect": True}, "b": {"url": "http://b/mcp", "auto_connect": True}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -745,7 +744,7 @@ class TestServerStatusRendering:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         listing = s.mcp.render_tool_listing("a")
         assert "### `a`" in listing

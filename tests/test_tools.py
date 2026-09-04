@@ -199,7 +199,7 @@ def test_reading_a_materialized_tool_output_needs_no_confirmation(tmp_path):
     assert "line 19999" in ReadTool(s, [{"path": asset}]).call().retained_text
 
 
-def test_mcp_tool_handles_missing_manager_and_invalid_arguments(tmp_path):
+async def test_mcp_tool_handles_missing_manager_and_invalid_arguments(tmp_path):
     s = session(tmp_path)
     s.mcp = None
     tool = MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": {}}])
@@ -208,7 +208,7 @@ def test_mcp_tool_handles_missing_manager_and_invalid_arguments(tmp_path):
     with pytest.raises(ToolError, match="MCP not configured"):
         tool.call()
     with pytest.raises(ToolError, match="arguments must be an object"):
-        MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": []}]).call()
+        await MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": []}]).call_async()
 
 
 def test_code_index_failure_helpers_keep_session_state_consistent(tmp_path, monkeypatch):

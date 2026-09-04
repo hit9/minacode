@@ -10,7 +10,7 @@ from agent_harness import call, session
 from wizolt.base import ToolCall
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
-from wizolt.tools import Tool, toolblocks, tooloutput
+from wizolt.tools import ReadTool, Tool, toolblocks, tooloutput
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -105,7 +105,7 @@ def test_replayed_delegate_keeps_its_call_line(tmp_path):
     assert "[worker]" not in live
 
 
-def test_read_only_batch_keeps_model_order_and_honors_the_concurrency_cap(tmp_path):
+def test_read_only_batch_keeps_model_order_and_honors_the_concurrency_cap(tmp_path, monkeypatch):
     """Independent read-only calls overlap, but never more than max_parallel_tools at once, and
     their results are published in the order the model emitted them rather than completion order."""
     for name in ("a", "b", "c", "d"):
@@ -116,21 +116,23 @@ def test_read_only_batch_keeps_model_order_and_honors_the_concurrency_cap(tmp_pa
 
     lock = threading.Lock()
     live = peak = 0
-    execute = runner.execute_readonly
+    read = ReadTool.call
 
-    def traced(call):  # the runner's own parameter name; the module-level `call` helper is unused here
+    # Counted inside the tool's own body, which is where the cap applies: every call is dispatched
+    # at once, and the invocation's capacity is what decides how many of them are running.
+    def traced(self):
         nonlocal live, peak
         with lock:
             live += 1
             peak = max(peak, live)
         try:
             time.sleep(0.02)  # long enough for the cap to be observable, short enough for CI
-            return execute(call)
+            return read(self)
         finally:
             with lock:
                 live -= 1
 
-    runner.execute_readonly = traced
+    monkeypatch.setattr(ReadTool, "call", traced)
     calls = [ToolCall(f"r{index}", "Read", [{"path": f"{name}.txt"}]) for index, name in enumerate("abcd")]
     messages = runner.run(calls)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -170,7 +171,7 @@ class Agent:
             self._current_image_messages.append(user_message)
         # Mentions belong to the user's typed input, never to projected image content.
         user_text = user_input.display_text() if isinstance(user_input, UserInput) else self.session.images.label_text(user_message)
-        turn_messages = [user_message, *self.mention_messages(user_text)]
+        turn_messages = [user_message, *await self.mention_messages(user_text)]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
         self.checkpoint_turn(turn_messages, transcript_messages)
         failed_request: PreparedRequest | None = None
@@ -549,7 +550,7 @@ class Agent:
         if pending:
             request_turn = [*turn_messages]
             for item in pending:
-                mentions = self.mention_messages(item.text)
+                mentions = await self.mention_messages(item.text)
                 pending_message = item.message(LIVE_FOLLOWUP_PREFIX)
                 request_turn.append(pending_message)
                 request_turn.extend(mentions)
@@ -638,15 +639,21 @@ class Agent:
         provider = self.session.config.providers[entry]
         return f"{entry}/{provider.model or '(empty)'}"
 
-    def mention_messages(self, text: str) -> list[Json]:
-        """Session-event context blocks attached after one user message, initial or queued."""
+    async def mention_messages(self, text: str) -> list[Json]:
+        """Session-event context blocks attached after one user message, initial or queued.
+
+        Awaited for MCP alone: a mentioned server that is not connected yet is discovered here, and
+        that discovery now runs on the runtime loop like every other MCP operation. The skill and
+        file resolvers are local lookups and stay synchronous."""
         blocks: list[Json] = []
         for event, resolver in (
-            ("mcp_mentions", self.session.mcp.resolve_mentions if self.session.mcp is not None else None),
+            ("mcp_mentions", self.session.mcp.resolve_mentions_async if self.session.mcp is not None else None),
             ("skill_mentions", self.session.skills.resolve_mentions if self.session.skills is not None else None),
             ("file_mentions", self.session.mentions.resolve_mentions if self.session.mentions is not None else None),
         ):
             content = resolver(text) if resolver is not None else ""
+            if inspect.isawaitable(content):
+                content = await content
             if content:
                 # Expansions are not new requests. Marking them keeps compaction's latest-user
                 # boundary on the raw message that caused them, including queued follow-ups.

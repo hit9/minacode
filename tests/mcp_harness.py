@@ -53,3 +53,15 @@ def mcp_tool_info(server: str, name: str, **kw) -> MCPToolInfo:
 
 def _fake_resource(uri="docs://x.md", name="x", description="A doc", mime="text/markdown"):
     return SimpleNamespace(uri=uri, name=name, description=description, mimeType=mime)
+
+
+def as_async(fn):
+    """Wrap a synchronous stub so it stands in for one of the manager's coroutine methods.
+
+    The manager's operations are awaited now, so a plain lambda would hand the caller a value where
+    it expects an awaitable. The wrapper keeps the stubs themselves readable as one-liners."""
+
+    async def call(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return call

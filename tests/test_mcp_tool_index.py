@@ -71,7 +71,7 @@ class TestToolIndexRendering:
         summary = line.split("\n")[0]
         assert len(summary.split(" - ")[-1]) <= 83
 
-    def test_index_contains_mcp_tools_header(self, monkeypatch):
+    async def test_index_contains_mcp_tools_header(self, monkeypatch):
         """render_tools_index includes the MCP TOOLS header."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -87,17 +87,17 @@ class TestToolIndexRendering:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         idx = s.mcp.render_tools_index()
         assert "--- MCP TOOLS ---" in idx
         assert "[test]" in idx
 
-    def test_legacy_enabled_does_not_connect_server(self, monkeypatch):
+    async def test_legacy_enabled_does_not_connect_server(self, monkeypatch):
         raw = {"mcp": {"test": {"url": "http://x/mcp", "enabled": False}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
         idx = s.mcp.render_tools_index()
         assert idx == ""
 
@@ -233,7 +233,7 @@ class TestToolIndexBudget:
         assert "MCP" not in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
 
 class TestToolIndexTruncation:
-    def test_index_truncation_long_block(self, monkeypatch):
+    async def test_index_truncation_long_block(self, monkeypatch):
         """Long index block is bounded by INDEX_TOTAL_LIMIT."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -266,7 +266,7 @@ class TestToolIndexTruncation:
             return many_tools
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         idx = s.mcp.render_tools_index()
         assert len(idx) <= MCPManager.INDEX_TOTAL_LIMIT + 100

@@ -1,6 +1,6 @@
 """tui startup side effects (split from tests/test_tui_runtime.py)."""
+import asyncio
 import os
-import threading
 import time
 
 import pytest
@@ -35,7 +35,6 @@ def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
     monkeypatch.setattr(CommandLoop, "clean_expired_sessions_async", lambda _loop: None)
     monkeypatch.setattr(CommandLoop, "render_resumed_session", lambda _loop: None)
-    monkeypatch.setattr(command_loop.session.mcp, "discover_auto", lambda: None)
     monkeypatch.setattr(
         CodeIndex,
         "status",
@@ -47,10 +46,10 @@ def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch
 
     assert status_checks == [False]
 
-def test_start_session_discovers_mcp_off_the_main_thread(tmp_path, monkeypatch):
-    """start_session must dispatch auto_connect MCP discovery in the background: an unreachable
-    server otherwise blocks the prompt for the whole discovery timeout. Regression guard for the
-    lifecycle refactor that had briefly made discover_auto a synchronous startup call."""
+async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monkeypatch):
+    """MCP discovery is a task the runtime owns, never a wait on the startup path: an unreachable
+    server would otherwise hold the prompt for the whole discovery timeout. Regression guard for
+    the lifecycle refactor that had briefly made discovery a synchronous startup call."""
     config = Config.from_dict(
         {
             "provider": {"active": "d", "d": {"url": "u", "key": "k", "model": "m"}},
@@ -70,26 +69,24 @@ def test_start_session_discovers_mcp_off_the_main_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
 
-    discover_started = threading.Event()
-    allow_finish = threading.Event()
-    ran_on: list[threading.Thread] = []
+    started = asyncio.Event()
+    allow_finish = asyncio.Event()
 
-    def blocking_discover() -> None:
-        ran_on.append(threading.current_thread())
-        discover_started.set()
-        allow_finish.wait(timeout=5)
+    async def blocking_discover() -> None:
+        started.set()
+        await allow_finish.wait()
 
-    monkeypatch.setattr(s.mcp, "discover_auto", blocking_discover)
+    monkeypatch.setattr(s.mcp, "discover_auto_async", blocking_discover)
 
+    command_loop.start_session()  # startup itself never touches MCP
+    discovery = asyncio.ensure_future(command_loop.discover_mcp_async())
     try:
-        command_loop.start_session()
-        # Discovery was dispatched, but start_session returned while it is still blocked —
-        # i.e. it ran on a background thread rather than blocking the main (prompt) thread.
-        assert discover_started.wait(timeout=2), "discover_auto was never dispatched"
-        assert not allow_finish.is_set()
-        assert ran_on and ran_on[0] is not threading.main_thread()
+        await asyncio.wait_for(started.wait(), 2)
+        # Still blocked in discovery, and the caller is free: this is a task, not a wait.
+        assert not discovery.done()
     finally:
         allow_finish.set()
+        await discovery
 
 def test_input_history_is_trimmed_to_a_bounded_size(tmp_path):
     path = history_file(tmp_path / "history.txt", 5000)

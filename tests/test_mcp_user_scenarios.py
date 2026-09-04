@@ -5,7 +5,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from mcp_harness import _fake_resource
+from mcp_harness import _fake_resource, as_async
 from test_mcp_commands import oauth_store, oauth_value, put_oauth_state
 
 from wizolt.cli import CommandLoop
@@ -58,7 +58,15 @@ class TestMCPUserScenarios:
             time.sleep(0.001)
         return predicate()
 
-    def test_startup_manual_connect_and_disconnect_update_next_model_request(self, monkeypatch):
+    @staticmethod
+    async def wait_for(predicate, timeout=2.0):
+        """Yield to the loop until `predicate` holds. The timeout bounds a deadlock, not a pace."""
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            assert time.monotonic() < deadline, "condition was not reached"
+            await asyncio.sleep(0.001)
+
+    async def test_startup_manual_connect_and_disconnect_update_next_model_request(self, monkeypatch):
         raw = {
             "mcp": {
                 "search": {"url": "https://search.example/mcp", "auto_connect": True},
@@ -80,29 +88,29 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", list_resources)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
         agent = Agent(s, output_fn=lambda _text: None)
         agent.model = self.model()
         loop = CommandLoop(agent, input_fn=lambda _: "", output_fn=lambda _text: None)
 
-        assert agent.run("Search the project") == "done"
+        assert await agent.run_async("Search the project") == "done"
         assert "[search]" in self.mcp_context(agent.model)
         assert "[docs]" not in self.mcp_context(agent.model)
 
-        assert mcp_command(loop, "connect docs") == "MCP server connected: docs; tools=1; resources=1"
-        assert agent.run("Read the project guide") == "done"
+        assert await mcp_command(loop, "connect docs") == "MCP server connected: docs; tools=1; resources=1"
+        assert await agent.run_async("Read the project guide") == "done"
         context = self.mcp_context(agent.model)
         assert "[search]" in context
         assert "[docs]" in context
         assert "docs://guide.md" in context
 
-        assert mcp_command(loop, "disconnect search") == "MCP server disconnected: search"
-        assert agent.run("Continue with the documentation") == "done"
+        assert await mcp_command(loop, "disconnect search") == "MCP server disconnected: search"
+        assert await agent.run_async("Continue with the documentation") == "done"
         context = self.mcp_context(agent.model)
         assert "[search]" not in context
         assert "[docs]" in context
 
-    def test_resource_only_mention_connects_server_and_reaches_model(self, monkeypatch):
+    async def test_resource_only_mention_connects_server_and_reaches_model(self, monkeypatch):
         raw = {"mcp": {"handbook": {"url": "https://handbook.example/mcp"}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
@@ -118,14 +126,14 @@ class TestMCPUserScenarios:
         agent = Agent(s, output_fn=lambda _text: None)
         agent.model = self.model()
 
-        assert agent.run("Use @handbook to check the deployment process") == "done"
+        assert await agent.run_async("Use @handbook to check the deployment process") == "done"
 
         request_text = "\n".join(str(message.get("content", "")) for message in agent.model.requests[-1])
         assert "--- MCP MENTIONS ---" in request_text
         assert "handbook://operations.md" in request_text
         assert "MCP" in {schema["function"]["name"] for schema in agent.model.tools[-1]}
 
-    def test_reauthorization_replaces_cached_token_and_client_as_one_unit(self, tmp_path, monkeypatch):
+    async def test_reauthorization_replaces_cached_token_and_client_as_one_unit(self, tmp_path, monkeypatch):
         url = "https://metabase.example/mcp"
         raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
         s = Session(cwd=str(tmp_path), config=Config.from_dict(raw))
@@ -142,7 +150,7 @@ class TestMCPUserScenarios:
         async def no_resources(_config, _headers):
             return []
 
-        def authorize(_config, notify=None):
+        async def authorize(_config, notify=None):
             nonlocal authorized
             assert oauth_value(store, url, "mcp-oauth-token", "/tokens") is None
             assert oauth_value(store, url, "mcp-oauth-client-info", "/client_info") is None
@@ -151,17 +159,17 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authorize)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", authorize)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         loop.interactive_input = True
 
-        result = mcp_command(loop, "connect metabase")
+        result = await mcp_command(loop, "connect metabase")
 
         assert result == "MCP server connected: metabase; tools=1; resources=0"
         assert oauth_value(store, url, "mcp-oauth-token", "/tokens")["access_token"] == "fresh-token"
         assert oauth_value(store, url, "mcp-oauth-client-info", "/client_info")["client_id"] == "fresh-client"
 
-    def test_noninteractive_connect_preserves_rejected_cached_oauth_state(self, tmp_path, monkeypatch):
+    async def test_noninteractive_connect_preserves_rejected_cached_oauth_state(self, tmp_path, monkeypatch):
         url = "https://metabase.example/mcp"
         raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
         s = Session(cwd=str(tmp_path), config=Config.from_dict(raw))
@@ -174,16 +182,16 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", rejected)
         monkeypatch.setattr(s.mcp, "_list_resources", rejected)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("non-interactive connect opened OAuth"))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", as_async(lambda *_args, **_kwargs: pytest.fail("non-interactive connect opened OAuth")))
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
 
-        result = mcp_command(loop, "connect metabase")
+        result = await mcp_command(loop, "connect metabase")
 
         assert result == "MCP server error: metabase: authentication required; run /mcp connect metabase"
         assert oauth_value(store, url, "mcp-oauth-token", "/tokens")["access_token"] == "cached-token"
         assert oauth_value(store, url, "mcp-oauth-client-info", "/client_info")["client_id"] == "cached-client"
 
-    def test_oauth_mention_reports_rejection_without_starting_login(self, tmp_path, monkeypatch):
+    async def test_oauth_mention_reports_rejection_without_starting_login(self, tmp_path, monkeypatch):
         url = "https://metabase.example/mcp"
         raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
         s = Session(cwd=str(tmp_path), config=Config.from_dict(raw))
@@ -196,17 +204,17 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", rejected)
         monkeypatch.setattr(s.mcp, "_list_resources", rejected)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("mention opened OAuth"))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", as_async(lambda *_args, **_kwargs: pytest.fail("mention opened OAuth")))
         agent = Agent(s, output_fn=lambda _text: None)
         agent.model = self.model()
 
-        assert agent.run("Use @metabase to inspect the dashboard") == "done"
+        assert await agent.run_async("Use @metabase to inspect the dashboard") == "done"
 
         request_text = "\n".join(str(message.get("content", "")) for message in agent.model.requests[-1])
         assert "[metabase] unavailable: authentication required" in request_text
         assert oauth_value(store, url, "mcp-oauth-client-info", "/client_info")["client_id"] == "cached-client"
 
-    def test_mixed_batch_reauthorizes_only_rejected_oauth_server(self, tmp_path, monkeypatch):
+    async def test_mixed_batch_reauthorizes_only_rejected_oauth_server(self, tmp_path, monkeypatch):
         valid_url = "https://valid.example/mcp"
         stale_url = "https://stale.example/mcp"
         raw = {
@@ -231,7 +239,7 @@ class TestMCPUserScenarios:
         async def no_resources(_config, _headers):
             return []
 
-        def authorize(config, notify=None):
+        async def authorize(config, notify=None):
             authorized.append(config.name)
             assert config.name == "stale"
             assert oauth_value(store, stale_url, "mcp-oauth-client-info", "/client_info") is None
@@ -241,11 +249,11 @@ class TestMCPUserScenarios:
 
         monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authorize)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", authorize)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         loop.interactive_input = True
 
-        result = mcp_command(loop, "connect valid stale plain")
+        result = await mcp_command(loop, "connect valid stale plain")
 
         assert authorized == ["stale"]
         assert all(s.mcp.connected(name) for name in ("valid", "stale", "plain"))
@@ -253,7 +261,7 @@ class TestMCPUserScenarios:
         assert oauth_value(store, valid_url, "mcp-oauth-client-info", "/client_info")["client_id"] == "valid-client"
         assert oauth_value(store, stale_url, "mcp-oauth-client-info", "/client_info")["client_id"] == "fresh-client"
 
-    def test_batch_connection_isolates_failed_server_from_model_context(self, monkeypatch):
+    async def test_batch_connection_isolates_failed_server_from_model_context(self, monkeypatch):
         raw = {
             "mcp": {
                 "catalog": {"url": "https://catalog.example/mcp"},
@@ -277,16 +285,16 @@ class TestMCPUserScenarios:
         agent.model = self.model()
         loop = CommandLoop(agent, input_fn=lambda _: "", output_fn=lambda _text: None)
 
-        result = mcp_command(loop, "connect catalog offline")
+        result = await mcp_command(loop, "connect catalog offline")
         assert "● connected  `catalog`" in result
         assert "● error  `offline` — service unavailable" in result
 
-        assert agent.run("Search available products") == "done"
+        assert await agent.run_async("Search available products") == "done"
         context = self.mcp_context(agent.model)
         assert "[catalog]" in context
         assert "[offline]" not in context
 
-    def test_batch_command_reports_live_progress_until_every_server_finishes(self, monkeypatch):
+    async def test_batch_command_reports_live_progress_until_every_server_finishes(self, monkeypatch):
         raw = {
             "mcp": {
                 "alpha": {"url": "https://alpha.example/mcp"},
@@ -310,20 +318,20 @@ class TestMCPUserScenarios:
         monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
-        result = []
-        worker = threading.Thread(target=lambda: result.append(mcp_command(loop, "connect alpha beta")))
-        worker.start()
-        assert all(event.wait(1) for event in started.values())
+        # The batch is a task, not a worker thread: both servers are connected concurrently on this
+        # loop, and the status bar is read between awaits the way the TUI reads it between frames.
+        connecting = asyncio.ensure_future(mcp_command(loop, "connect alpha beta"))
+        await self.wait_for(lambda: all(event.is_set() for event in started.values()))
         assert StatusBar(s).mcp_status().startswith("mcp 0/2")
 
         release["alpha"].set()
-        assert self.wait_until(lambda: s.mcp.connected("alpha"))
+        await self.wait_for(lambda: s.mcp.connected("alpha"))
         assert s.mcp.discovery_status == "discovering"
         assert StatusBar(s).mcp_status().startswith("mcp 1/2")
 
         release["beta"].set()
-        worker.join(1)
-        assert not worker.is_alive()
+        result = await connecting
+
         assert s.mcp.discovery_status == "ready"
         assert StatusBar(s).mcp_status() == "mcp 2"
-        assert result and "`alpha`" in result[0] and "`beta`" in result[0]
+        assert result and "`alpha`" in result and "`beta`" in result

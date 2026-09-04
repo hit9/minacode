@@ -1,11 +1,10 @@
 """mcp commands core (split from tests/test_mcp_commands.py)."""
-import threading
-import time
+import asyncio
 from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
-from mcp_harness import mcp_cfg, mcp_tool_info
+from mcp_harness import as_async, mcp_cfg, mcp_tool_info
 
 import wizolt.cli.commands as commands_mod
 from wizolt.base import SELECTION_BACK
@@ -17,7 +16,6 @@ from wizolt.config import (
     Config,
 )
 from wizolt.engine import Agent
-from wizolt.mcp import MCPManager
 from wizolt.render import UiPrinter
 from wizolt.session import Session, SessionSnapshotStore, bootstrap_features
 from wizolt.tools import CodeIndex
@@ -25,20 +23,24 @@ from wizolt.tui import TUI_MODAL_PENDING, ChoiceViewState
 
 
 class TestMCPCommands:
-    def test_start_session_discovers_auto_servers(self, monkeypatch):
+    async def test_startup_discovers_auto_servers(self, monkeypatch):
+        """The frontends start one discovery task; startup itself does not wait on any server."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         calls = []
-        monkeypatch.setattr(s.mcp, "discover_auto", lambda: calls.append("auto"))
+        monkeypatch.setattr(s.mcp, "discover_auto_async", as_async(lambda: calls.append("auto")))
         monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
         monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
         monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+        command_loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None).start_session()
+        command_loop.start_session()
+        assert calls == []
 
+        await command_loop.discover_mcp_async()
         assert calls == ["auto"]
 
-    def test_mcp_command_no_args_shows_status(self, monkeypatch):
+    async def test_mcp_command_no_args_shows_status(self, monkeypatch):
         """/mcp returns server status."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -54,14 +56,14 @@ class TestMCPCommands:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = mcp_command(loop, "")
+        result = await mcp_command(loop, "")
         assert "test" in result
         assert "| `test` | auto | ● connected | 1     |" in result
 
-    def test_mcp_tools_shows_listing(self, monkeypatch):
+    async def test_mcp_tools_shows_listing(self, monkeypatch):
         """/mcp tools returns tool listing."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -77,26 +79,26 @@ class TestMCPCommands:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_auto()
+        await s.mcp.discover_auto_async()
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = mcp_command(loop, "tools")
+        result = await mcp_command(loop, "tools")
         assert "### `test`" in result
         assert "echo" in result
 
-    def test_mcp_tools_without_name_does_not_discover(self, monkeypatch):
+    async def test_mcp_tools_without_name_does_not_discover(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         calls = []
-        monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
+        monkeypatch.setattr(s.mcp, "discover_server_async", as_async(lambda name: calls.append(name)))
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = mcp_command(loop, "tools")
+        result = await mcp_command(loop, "tools")
 
         assert calls == []
         assert result == "(no connected MCP servers)"
 
-    def test_mcp_connect_oauth_failure_includes_mcp_url(self, monkeypatch):
+    async def test_mcp_connect_oauth_failure_includes_mcp_url(self, monkeypatch):
         """Interactive connect shows a fallback URL when OAuth does not provide one."""
         raw = mcp_cfg(auth="oauth")
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -106,12 +108,12 @@ class TestMCPCommands:
             raise RuntimeError("Unexpected content type: text/html")
 
         monkeypatch.setattr(s.mcp, "_run_op", fake_login)
-        result = s.mcp.connect_server("test", interactive=True)
+        result = await s.mcp.connect_server_async("test", interactive=True)
 
         assert "Unexpected content type: text/html" in result
         assert "Open MCP URL: http://localhost:9999/mcp" in result
 
-    def test_mcp_connect_authenticates_then_loads_capabilities(self, monkeypatch):
+    async def test_mcp_connect_authenticates_then_loads_capabilities(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
         authenticated = False
@@ -121,20 +123,20 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: authenticated)
         monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", cleared.append)
 
-        def fake_auth(config, notify=None):
+        async def fake_auth(config, notify=None):
             nonlocal authenticated
             authenticated = True
             calls.append((config.name, notify))
 
-        def fake_discover(name):
+        async def fake_discover(name):
             assert authenticated
             s.mcp.tools[name] = [mcp_tool_info(name, "echo")]
             s.mcp.resources[name] = []
 
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", fake_auth)
-        monkeypatch.setattr(s.mcp, "discover_server", fake_discover)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", fake_auth)
+        monkeypatch.setattr(s.mcp, "discover_server_async", fake_discover)
 
-        result = s.mcp.connect_server("test", interactive=True)
+        result = await s.mcp.connect_server_async("test", interactive=True)
 
         assert result == "MCP server connected: test; tools=1; resources=0"
         assert calls == [("test", None)]
@@ -142,7 +144,7 @@ class TestMCPCommands:
         assert s.mcp.connected("test")
         assert "echo" in s.mcp.render_tools_index()
 
-    def test_mcp_connect_reauthorizes_rejected_cached_oauth_session(self, monkeypatch):
+    async def test_mcp_connect_reauthorizes_rejected_cached_oauth_session(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
         authorized = False
@@ -165,7 +167,7 @@ class TestMCPCommands:
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         loop.interactive_input = True
 
-        result = mcp_command(loop, "connect test")
+        result = await mcp_command(loop, "connect test")
 
         assert result == "MCP server connected: test; tools=0; resources=0"
         assert attempts.count(True) == 1
@@ -173,12 +175,12 @@ class TestMCPCommands:
         assert cleared == ["http://localhost:9999/mcp"]
         assert s.mcp.connected("test")
 
-    def test_mcp_connect_keeps_valid_cached_oauth_session(self, monkeypatch):
+    async def test_mcp_connect_keeps_valid_cached_oauth_session(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
         monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
         monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: pytest.fail("valid credentials were cleared"))
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("valid credentials triggered login"))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", as_async(lambda *_args, **_kwargs: pytest.fail("valid credentials triggered login")))
 
         async def tools(_config, _headers):
             return [SimpleNamespace(name="echo", description="Echo", inputSchema={}, annotations=None)]
@@ -189,16 +191,16 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "_list_tools", tools)
         monkeypatch.setattr(s.mcp, "_list_resources", resources)
 
-        result = s.mcp.connect_server("test", interactive=True)
+        result = await s.mcp.connect_server_async("test", interactive=True)
 
         assert result == "MCP server connected: test; tools=1; resources=0"
 
-    def test_mcp_connect_does_not_reauthorize_on_non_auth_failure(self, monkeypatch):
+    async def test_mcp_connect_does_not_reauthorize_on_non_auth_failure(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
         monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
         monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: pytest.fail("credentials were cleared"))
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("connection error triggered login"))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", as_async(lambda *_args, **_kwargs: pytest.fail("connection error triggered login")))
 
         async def offline(_config, _headers):
             raise ConnectionError("service unavailable")
@@ -206,12 +208,12 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "_list_tools", offline)
         monkeypatch.setattr(s.mcp, "_list_resources", offline)
 
-        result = s.mcp.connect_server("test", interactive=True)
+        result = await s.mcp.connect_server_async("test", interactive=True)
 
         assert result == "MCP server error: test: service unavailable"
 
     @pytest.mark.parametrize("rejection", ["invalid_request", "invalid client", "invalid_token", "HTTP 403 forbidden"])
-    def test_mcp_connect_recognizes_cached_oauth_rejection_variants(self, rejection, monkeypatch):
+    async def test_mcp_connect_recognizes_cached_oauth_rejection_variants(self, rejection, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
         authorized = False
@@ -227,44 +229,44 @@ class TestMCPCommands:
         async def resources(_config, _headers):
             return []
 
-        def authorize(config, notify=None):
+        async def authorize(config, notify=None):
             nonlocal authorized
             logins.append(config.name)
             authorized = True
 
         monkeypatch.setattr(s.mcp, "_list_tools", tools)
         monkeypatch.setattr(s.mcp, "_list_resources", resources)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authorize)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", authorize)
 
-        result = s.mcp.connect_server("test", interactive=True)
+        result = await s.mcp.connect_server_async("test", interactive=True)
 
         assert result == "MCP server connected: test; tools=0; resources=0"
         assert logins == ["test"]
 
-    def test_mcp_connect_oauth_requires_interactive_session(self):
+    async def test_mcp_connect_oauth_requires_interactive_session(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
         bootstrap_features(s)
 
-        result = s.mcp.connect_server("test")
+        result = await s.mcp.connect_server_async("test")
 
         assert result == "MCP server authentication required: test; run /mcp connect test interactively"
         assert not s.mcp.connected("test")
 
-    def test_mcp_connect_discovers_and_rediscovers_server(self, monkeypatch):
+    async def test_mcp_connect_discovers_and_rediscovers_server(self, monkeypatch):
         """Repeated /mcp connect NAME calls reconnect that server."""
         calls = []
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
-        monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
+        monkeypatch.setattr(s.mcp, "discover_server_async", as_async(lambda name: calls.append(name)))
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        mcp_command(loop, "connect test")
-        mcp_command(loop, "connect test")
+        await mcp_command(loop, "connect test")
+        await mcp_command(loop, "connect test")
 
         assert calls == ["test", "test"]
 
-    def test_mcp_connects_multiple_servers_concurrently_in_argument_order(self, monkeypatch):
+    async def test_mcp_connects_multiple_servers_concurrently_in_argument_order(self, monkeypatch):
         raw = {
             "mcp": {
                 "alpha": {"url": "https://alpha.example/mcp"},
@@ -273,23 +275,27 @@ class TestMCPCommands:
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
-        barrier = threading.Barrier(2)
+        both_started = asyncio.Event()
         started = []
 
-        def fake_discover(config):
+        async def fake_discover(config):
             started.append(config.name)
-            barrier.wait(timeout=1)
+            if len(started) == 2:
+                both_started.set()
+            # Neither server can finish until the other has started: a batch that connected them
+            # one after another would never get past this.
+            await asyncio.wait_for(both_started.wait(), 1)
             s.mcp.tools[config.name] = []
             s.mcp.resources[config.name] = []
 
-        monkeypatch.setattr(s.mcp, "_discover_one", fake_discover)
+        monkeypatch.setattr(s.mcp, "_discover_one_async", fake_discover)
 
-        result = s.mcp.connect_servers(["alpha", "beta", "alpha"])
+        result = await s.mcp.connect_servers_async(["alpha", "beta", "alpha"])
 
         assert set(started) == {"alpha", "beta"}
         assert result == ("MCP connection results:\n\n- ● connected  `alpha` — 0 tools\n- ● connected  `beta` — 0 tools")
 
-    def test_mcp_batch_serializes_oauth_only(self, monkeypatch):
+    async def test_mcp_batch_serializes_oauth_only(self, monkeypatch):
         raw = {
             "mcp": {
                 "alpha": {"url": "https://alpha.example/mcp", "auth": "oauth"},
@@ -301,31 +307,28 @@ class TestMCPCommands:
         authenticated: set[str] = set()
         active = 0
         maximum = 0
-        state_lock = threading.Lock()
         monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda url: url in authenticated)
 
-        def authenticate(config, notify=None):
+        async def authenticate(config, notify=None):
             nonlocal active, maximum
-            with state_lock:
-                active += 1
-                maximum = max(maximum, active)
-            time.sleep(0.02)
+            active += 1
+            maximum = max(maximum, active)
+            await asyncio.sleep(0.02)  # a login yields, so a second one would overlap unless gated
             authenticated.add(config.url)
-            with state_lock:
-                active -= 1
+            active -= 1
 
-        def discover(config):
+        async def discover(config):
             s.mcp.tools[config.name] = []
             s.mcp.resources[config.name] = []
 
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authenticate)
-        monkeypatch.setattr(s.mcp, "_discover_one", discover)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", authenticate)
+        monkeypatch.setattr(s.mcp, "_discover_one_async", discover)
 
-        s.mcp.connect_servers(["alpha", "beta"], interactive=True)
+        await s.mcp.connect_servers_async(["alpha", "beta"], interactive=True)
 
         assert maximum == 1
 
-    def test_mcp_batch_keeps_oauth_failure_compact_and_connects_other_servers(self, monkeypatch):
+    async def test_mcp_batch_keeps_oauth_failure_compact_and_connects_other_servers(self, monkeypatch):
         raw = {
             "mcp": {
                 "oauth": {"url": "https://oauth.example/mcp", "auth": "oauth"},
@@ -337,14 +340,14 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: None)
         monkeypatch.setattr(
             s.mcp,
-            "_authenticate_oauth",
-            lambda config, notify=None: "\n".join(
+            "_authenticate_oauth_async",
+            as_async(lambda config, notify=None: "\n".join(
                 [
                     "MCP OAuth authentication failed for oauth: authorization denied",
                     "No authorization URL was provided by the server.",
                     "Open MCP URL: " + config.url,
                 ]
-            ),
+            )),
         )
 
         async def tools(_config, _headers):
@@ -356,7 +359,7 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "_list_tools", tools)
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
 
-        result = s.mcp.connect_servers(["oauth", "plain"], interactive=True)
+        result = await s.mcp.connect_servers_async(["oauth", "plain"], interactive=True)
 
         assert result == (
             "MCP connection results:\n\n"
@@ -368,7 +371,7 @@ class TestMCPCommands:
         assert not s.mcp.connected("oauth")
         assert s.mcp.connected("plain")
 
-    def test_noninteractive_batch_never_starts_missing_oauth_login(self, monkeypatch):
+    async def test_noninteractive_batch_never_starts_missing_oauth_login(self, monkeypatch):
         raw = {
             "mcp": {
                 "oauth": {"url": "https://oauth.example/mcp", "auth": "oauth"},
@@ -377,7 +380,7 @@ class TestMCPCommands:
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
-        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("batch opened OAuth"))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth_async", as_async(lambda *_args, **_kwargs: pytest.fail("batch opened OAuth")))
 
         async def tools(_config, _headers):
             return []
@@ -388,53 +391,53 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "_list_tools", tools)
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
 
-        result = s.mcp.connect_servers(["oauth", "plain"], interactive=False)
+        result = await s.mcp.connect_servers_async(["oauth", "plain"], interactive=False)
 
         assert "● error  `oauth` — authentication required" in result
         assert "● connected  `plain` — 0 tools" in result
         assert not s.mcp.connected("oauth")
         assert s.mcp.connected("plain")
 
-    def test_mcp_batch_connect_formats_failures_as_separate_list_items(self, monkeypatch):
+    async def test_mcp_batch_connect_formats_failures_as_separate_list_items(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
-        monkeypatch.setattr(s.mcp, "_discover_one", lambda config: s.mcp.set_server_error(config.name, "offline"))
+        monkeypatch.setattr(s.mcp, "_discover_one_async", as_async(lambda config: s.mcp.set_server_error(config.name, "offline")))
 
-        result = s.mcp.connect_servers(["test", "missing"])
+        result = await s.mcp.connect_servers_async(["test", "missing"])
 
         assert result == ("MCP connection results:\n\n- ● error  `test` — offline\n- ● error  `missing` — server not found")
 
-    def test_mcp_connect_command_accepts_multiple_servers(self, monkeypatch):
+    async def test_mcp_connect_command_accepts_multiple_servers(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         calls = []
         monkeypatch.setattr(
             s.mcp,
-            "connect_servers",
-            lambda names, **kwargs: calls.append((names, kwargs)) or "connected batch",
+            "connect_servers_async",
+            as_async(lambda names, **kwargs: calls.append((names, kwargs)) or "connected batch"),
         )
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        result = mcp_command(loop, "connect alpha beta")
+        result = await mcp_command(loop, "connect alpha beta")
 
         assert result == "connected batch"
         assert calls == [(["alpha", "beta"], {"interactive": False, "notify": loop.emit})]
 
-    def test_mcp_connect_rejects_missing_server(self):
+    async def test_mcp_connect_rejects_missing_server(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        assert mcp_command(loop, "connect missing") == "MCP server not found: missing"
+        assert await mcp_command(loop, "connect missing") == "MCP server not found: missing"
 
-    def test_mcp_disconnect_removes_connected_server(self):
+    async def test_mcp_disconnect_removes_connected_server(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         s.mcp.resources["test"] = []
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        assert mcp_command(loop, "disconnect test") == "MCP server disconnected: test"
+        assert await mcp_command(loop, "disconnect test") == "MCP server disconnected: test"
         assert not s.mcp.connected("test")
 
     def test_mcp_disconnect_oauth_also_clears_authentication(self, monkeypatch):
@@ -451,143 +454,130 @@ class TestMCPCommands:
         assert cleared == ["http://localhost:9999/mcp"]
         assert not s.mcp.connected("test")
 
-    def test_bare_mcp_opens_manager_in_tui(self, monkeypatch):
+    async def test_bare_mcp_opens_manager_in_tui(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         loop.tui = SimpleNamespace(input_mode="idle")
         calls = []
-        monkeypatch.setattr(commands_mod, "mcp_manager", lambda _loop: calls.append("manager"))
+        monkeypatch.setattr(commands_mod, "mcp_manager", as_async(lambda _loop: calls.append("manager")))
 
-        assert mcp_command(loop, "") is None
+        assert await mcp_command(loop, "") is None
         assert calls == ["manager"]
 
-    def test_mcp_manager_connects_selected_server(self, monkeypatch):
+    async def test_mcp_manager_connects_selected_server(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        connected = threading.Event()
-        release = threading.Event()
-        repainted = threading.Event()
+        connected = asyncio.Event()
+        release = asyncio.Event()
+        repainted = asyncio.Event()
 
-        def connect(name, **_kwargs):
-            release.wait(1)
+        async def connect(name, **_kwargs):
+            await release.wait()
             s.mcp.tools[name] = []
             s.mcp.resources[name] = []
             return "connected " + name
 
-        def show_modal(fragments, handle_key):
+        async def show_modal_async(fragments, handle_key):
             assert handle_key("enter") is TUI_MODAL_PENDING
             assert "● connecting" in "".join(text for _, text in fragments())
             release.set()
-            assert repainted.wait(1)
+            await asyncio.wait_for(repainted.wait(), 1)
             assert "● connected" in "".join(text for _, text in fragments())
             connected.set()
             return SELECTION_BACK
 
-        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=repainted.set)
-        monkeypatch.setattr(s.mcp, "connect_server", connect)
+        loop.tui = SimpleNamespace(show_modal_async=show_modal_async, invalidate=repainted.set)
+        monkeypatch.setattr(s.mcp, "connect_server_async", connect)
 
-        mcp_manager(loop, )
+        await mcp_manager(loop)
 
         assert connected.is_set()
         assert s.mcp.connected("test")
 
-    def test_mcp_manager_disconnects_selected_server(self, monkeypatch):
+    async def test_mcp_manager_disconnects_selected_server(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         bootstrap_features(s)
         s.mcp.tools["test"] = []
         s.mcp.resources["test"] = []
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        release = threading.Event()
-        repainted = threading.Event()
+        repainted = asyncio.Event()
 
-        def disconnect(name):
-            release.wait(1)
-            return MCPManager.disconnect_server(s.mcp, name)
-
-        def show_modal(fragments, handle_key):
+        async def show_modal_async(fragments, handle_key):
             assert handle_key("enter") is TUI_MODAL_PENDING
+            # The toggle is a task, so it has not run yet: the row shows the transition the key
+            # press recorded, and only the repaint that follows shows the result.
             assert "● disconnecting" in "".join(text for _, text in fragments())
-            release.set()
-            assert repainted.wait(1)
+            await asyncio.wait_for(repainted.wait(), 1)
             assert "● disconnected" in "".join(text for _, text in fragments())
             return SELECTION_BACK
 
-        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=repainted.set)
-        monkeypatch.setattr(s.mcp, "disconnect_server", disconnect)
+        loop.tui = SimpleNamespace(show_modal_async=show_modal_async, invalidate=repainted.set)
 
-        mcp_manager(loop, )
+        await mcp_manager(loop)
 
         assert not s.mcp.connected("test")
 
-    def test_mcp_manager_starts_multiple_connections_concurrently(self, monkeypatch):
+    async def test_mcp_manager_starts_multiple_connections_concurrently(self, monkeypatch):
         raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        started = {name: threading.Event() for name in ("a", "b")}
-        release = threading.Event()
+        started = {name: asyncio.Event() for name in ("a", "b")}
+        release = asyncio.Event()
 
-        def connect(name, **_kwargs):
+        async def connect(name, **_kwargs):
             started[name].set()
-            release.wait(1)
+            await release.wait()
             s.mcp.tools[name] = []
             s.mcp.resources[name] = []
             return "connected " + name
 
-        def show_modal(_fragments, handle_key):
+        async def show_modal_async(_fragments, handle_key):
             assert handle_key("enter") is TUI_MODAL_PENDING
             assert handle_key("j") is TUI_MODAL_PENDING
             assert handle_key("enter") is TUI_MODAL_PENDING
-            assert all(event.wait(1) for event in started.values())
+            # Both toggles are in flight before either is allowed to finish.
+            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), 1)
             release.set()
             return SELECTION_BACK
 
-        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)
-        monkeypatch.setattr(s.mcp, "connect_server", connect)
+        loop.tui = SimpleNamespace(show_modal_async=show_modal_async, invalidate=lambda: None)
+        monkeypatch.setattr(s.mcp, "connect_server_async", connect)
 
-        mcp_manager(loop, )
+        await mcp_manager(loop)
 
         assert all(event.is_set() for event in started.values())
 
-    def test_mcp_manager_emits_late_result_without_repainting_closed_modal(self, monkeypatch):
+    async def test_mcp_manager_emits_late_result_without_repainting_closed_modal(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auto_connect=False)))
         bootstrap_features(s)
-        release = threading.Event()
-        emitted = threading.Event()
         outputs = []
-        modal_closed = False
 
-        def output(text):
-            outputs.append(str(text))
-            emitted.set()
-
-        def connect(name, **_kwargs):
-            release.wait(1)
+        async def connect(name, **_kwargs):
             s.mcp.tools[name] = []
             s.mcp.resources[name] = []
             return "MCP server connected: " + name + "; tools=0; resources=0"
 
-        def show_modal(_fragments, handle_key):
+        async def show_modal_async(_fragments, handle_key):
+            # Closes immediately: the toggle it started is a task that has not run yet, so it can
+            # only finish during the drain, with the modal already gone.
             assert handle_key("enter") is TUI_MODAL_PENDING
             return SELECTION_BACK
 
-        def invalidate():
-            assert not modal_closed, "completed worker repainted a closed modal"
+        loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=outputs.append)
+        loop.tui = SimpleNamespace(
+            show_modal_async=show_modal_async,
+            invalidate=lambda: pytest.fail("a completed toggle repainted a closed modal"),
+        )
+        monkeypatch.setattr(s.mcp, "connect_server_async", connect)
 
-        loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=output)
-        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=invalidate)
-        monkeypatch.setattr(s.mcp, "connect_server", connect)
+        await mcp_manager(loop)
 
-        mcp_manager(loop, )
-        modal_closed = True
-        release.set()
+        assert any("MCP server connected: test" in str(text) for text in outputs)
 
-        assert emitted.wait(1)
-        assert any("MCP server connected: test" in text for text in outputs)
-
-    def test_mcp_manager_aligns_server_labels(self, monkeypatch):
+    async def test_mcp_manager_aligns_server_labels(self, monkeypatch):
         raw = {
             "mcp": {
                 "a": {"url": "https://a.example/mcp"},
@@ -601,13 +591,13 @@ class TestMCPCommands:
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         captured = {}
 
-        def show_modal(fragments, _handle_key):
+        async def show_modal_async(fragments, _handle_key):
             captured["text"] = "".join(text for _, text in fragments())
             return SELECTION_BACK
 
-        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)
+        loop.tui = SimpleNamespace(show_modal_async=show_modal_async, invalidate=lambda: None)
 
-        mcp_manager(loop, )
+        await mcp_manager(loop)
 
         lines = captured["text"].splitlines()
         connected = next(line for line in lines if " a " in line)
@@ -643,48 +633,48 @@ class TestMCPCommands:
         assert ("class:choice.status.connecting", "●") in fragments
         assert ("class:choice.status.disconnected", "●") in fragments
 
-    def test_unknown_mcp_subcommand(self):
+    async def test_unknown_mcp_subcommand(self):
         """Bad /mcp subcommand returns error."""
         s = Session(cwd="/tmp")
         bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = mcp_command(loop, "bad_subcommand")
+        result = await mcp_command(loop, "bad_subcommand")
         assert "Unknown" in result
 
-    def test_mcp_subcommands_reject_extra_args(self):
+    async def test_mcp_subcommands_reject_extra_args(self):
         """MCP subcommands do not silently ignore extra args."""
         s = Session(cwd="/tmp")
         bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        assert mcp_command(loop, "tools a b") == "Usage: /mcp tools [server]"
-        assert mcp_command(loop, "connect") == "Usage: /mcp connect <server> [server ...]"
-        assert mcp_command(loop, "disconnect") == "Usage: /mcp disconnect <server>"
-        assert mcp_command(loop, "disconnect a b") == "Usage: /mcp disconnect <server>"
-        assert "Unknown" in mcp_command(loop, "login test")
-        assert "Unknown" in mcp_command(loop, "logout test")
+        assert await mcp_command(loop, "tools a b") == "Usage: /mcp tools [server]"
+        assert await mcp_command(loop, "connect") == "Usage: /mcp connect <server> [server ...]"
+        assert await mcp_command(loop, "disconnect") == "Usage: /mcp disconnect <server>"
+        assert await mcp_command(loop, "disconnect a b") == "Usage: /mcp disconnect <server>"
+        assert "Unknown" in await mcp_command(loop, "login test")
+        assert "Unknown" in await mcp_command(loop, "logout test")
 
-    def test_no_mcp_config(self):
+    async def test_no_mcp_config(self):
         """No MCP config returns message."""
         s = Session(cwd="/tmp")
         bootstrap_features(s)
         s.mcp = None
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = mcp_command(loop, "")
+        result = await mcp_command(loop, "")
         assert "not configured" in result
 
 class TestMCPCommandsByName:
-    def test_mcp_tools_specific_server(self, monkeypatch):
+    async def test_mcp_tools_specific_server(self, monkeypatch):
         """/mcp tools NAME points disconnected servers to connect."""
         raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
         bootstrap_features(s)
         discovered = []
 
-        monkeypatch.setattr(s.mcp, "discover_server", lambda name: discovered.append(name))
+        monkeypatch.setattr(s.mcp, "discover_server_async", as_async(lambda name: discovered.append(name)))
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = mcp_command(loop, "tools a")
+        result = await mcp_command(loop, "tools a")
 
         assert discovered == []
         assert result == "MCP server 'a' is not connected; run /mcp connect a"

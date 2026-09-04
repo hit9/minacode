@@ -447,9 +447,13 @@ Full documentation: https://wizolt.readthedocs.io
 
         self.session.next_hints_available = False  # the simple REPL has no chip UI; don't offer an invisible terminal tool
         self.start_session()
+        discovery = asyncio.ensure_future(self.discover_mcp_async())
         try:
             return await self._simple_loop()
         finally:
+            discovery.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await discovery
             await self.close_resources()
 
     async def close_resources(self) -> None:
@@ -463,9 +467,8 @@ Full documentation: https://wizolt.readthedocs.io
             await self.agent.model.close_async()
         mcp = self.session.mcp
         if mcp is not None:
-            # TODO(async-phase-6): MCP owns its own loop until it moves onto this one.
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(mcp.close)
+                await mcp.close_async()
 
     async def _simple_loop(self) -> int:
         while True:
@@ -522,6 +525,18 @@ Full documentation: https://wizolt.readthedocs.io
                 self.ui.emit_turn_end(started)
             self.session.save_snapshot()
 
+    async def discover_mcp_async(self) -> None:
+        """Connect the auto_connect servers, as a task the caller's runtime owns.
+
+        A task, not a wait: an unreachable server must not hold the prompt, and the tools index
+        picks servers up as they connect. It is owned rather than detached so shutdown can cancel
+        it -- a discovery still opening clients when the loop closes is exactly the thing the
+        private MCP thread used to hide."""
+
+        mcp = self.session.mcp
+        if mcp is not None:
+            await mcp.discover_auto_async()
+
     def start_session(self) -> None:
         """Initialize output and background services shared by both command-loop frontends."""
         self.emit(f"wizolt {__version__}. /help for commands.")
@@ -533,11 +548,6 @@ Full documentation: https://wizolt.readthedocs.io
         # Publish existing availability without scanning the tree; the freshness check already
         # runs after each completed turn.
         CodeIndex(self.session).status()
-        # Discover auto_connect servers in the background so an unreachable one cannot block the
-        # prompt; the tools index picks them up as they connect.
-        mcp = self.session.mcp
-        if mcp is not None:
-            threading.Thread(target=mcp.discover_auto, name="mcp-discover", daemon=True).start()
         # The provider catalog refresh runs off the startup path after the first screen, gated to
         # once per 72h (see sync.CatalogRuntime); a failure only shows through /catalog.
         catalog = self.session.catalog

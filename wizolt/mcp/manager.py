@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import contextlib
 import json
 import os
 import re
 import threading
 from collections.abc import Awaitable, Callable, Coroutine
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from wizolt.base import Json, ToolError
@@ -68,7 +66,10 @@ class MCPManager:
 
     Each operation opens its own short-lived client, so no connection is durable state. That costs a
     process start per stdio call and is why the lifecycle rework is on the roadmap in DESIGN.md.
-    Discovery and its asyncio loop run off the main thread, so the catalog and status are lock-guarded.
+
+    Every operation is a coroutine on the caller's loop -- the one the runtime owns -- so a client
+    is entered, used, and exited in one place, and a cancelled turn brings its MCP call down with
+    it. The catalog stays lock-guarded because status is still read from the TUI's render path.
     """
 
     RAW_OUTPUT_LIMIT: ClassVar[int] = 200_000
@@ -94,12 +95,12 @@ class MCPManager:
         self.index_truncated: bool = False  # set by render_tools_index when even name-only overflows the cap
         self._configs_cache: list[MCPServerConfig] | None = None
         self._oauth_token_store = MCPFileTokenStore(self.session.data_path("mcp-oauth", "tokens.json"))
-        self._oauth_lock = threading.Lock()
+        self._oauth_lock: asyncio.Lock | None = None
+        self._oauth_lock_loop: asyncio.AbstractEventLoop | None = None
         self._discovering_servers: dict[str, int] = {}
         self._discovery_failed = False
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._loop_thread: threading.Thread | None = None
-        self._loop_lock = threading.Lock()
+        # Operations in flight on the runtime loop, so shutdown has something to cancel and await.
+        self._tasks: set[asyncio.Task] = set()
         self._closed = False
 
     def parse_configs(self) -> list[MCPServerConfig]:
@@ -169,7 +170,7 @@ class MCPManager:
         self.server_errors.pop(name, None)
         self.server_skips.pop(name, None)
 
-    def discover_auto(self) -> None:
+    async def discover_auto_async(self) -> None:
         configs = self.parse_configs()
         discoverable = [config for config in configs if config.auto_connect]
         names = tuple(config.name for config in discoverable)
@@ -180,26 +181,37 @@ class MCPManager:
                     for name in list(self.tools.keys() | self.resources.keys()):
                         if name not in configured:
                             self._forget_locked(name)
-                if discoverable:
-                    workers = min(self.MAX_DISCOVERY_WORKERS, len(discoverable))
-                    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-discover") as executor:
-                        futures = [executor.submit(self._discover_one, config) for config in discoverable]
-                        for future in as_completed(futures):
-                            future.result()
+                await self._gather_bounded([self._discover_one_async(config) for config in discoverable])
         except Exception as error:  # noqa: BLE001 - discovery aggregates failures from arbitrary MCP transports.
             with self.lock:
                 self.server_errors["-"] = str(error)
 
-    def discover_server(self, name: str) -> None:
+    async def _gather_bounded(self, coroutines: list[Coroutine[Any, Any, Any]]) -> list[Any]:
+        """Run discovery-shaped work concurrently under the worker cap, preserving order.
+
+        Each child records its own failure, so `gather` here sees successes: one unreachable server
+        must not cancel the healthy siblings mid-flight, which is exactly what a raising child in a
+        TaskGroup would do."""
+
+        if not coroutines:
+            return []
+        limit = asyncio.Semaphore(min(self.MAX_DISCOVERY_WORKERS, len(coroutines)))
+
+        async def bounded(coroutine: Coroutine[Any, Any, Any]) -> Any:
+            async with limit:
+                return await coroutine
+
+        return list(await asyncio.gather(*(bounded(coroutine) for coroutine in coroutines)))
+
+    async def discover_server_async(self, name: str) -> None:
         config = self.find_config(name)
         if config is None:
             with self.lock:
                 self._forget_locked(name)
                 self.server_errors[name] = "server not found"
             return
-        names = (name,)
-        with self._discovery(names):
-            self._discover_one(config)
+        with self._discovery((name,)):
+            await self._discover_one_async(config)
 
     def disconnect_server(self, name: str) -> str:
         config = self.find_config(name)
@@ -214,7 +226,7 @@ class MCPManager:
     def connected(self, name: str) -> bool:
         return name in self.tools or name in self.resources
 
-    def connect_server(
+    async def connect_server_async(
         self,
         name: str,
         *,
@@ -234,20 +246,20 @@ class MCPManager:
                 return f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
             if interactive:
                 if has_tokens:
-                    self.discover_server(name)
+                    await self.discover_server_async(name)
                     if not self._oauth_reauthorization_required(name):
                         return self._connect_result(name, compact=_compact)
-                with self._oauth_lock:
+                async with self._oauth_gate():
                     # The token and registered OAuth client form one credential set. If
                     # either is rejected, discard both so the new random callback port is
                     # registered together with the replacement token.
                     self._oauth_token_store.clear_server(config.url)
-                    if error := self._authenticate_oauth(config, notify=notify):
+                    if error := await self._authenticate_oauth_async(config, notify=notify):
                         if _compact:
                             prefix = f"MCP OAuth authentication failed for {name}: "
                             return self._compact_line("error", name, error.removeprefix(prefix))
                         return error
-        self.discover_server(name)
+        await self.discover_server_async(name)
         return self._connect_result(name, compact=_compact)
 
     def _compact_line(self, kind: str, name: str, detail: str) -> str:
@@ -277,7 +289,7 @@ class MCPManager:
             return self._compact_line("connected", name, assets)
         return f"MCP server connected: {name}; tools={tool_count}; resources={resource_count}"
 
-    def connect_servers(
+    async def connect_servers_async(
         self,
         names: list[str],
         *,
@@ -287,18 +299,14 @@ class MCPManager:
         """Connect a de-duplicated batch concurrently while preserving result order."""
         selected = list(dict.fromkeys(names))
         if len(selected) == 1:
-            return self.connect_server(selected[0], interactive=interactive, notify=notify)
+            return await self.connect_server_async(selected[0], interactive=interactive, notify=notify)
 
-        results: dict[str, str] = {}
-        workers = min(self.MAX_DISCOVERY_WORKERS, len(selected))
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-connect") as executor:
-            futures = {name: executor.submit(self.connect_server, name, interactive=interactive, notify=notify, _compact=True) for name in selected}
-            for name, future in futures.items():
-                results[name] = future.result()
+        connected = await self._gather_bounded([self.connect_server_async(name, interactive=interactive, notify=notify, _compact=True) for name in selected])
+        results = dict(zip(selected, connected, strict=True))
         items = ("- " + results[name].replace("\n", "\n    ") for name in selected)
         return "MCP connection results:\n\n" + "\n".join(items)
 
-    def _discover_one(self, config: MCPServerConfig) -> None:
+    async def _discover_one_async(self, config: MCPServerConfig) -> None:
         if config.error:
             self.set_server_error(config.name, config.error)
             return
@@ -314,7 +322,7 @@ class MCPManager:
             self.set_server_error(config.name, "authentication required; run /mcp connect " + config.name)
             return
         try:
-            tools, resources = self.run_async(self._gather_assets(config, headers))
+            tools, resources = await self._bounded(self._gather_assets(config, headers), timeout=self.discovery_timeout())
             with self.lock:
                 self.tools[config.name] = self._tools_info(config.name, tools)
                 self.resources[config.name] = self._resources_info(config.name, resources)
@@ -437,102 +445,81 @@ class MCPManager:
     def tool_info(self, server: str, tool_name: str) -> MCPToolInfo | None:
         return next((tool for tool in self.tools.get(server, []) if tool.name == tool_name), None)
 
-    def _async_loop(self) -> asyncio.AbstractEventLoop:
-        with self._loop_lock:
-            if self._closed:
-                raise ToolError("MCP manager is closed")
-            if self._loop is not None and self._loop.is_running() and self._loop_thread is not None and self._loop_thread.is_alive():
-                return self._loop
-            # Previous thread died or loop stopped; reset and recreate.
-            self._loop = None
-            self._loop_thread = None
-            ready = threading.Event()
-            holder: dict[str, asyncio.AbstractEventLoop] = {}
+    def _oauth_gate(self) -> asyncio.Lock:
+        """The gate that keeps OAuth logins one at a time, on whichever loop is running.
 
-            def run() -> None:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                holder["loop"] = loop
-                ready.set()
-                try:
-                    loop.run_forever()
-                finally:
-                    with contextlib.suppress(Exception):
-                        loop.close()
+        A login opens a browser and a local callback server, so two at once collide on both. An
+        asyncio lock, not a threading one: this is held across the login's awaits, and a blocking
+        lock there would stop the loop that has to run the other half of the handshake.
 
-            self._loop_thread = threading.Thread(target=run, name="mcp-async", daemon=True)
-            self._loop_thread.start()
-            ready.wait()
-            self._loop = holder["loop"]
-            return self._loop
+        Rebound rather than kept for the manager's lifetime -- a lock belongs to the loop that
+        created it, and separate `asyncio.run()` boundaries do not share one."""
 
-    def run_async(self, coroutine: Coroutine[Any, Any, _MCPResultT], *, timeout: int | None = None) -> _MCPResultT:
-        if timeout is None:
-            timeout = self.call_timeout()
-        loop = self._async_loop()
-        abandoned = threading.Event()
+        loop = asyncio.get_running_loop()
+        if self._oauth_lock is None or self._oauth_lock_loop is not loop:
+            self._oauth_lock, self._oauth_lock_loop = asyncio.Lock(), loop
+        return self._oauth_lock
 
-        async def guarded() -> Any:
-            # Once we stop waiting below, cancelling the concurrent future stops it copying the
-            # task's outcome back, so nothing ever retrieves a late failure -- and a client whose
-            # teardown raises its own error (an HTTP read timeout on the abandoned request, say)
-            # would surface as asyncio's "Task exception was never retrieved" during collection.
-            # Swallow it instead: by then the caller already has its timeout error.
-            try:
-                return await coroutine
-            except BaseException:
-                if abandoned.is_set():
-                    return None
-                raise
+    async def _bounded(self, coroutine: Coroutine[Any, Any, _MCPResultT], *, timeout: int | None = None) -> _MCPResultT:
+        """Await one MCP operation under a deadline, as a task this manager owns.
 
-        future = asyncio.run_coroutine_threadsafe(guarded(), loop)
+        A task rather than a bare await so `close_async()` has something to cancel: an operation
+        started by a turn that is gone must still be brought down before the loop closes.
+
+        `wait_for` cancels the operation and *awaits* it, so the FastMCP client's `async with` has
+        unwound -- process reaped, HTTP session closed -- by the time the timeout is raised here.
+        Cancellation from outside travels the same way, which is why neither is special-cased."""
+
+        if self._closed:
+            # Closed before this one was ever started: the operation is closed rather than dropped,
+            # or the caller's un-awaited coroutine would surface as a warning at collection.
+            coroutine.close()
+            raise ToolError("MCP manager is closed")
+        timeout = self.call_timeout() if timeout is None else timeout
+        task = asyncio.ensure_future(coroutine)
+        self._tasks.add(task)
         try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError as error:
-            abandoned.set()
-            future.cancel()
-            raise ToolError(f"MCP call timed out after {timeout}s") from error
-        except concurrent.futures.CancelledError as error:
-            abandoned.set()
-            raise ToolError("MCP call was cancelled") from error
+            done, _ = await asyncio.wait({task}, timeout=timeout)
+            if done:
+                return task.result()
+            await self._settle(task)
+            raise ToolError(f"MCP call timed out after {timeout}s")
+        except asyncio.CancelledError:
+            await self._settle(task)
+            raise
+        finally:
+            self._tasks.discard(task)
 
-    def close(self) -> None:
-        # Stop and join the background loop before the interpreter tears down its
-        # default executors. Otherwise an in-flight client cleanup (HTTP session
-        # termination, DNS via run_in_executor) races the concurrent.futures atexit
-        # shutdown and prints "cannot schedule new futures after shutdown".
-        with self._loop_lock:
-            if self._closed:
-                return
-            self._closed = True
-            loop = self._loop
-            thread = self._loop_thread
-            self._loop = None
-            self._loop_thread = None
-        if loop is None or thread is None:
+    @staticmethod
+    async def _settle(task: asyncio.Task) -> None:
+        """Cancel one operation and wait for its client to finish unwinding.
+
+        `wait` rather than awaiting the task: the caller already has the answer that matters -- a
+        timeout, or its own cancellation -- and a client whose teardown then fails on its own (an
+        HTTP read timeout on the request it was abandoning) must neither replace that answer nor be
+        left unretrieved for the loop's exception handler to print during collection."""
+
+        task.cancel()
+        await asyncio.wait({task})
+        if not task.cancelled():
+            task.exception()
+
+    async def close_async(self) -> None:
+        """Cancel and await everything this manager still has in flight.
+
+        Called by the runtime's shutdown, on the loop that owns those tasks -- a FastMCP client
+        must not be left to the interpreter's teardown, where an in-flight cleanup (an HTTP session
+        termination, a DNS lookup in the default executor) races the executor's own atexit."""
+
+        if self._closed:
             return
-
-        async def _shutdown() -> None:
-            pending = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
-            for task in pending:
-                task.cancel()
-            for task in pending:
-                with contextlib.suppress(BaseException):
-                    await task
-
-        if loop.is_running():
-            try:
-                asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=5)
-            except concurrent.futures.TimeoutError:
-                pass
-            except Exception:  # noqa: BLE001, S110 - shutdown is best-effort after cancellation.
-                pass
-            try:
-                loop.call_soon_threadsafe(loop.stop)
-            except Exception:  # noqa: BLE001, S110 - the event loop may already be closed.
-                pass
-        if thread.is_alive():
-            thread.join(timeout=5)
+        self._closed = True
+        pending = list(self._tasks)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._tasks.clear()
 
     def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> OAuth:
         from fastmcp.client.auth import OAuth
@@ -639,21 +626,21 @@ class MCPManager:
         if not self.connected(server):
             raise ToolError(f"MCP server '{server}' is not connected; run /mcp connect {server}")
 
-    def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
-        result = self._call_result(server, tool_name, arguments)
+    async def call_tool_async(self, server: str, tool_name: str, arguments: Json) -> str:
+        result = await self._call_result_async(server, tool_name, arguments)
 
         text = self.normalize_result(result)
         return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
 
-    def _call_result(self, server: str, tool_name: str, arguments: Json) -> Any:
+    async def _call_result_async(self, server: str, tool_name: str, arguments: Json) -> Any:
         """Shared transport path for call_tool and call_tool_structured: resolve, run, normalize errors."""
         config, headers = self._resolve_server(server)
         try:
-            return self.run_async(self._call_tool(config, headers, tool_name, arguments))
+            return await self._bounded(self._call_tool(config, headers, tool_name, arguments))
         except Exception as e:
             raise ToolError("MCP call failed: " + self.error_text(e)) from e
 
-    def call_tool_structured(self, server: str, tool_name: str, arguments: Json) -> Any:
+    async def call_tool_structured_async(self, server: str, tool_name: str, arguments: Json) -> Any:
         """Call an MCP tool and return its payload as a parsed JSON value.
 
         `Any`, not `Json`: a declared outputSchema may describe an array as legitimately as an
@@ -664,7 +651,7 @@ class MCPManager:
         text. Without a declared schema the call's text body is parsed as JSON; a non-JSON body is
         an error so the caller can decide whether to fall back to text.
         """
-        result = self._call_result(server, tool_name, arguments)
+        result = await self._call_result_async(server, tool_name, arguments)
 
         info = self.tool_info(server, tool_name)
         if info is not None and info.output_schema:
@@ -702,12 +689,12 @@ class MCPManager:
         lines.append("</MCPResources>")
         return "\n".join(lines)
 
-    def read_resource(self, server: str, uri: str) -> str:
+    async def read_resource_async(self, server: str, uri: str) -> str:
         if not uri:
             raise ToolError("MCP read_resource requires a uri")
         config, headers = self._resolve_server(server)
         try:
-            result = self.run_async(self._read_resource(config, headers, uri))
+            result = await self._bounded(self._read_resource(config, headers, uri))
         except Exception as e:  # noqa: BLE001 - normalize arbitrary MCP transport errors as ToolError.
             raise ToolError("MCP resource read failed: " + self.error_text(e))
         text = self.normalize_resource(result)
@@ -715,7 +702,7 @@ class MCPManager:
 
     AUTO_READ_LIMIT: ClassVar[int] = 6_000  # per-doc cap for resources auto-injected on first tool call
 
-    def auto_read_prefix(self, server: str, tool_name: str) -> str:
+    async def auto_read_prefix_async(self, server: str, tool_name: str) -> str:
         """On the first call to a tool whose description references a resource doc, fetch it once.
 
         Returns a block to attach to that call's result (so the grammar reaches the model on the
@@ -737,7 +724,7 @@ class MCPManager:
                 continue
             self._auto_read_done.add((server, uri))  # mark before fetching so failures don't retry
             try:
-                blocks.append(self.read_resource(server, uri)[: self.AUTO_READ_LIMIT])
+                blocks.append((await self.read_resource_async(server, uri))[: self.AUTO_READ_LIMIT])
             except Exception:  # noqa: BLE001, S112 - referenced resources are injected best-effort.
                 continue
         if not blocks:
@@ -778,13 +765,13 @@ class MCPManager:
         """
         return normalize_result(result, raw_output_limit=self.RAW_OUTPUT_LIMIT)
 
-    def _authenticate_oauth(self, config: MCPServerConfig, notify: Callable[[str], None] | None = None) -> str | None:
+    async def _authenticate_oauth_async(self, config: MCPServerConfig, notify: Callable[[str], None] | None = None) -> str | None:
         """Validate cached OAuth credentials or complete interactive authorization."""
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
             return headers
         try:
-            self.run_async(self._run_op(config, headers, lambda c: c.list_tools(), interactive=True, notify=notify))
+            await self._bounded(self._run_op(config, headers, lambda c: c.list_tools(), interactive=True, notify=notify))
         except Exception as error:  # noqa: BLE001 - OAuth probes cross third-party MCP transports.
             text = self.error_text(error, timeout=self.call_timeout())
             self.set_server_error(config.name, text)
@@ -936,7 +923,7 @@ class MCPManager:
 
     MAX_MENTION_BLOCKS = 50
 
-    def resolve_mentions(self, text: str) -> str:
+    async def resolve_mentions_async(self, text: str) -> str:
         configs = {config.name: config for config in self.parse_configs()}
         if not configs:
             return ""
@@ -954,7 +941,7 @@ class MCPManager:
             if key in seen:
                 continue
             seen.add(key)
-            blocks.append(self._mention_block(name, raw_tool))
+            blocks.append(await self._mention_block_async(name, raw_tool))
             if len(blocks) >= self.MAX_MENTION_BLOCKS:
                 break
         if not blocks:
@@ -966,9 +953,9 @@ class MCPManager:
         ]
         return "\n".join(header + blocks).strip()
 
-    def _mention_block(self, server: str, tool: str) -> str:
+    async def _mention_block_async(self, server: str, tool: str) -> str:
         if not self.connected(server) and not self.discovering(server):
-            self.discover_server(server)
+            await self.discover_server_async(server)
         if issue := self.server_issue(server):
             kind, message = issue
             return f"[{server}] {'unavailable' if kind == 'error' else 'skipped'}: {message}"

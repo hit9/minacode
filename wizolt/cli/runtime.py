@@ -488,6 +488,7 @@ class TuiRuntime:
             self.loop.start_session()
             if resuming:
                 self.tui.set_idle()
+            self.spawn(self.loop.discover_mcp_async(), name="mcp-discovery")
             if self.loop.session.mentions is not None:
                 # Git discovery can cost hundreds of milliseconds in a large worktree. Warm its
                 # runtime-only snapshot after the prompt is live so the first picker need not wait.

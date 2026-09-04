@@ -116,7 +116,7 @@ def segment_story(segment: HistorySegment) -> tuple[str, str]:
     return headline, ""
 
 
-def mcp_manager(loop: CommandLoop) -> None:
+async def mcp_manager(loop: CommandLoop) -> None:
     mcp = loop.session.mcp
     tui = loop.tui
     if mcp is None or tui is None:
@@ -132,6 +132,7 @@ def mcp_manager(loop: CommandLoop) -> None:
     state_lock = threading.Lock()
     modal_open = threading.Event()
     modal_open.set()
+    toggles: list[asyncio.Task] = []
 
     def server_labels() -> dict[str, str]:
         with state_lock:
@@ -168,10 +169,10 @@ def mcp_manager(loop: CommandLoop) -> None:
         state.labels = server_labels()
         return state.fragments("MCP servers · Enter toggles connection", preview)
 
-    def toggle(name: str, connect: bool) -> None:
+    async def toggle(name: str, connect: bool) -> None:
         try:
             if connect:
-                result = mcp.connect_server(name, interactive=True, notify=loop.emit)
+                result = await mcp.connect_server_async(name, interactive=True, notify=loop.emit)
             else:
                 result = mcp.disconnect_server(name)
         except Exception as error:  # noqa: BLE001 - keep background MCP failures visible in the selector.
@@ -199,13 +200,19 @@ def mcp_manager(loop: CommandLoop) -> None:
             connect = not mcp.connected(result)
             errors.pop(result, None)
             transitions[result] = "connecting" if connect else "disconnecting"
-        threading.Thread(target=toggle, args=(result, connect), name="mcp-toggle-" + result, daemon=True).start()
+        toggles.append(asyncio.ensure_future(toggle(result, connect)))
         return TUI_MODAL_PENDING
 
     try:
-        tui.show_modal(fragments, handle_key)
+        await tui.show_modal_async(fragments, handle_key)
     finally:
         modal_open.clear()
+        outstanding = [task for task in toggles if not task.done()]
+        if outstanding:
+            # Awaited, never abandoned: a toggle still opening a FastMCP client when the modal
+            # closes is exactly what must not outlive the command. A cancelled modal cancels them
+            # through `gather` and still waits for those clients to unwind.
+            await asyncio.gather(*outstanding, return_exceptions=True)
 
 
 def select_choice(

@@ -1,5 +1,4 @@
 """mcp normalize (split from tests/test_mcp_tools.py)."""
-import asyncio
 from types import SimpleNamespace
 
 from mcp_harness import mcp_cfg, mcp_tool_info, session
@@ -114,7 +113,7 @@ class TestNormalizeResult:
         assert "200" in text
 
 class TestCallToolSuccess:
-    def test_call_success_mocked(self, monkeypatch):
+    async def test_call_success_mocked(self, monkeypatch):
         """call_tool returns wrapped output on success."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -126,13 +125,13 @@ class TestCallToolSuccess:
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
 
-        result = s.mcp.call_tool("test", "echo", {"text": "hi"})
+        result = await s.mcp.call_tool_async("test", "echo", {"text": "hi"})
         assert "<MCPCall server=" in result
         assert 'tool="echo"' in result
         assert "called echo" in result
         assert "</MCPCall>" in result
 
-    def test_call_content_list(self, monkeypatch):
+    async def test_call_content_list(self, monkeypatch):
         """call_tool with multi-item content list."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -149,11 +148,11 @@ class TestCallToolSuccess:
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         s.mcp.tools["test"] = [mcp_tool_info("test", "multi")]
 
-        result = s.mcp.call_tool("test", "multi", {})
+        result = await s.mcp.call_tool_async("test", "multi", {})
         assert "part one" in result
         assert "part two" in result
 
-    def test_call_from_running_event_loop(self, monkeypatch):
+    async def test_call_from_running_event_loop(self, monkeypatch):
         """Synchronous call_tool still works when the caller already has an event loop."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
@@ -163,9 +162,9 @@ class TestCallToolSuccess:
             return {"type": "text", "text": "ok"}
 
         async def run_call():
-            return s.mcp.call_tool("test", "echo", {})
+            return await s.mcp.call_tool_async("test", "echo", {})
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
 
-        assert "ok" in asyncio.run(run_call())
+        assert "ok" in await run_call()

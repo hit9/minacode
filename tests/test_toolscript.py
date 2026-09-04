@@ -2,7 +2,6 @@
 
 import asyncio
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -69,11 +68,11 @@ class TestJsonGate:
 
 
 class TestRenderingReuse:
-    def test_success_block_is_mcp_describe_plus_json_gate(self, tmp_path):
+    async def test_success_block_is_mcp_describe_plus_json_gate(self, tmp_path):
         """The describe block is exactly MCP(describe)'s rendering with the json line appended."""
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", output_schema=OUTPUT_SHAPE)]
-        describe = MCPTool(s, [{"action": "describe", "server": "test", "tool": "echo"}]).call()
+        describe = await MCPTool(s, [{"action": "describe", "server": "test", "tool": "echo"}]).call_async()
         assert _describe(s, ["test.echo"]) == describe + "\njson:    yes"
 
 
@@ -956,38 +955,41 @@ class TestScriptCancellation:
     async def test_cancelling_a_nested_call_waits_for_it_and_unblocks_the_worker(self, tmp_path, monkeypatch):
         """The script is blocked on a nested call when the turn is cancelled.
 
-        Two things have to hold. The nested call is not abandoned: an MCP call still owns its own
-        loop, so cancellation stays pending until that call returns rather than reporting a turn
-        that is still talking to a server. And when it does return, closing the gateway completes
-        the worker's future -- otherwise the script waits forever and the turn never quiesces."""
+        Two things have to hold. Cancellation reaches the MCP call itself and waits for its client
+        to unwind, rather than reporting a turn that is still talking to a server. And when it does
+        return, closing the gateway completes the worker's future -- otherwise the script waits
+        forever and the turn never quiesces."""
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={"readOnlyHint": True})]
-        entered = threading.Event()
-        release = threading.Event()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        unwound = asyncio.Event()
 
         async def slow_call(config, headers, name, arguments):
             entered.set()
-            await asyncio.to_thread(release.wait, 5)
-            return SimpleNamespace(content=[SimpleNamespace(type="text", text="late")])
+            try:
+                await asyncio.Event().wait()  # a server that never answers
+            except asyncio.CancelledError:
+                await release.wait()  # a client that takes its time closing
+                unwound.set()
+                raise
 
         monkeypatch.setattr(s.mcp, "_call_tool", slow_call)
         runner = _runner(s)
         code = 'call("test.echo", {"n": 1})\nprint("unreachable")\n'
 
         batch = asyncio.ensure_future(runner.run_async([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])]))
-        deadline = time.monotonic() + 3
-        while not entered.is_set() and time.monotonic() < deadline:
-            await asyncio.sleep(0.01)
-        assert entered.is_set(), "the nested call never started"
+        await asyncio.wait_for(entered.wait(), 3)
 
         batch.cancel()
-        await asyncio.sleep(0.2)
-        assert not batch.done(), "cancellation was reported while the nested call was still running"
+        await asyncio.sleep(0.05)
+        assert not batch.done(), "cancellation was reported while the client was still unwinding"
 
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await batch
 
+        assert unwound.is_set()
         assert runner._gateway is None
 
     async def test_nested_calls_do_not_starve_on_the_bounded_capacity(self, tmp_path):

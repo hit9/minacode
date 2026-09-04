@@ -393,9 +393,9 @@ class ToolRunner:
             # live and cancellable rather than parking a worker on them.
             return await tool.call_async()
         if isinstance(tool, MCPTool):
-            # TODO(async-phase-6): MCP still owns its own loop, so a call is managed synchronous
-            # work whose future is awaited here. Phase 6 dispatches it as a native coroutine.
-            return await self._run_in_executor(tool.call, tool)
+            # Native: the manager's operations are coroutines on this loop, so a cancelled turn
+            # reaches the FastMCP client itself and its teardown is awaited before this returns.
+            return await tool.call_async()
         if tool.MUTATES or tool.PRODUCES_MODEL_OBSERVATION or isinstance(tool, NextHintsTool):
             # Short local mutation stays on the loop: single-writer, and an Edit or a Note can
             # never outlive the turn that ordered it. Cancellation is observed on both sides.
@@ -606,7 +606,7 @@ class ToolRunner:
         holding a file handle and a worker. An ordinary tool failure is converted at that call's own
         result boundary and never cancels a healthy sibling."""
 
-        children = [asyncio.ensure_future(self._run_in_executor(lambda call=call: self.execute_readonly(call))) for call in segment]
+        children = [asyncio.ensure_future(self.execute_readonly(call)) for call in segment]
         try:
             results = await asyncio.gather(*children)
         except asyncio.CancelledError:
@@ -646,11 +646,11 @@ class ToolRunner:
         except Exception:  # noqa: BLE001 - malformed third-party tool implementations are never parallel-safe.
             return False
 
-    def execute_readonly(self, call: ToolCall) -> tuple[str, str | ToolOutput, str | None, float, object | None]:
-        # Pure execution for a parallel worker: returns (kind, output, display, elapsed, recovery)
-        # and performs no display or session writes (those happen in finalize_outcome on the main
-        # thread). Mirrors run_one's branches, minus confirmation (parallel_safe guarantees none is
-        # needed). Recovery is the structured source output a ToolError carries, if any.
+    async def execute_readonly(self, call: ToolCall) -> tuple[str, str | ToolOutput, str | None, float, object | None]:
+        # Pure execution for one parallel call: returns (kind, output, display, elapsed, recovery)
+        # and performs no display or session writes (those happen in finalize_outcome on the loop).
+        # Mirrors run_one's branches, minus confirmation (parallel_safe guarantees none is needed).
+        # Recovery is the structured source output a ToolError carries, if any.
         started = time.monotonic()
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
@@ -661,7 +661,9 @@ class ToolRunner:
             display = tooloutput.short_call(self.session, call, tool.short_args())
             if call.error:
                 raise ToolError(call.error)
-            output = tool.call()
+            # MCP's work is a coroutine on this loop, so a read-only MCP call in a parallel batch is
+            # cancelled at the client itself; every other read-only tool is bounded blocking work.
+            output = await (tool.call_async() if isinstance(tool, MCPTool) else self._run_in_executor(tool.call))
         except ToolError as error:
             return "reject", f"ToolError: {error}", display, time.monotonic() - started, error.recovery
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.

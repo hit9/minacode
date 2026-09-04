@@ -572,7 +572,10 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     with open(os.path.join(tmp_path, "issue.py"), "w", encoding="utf-8") as handle:
         handle.write("raise RuntimeError\n")
     s = session(tmp_path)  # discovers the skill written above
-    s.mcp = SimpleNamespace(resolve_mentions=lambda text: "--- MCP MENTIONS ---", render_tools_index=lambda: "", tools={}, resources={})
+    async def mcp_mentions(_text):
+        return "--- MCP MENTIONS ---"
+
+    s.mcp = SimpleNamespace(resolve_mentions_async=mcp_mentions, render_tools_index=lambda: "", tools={}, resources={})
     agent = Agent(s, output_fn=lambda text: None)
 
     class FakeModel:

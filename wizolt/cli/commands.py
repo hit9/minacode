@@ -133,7 +133,7 @@ def resend_command(loop: CommandLoop, _args: str) -> str | None:
     return None
 
 
-def mcp_command(loop: CommandLoop, args: str) -> str | None:
+async def mcp_command(loop: CommandLoop, args: str) -> str | None:
     mcp = loop.session.mcp
     if mcp is None:
         return "MCP not configured"
@@ -141,7 +141,7 @@ def mcp_command(loop: CommandLoop, args: str) -> str | None:
     parts = args.split()
     if not parts:
         if loop.tui is not None and loop.tui.input_mode != "running":
-            return mcp_manager(loop)
+            return await mcp_manager(loop)
         return mcp.render_server_status()
 
     sub = parts[0]
@@ -154,7 +154,7 @@ def mcp_command(loop: CommandLoop, args: str) -> str | None:
         return usage
 
     if sub == "connect":
-        return mcp.connect_servers(rest, interactive=loop.interactive_input, notify=loop.emit)
+        return await mcp.connect_servers_async(rest, interactive=loop.interactive_input, notify=loop.emit)
     if sub == "disconnect":
         return mcp.disconnect_server(rest[0])
     if sub == "tools":
