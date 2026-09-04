@@ -227,6 +227,9 @@ cancellation reach all of it.
   through `run_blocking`, then installs receipts on the loop. A promoted Bash process moves both
   pipes to one daemon drainer because it can outlive the loop that launched it. A thread never gets
   an exception injected into it and never owns an async client.
+- An injected synchronous input callback is an embedding boundary Python cannot cancel. It runs on
+  a daemon adapter rather than the default executor, so cancelling its awaiter cannot make
+  `asyncio.run()` wait forever; the embedding remains responsible for eventually unblocking it.
 - `base.run_blocking(invoke)` is the one blocking bridge for state-mutating maintenance work, and
   it is not `asyncio.to_thread`: cancelling it remembers the cancellation, keeps waiting for the
   worker, observes its outcome, and only then reports cancellation upward. `asyncio.to_thread`

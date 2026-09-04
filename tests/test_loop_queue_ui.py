@@ -4,6 +4,7 @@ import asyncio
 import itertools
 import os
 import sys
+import threading
 import time
 
 import pytest
@@ -226,6 +227,49 @@ async def test_tool_input_without_tui_uses_injected_input(tmp_path):
     assert await loop.tool_input("[Y/n or reason] ") == "y"
 
     assert calls == ["[Y/n or reason] "]
+
+
+@pytest.mark.parametrize("reader", ["chat", "tool"])
+def test_cancelled_injected_reader_does_not_hold_asyncio_run(tmp_path, reader):
+    """A synchronous embedding callback cannot be interrupted, but it must not keep the CLI's
+    default executor alive after the coroutine awaiting it has been cancelled."""
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    errors = []
+
+    def input_fn(_prompt):
+        started.set()
+        release.wait()
+        return "late"
+
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), input_fn=input_fn, output_fn=lambda _text: None)
+
+    async def exercise():
+        pending = asyncio.create_task(loop.read_input("") if reader == "chat" else loop.tool_input("approve"))
+        while not started.is_set():
+            await asyncio.sleep(0)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+    def run():
+        try:
+            asyncio.run(exercise())
+        except BaseException as error:  # noqa: BLE001 - forward failures from the runtime thread.
+            errors.append(error)
+        finally:
+            finished.set()
+
+    runtime = threading.Thread(target=run)
+    runtime.start()
+    try:
+        assert started.wait(1)
+        assert finished.wait(1), "asyncio.run waited for the cancelled input callback"
+    finally:
+        release.set()
+        runtime.join(1)
+    assert errors == []
 
 
 async def test_default_pipe_input_is_loop_driven_and_preserves_following_lines(tmp_path, monkeypatch):

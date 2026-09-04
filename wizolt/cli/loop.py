@@ -73,11 +73,11 @@ class Command:
 class CommandLoop:
     """Own session behavior: read input, dispatch commands, drive turns, and route output.
 
-    Slash commands are handled here and never reach the model. The agent runs on this thread while
-    prompt-toolkit runs on another, which is why output has two destinations: completed user,
-    assistant, and tool output goes to native scrollback, while drafts, previews, queue state, and
-    selectors belong to the TUI. Anything transient the terminal leaves in scrollback is an artifact,
-    not history — the transcript is always rebuilt from semantic records.
+    Slash commands are handled here and never reach the model. The agent and prompt-toolkit share
+    the runtime loop; completed user, assistant, and tool output goes to native scrollback, while
+    drafts, previews, queue state, and selectors belong to the TUI. Anything transient the terminal
+    leaves in scrollback is an artifact, not history — the transcript is always rebuilt from
+    semantic records.
 
     Input entered mid-turn is queued, and only an allowlist of read-only commands may run against a
     busy session; anything that mutates configuration would change the meaning of a turn already in
@@ -906,6 +906,37 @@ Full documentation: https://wizolt.readthedocs.io
         """Read from the injected/non-TTY input path; interactive terminals use TuiApp."""
         return initial_text or self.input_fn(prompt_text)
 
+    async def invoke_input(self, action: Callable[[], Any]) -> Any:
+        """Run an injected synchronous input callback without owning its blocking lifetime.
+
+        Python cannot cancel an arbitrary callback. A daemon adapter lets cancellation release the
+        CLI runtime immediately; the embedding still owns unblocking its callback if it wants the
+        thread itself to finish. The default executor cannot be used here because `asyncio.run()`
+        waits for that executor during shutdown.
+        """
+
+        loop = asyncio.get_running_loop()
+        result: asyncio.Future[Any] = loop.create_future()
+
+        def publish(value: Any = None, error: BaseException | None = None) -> None:
+            if result.done():
+                return
+            if error is None:
+                result.set_result(value)
+            else:
+                result.set_exception(error)
+
+        def invoke() -> None:
+            try:
+                value, error = action(), None
+            except BaseException as caught:  # noqa: BLE001 - reproduce the callback's outcome on its caller.
+                value, error = None, caught
+            with contextlib.suppress(RuntimeError):  # the cancelled runtime may already be closed.
+                loop.call_soon_threadsafe(publish, value, error)
+
+        threading.Thread(target=invoke, name="input-callback", daemon=True).start()
+        return await result
+
     async def read_input(
         self,
         prompt_text: str = UiPrinter.PROMPT_PREFIX,
@@ -914,15 +945,15 @@ Full documentation: https://wizolt.readthedocs.io
     ) -> str | UserInput:
         """Read one non-TTY line without parking the default executor on POSIX stdin.
 
-        An injected synchronous reader remains an embedding boundary and therefore runs in the
-        executor; its owner is responsible for unblocking it at shutdown. The process stdin path
-        is different: asyncio.run waits for its executor, so it is driven directly by fd readiness.
+        An injected synchronous reader remains an embedding boundary and runs through a daemon
+        adapter; its owner is responsible for unblocking it. The process stdin path is driven
+        directly by fd readiness.
         """
 
         if initial_text:
             return initial_text
         if self.input_fn is not input:
-            return await asyncio.to_thread(self.read_input_sync, prompt_text)
+            return await self.invoke_input(lambda: self.read_input_sync(prompt_text))
 
         if prompt_text:
             sys.stdout.write(prompt_text)
@@ -1140,15 +1171,15 @@ Full documentation: https://wizolt.readthedocs.io
         second application is not an option -- awaited on the loop that runs it. None propagates the
         TUI's cancel signal.
 
-        Without a TUI the injected `input_fn` blocks, so it runs on a worker. That contract belongs
-        to whoever injected it: it must return, or be unblocked, at shutdown. `asyncio.run` waits
-        for the default executor, so an uninterruptible reader would hold the process there."""
+        Without a TUI the injected `input_fn` blocks, so it runs through the same daemon adapter as
+        non-TTY input. That contract belongs to whoever injected it: it should still be unblocked,
+        but cancellation never holds the CLI runtime open around it."""
 
         if self.tui is not None:
             return await self.tui.request_input(prompt)
         if self.input_fn is input:
             return await self.read_input(prompt)
-        return await asyncio.to_thread(lambda: self.with_status_paused(lambda: self.input_fn(prompt)))
+        return await self.invoke_input(lambda: self.with_status_paused(lambda: self.input_fn(prompt)))
 
     # How close a phase rule may come to the one above it, in rendered rows. Under this the rule
     # is skipped: two rules a few rows apart part nothing, they just add lines to what is already

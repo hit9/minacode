@@ -182,8 +182,8 @@ class ImageLabelProcessor(Processor):
 class TuiApp:
     """One primary-screen application for live activity, input, selectors, and status.
 
-    The agent owns the main thread; prompt-toolkit owns the TUI thread. `request_input` bridges
-    blocking approvals, while completed output is printed above the app into terminal scrollback.
+    Prompt-toolkit and agent tasks share the runtime loop. `request_input` represents approvals as
+    an awaitable TUI state, while completed output is printed into terminal scrollback.
     """
 
     MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple(

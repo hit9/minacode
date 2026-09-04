@@ -252,8 +252,7 @@ class Session:
     A turn in progress is staged apart from committed history, so an interrupted or crashed turn can
     be settled or dropped without leaving half a turn in the record.
 
-    Queued input and snapshot writes are lock-guarded: input arrives on the UI thread while the agent
-    runs on another.
+    Queued input and snapshot writes are serialized by their owning runtime loop and snapshot gate.
     """
 
     cwd: str = field(default_factory=os.getcwd)
