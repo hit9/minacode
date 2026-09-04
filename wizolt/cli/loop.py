@@ -220,6 +220,9 @@ Full documentation: https://wizolt.readthedocs.io
         # never outlive the loop that can settle it, and none of it survives into a later run.
         self._background: set[asyncio.Task] = set()
         self._background_open = False
+        # The one in-flight mention scan, coalescing every caller onto it. Kept here rather than on
+        # FileMentions because a task is loop-bound and the session outlives loops.
+        self._mention_refresh: asyncio.Task | None = None
         # The runtime's ordered scrollback queue while the TUI is live. Set by TuiRuntime, which
         # also lends its admission lock to the background-output gate above: closing that gate and
         # scheduling a write are the same race, so one lock decides both.
@@ -472,6 +475,25 @@ Full documentation: https://wizolt.readthedocs.io
         """Start admitting session-scoped background work on the loop that is now running."""
         self._background = set()
         self._background_open = True
+        self._mention_refresh = None
+        if self.session.mentions is not None:
+            self.session.mentions.refresh_owner = self.refresh_mentions
+
+    def refresh_mentions(self) -> asyncio.Task | None:
+        """One mention-candidate scan at a time, owned here.
+
+        Every caller -- the startup warm-up, the picker on a cold cache, a completion behind a
+        keystroke -- joins the scan already running instead of starting a competing one. None means
+        admission is closed, and the caller falls back to whatever snapshot it already has."""
+
+        mentions = self.session.mentions
+        if mentions is None:
+            return None
+        task = self._mention_refresh
+        if task is not None and not task.done():
+            return task
+        self._mention_refresh = task = self.spawn_background(mentions.refresh(), name="mention-candidates")
+        return task
 
     def spawn_background(self, coroutine: Coroutine[Any, Any, object], *, name: str) -> asyncio.Task | None:
         """Admit one background coroutine, and keep it until its outcome has been observed.
@@ -505,6 +527,9 @@ Full documentation: https://wizolt.readthedocs.io
         """Stop admitting background work, then cancel and quiesce what was already accepted."""
 
         self._background_open = False
+        if self.session.mentions is not None:
+            self.session.mentions.refresh_owner = None
+        self._mention_refresh = None
         pending, self._background = self._background, set()
         for task in pending:
             task.cancel()

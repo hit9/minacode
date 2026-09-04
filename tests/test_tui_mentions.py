@@ -9,6 +9,16 @@ from wizolt.mentions import FilePick, active_mention
 from wizolt.tui import TuiApp
 
 
+def _recording_picker(queries):
+    """A picker that records the query it was opened with and selects nothing."""
+
+    async def pick(query):
+        queries.append(query)
+        return FilePick()
+
+    return pick
+
+
 def test_mention_opens_completions_while_typing(monkeypatch):
     """`@`, `@kind:`, and `$` name something the completer knows, so the list opens as they are
     typed and narrows as more characters arrive - everything else in this prompt is prose and
@@ -129,7 +139,10 @@ def test_mention_trigger_uses_canonical_scanner_spans():
     assert active_mention("profile:x") is None
 
 def test_file_picker_tab_replaces_only_active_span(monkeypatch):
-    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=lambda query: FilePick("docs/中文 notes.txt") if query == "not" else FilePick())
+    async def pick(query):
+        return FilePick("docs/中文 notes.txt") if query == "not" else FilePick()
+
+    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=pick)
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -144,10 +157,11 @@ def test_file_picker_tab_replaces_only_active_span(monkeypatch):
 
 def test_file_picker_opens_after_typing_without_tab(monkeypatch):
     queries = []
-    app = TuiApp(
-        file_picker_available_fn=lambda: True,
-        file_picker_fn=lambda query: (queries.append(query), FilePick("wizolt/tui.py"))[1],
-    )
+    async def pick(query):
+        queries.append(query)
+        return FilePick("wizolt/tui.py")
+
+    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=pick)
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -165,7 +179,7 @@ def test_selecting_partially_typed_file_kind_opens_picker(monkeypatch, typed):
     app = TuiApp(
         completer=CommandCompleter(),
         file_picker_available_fn=lambda: True,
-        file_picker_fn=lambda query: (queries.append(query), FilePick())[1],
+        file_picker_fn=_recording_picker(queries),
     )
 
     def drive(pipe_input):
@@ -181,7 +195,7 @@ def test_selecting_partially_typed_file_kind_opens_picker(monkeypatch, typed):
 
 def test_pasting_file_namespace_does_not_open_picker(monkeypatch):
     queries = []
-    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=lambda query: (queries.append(query), FilePick())[1])
+    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=_recording_picker(queries))
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -195,7 +209,7 @@ def test_pasting_file_namespace_does_not_open_picker(monkeypatch):
 
 def test_file_picker_cancel_keeps_buffer(monkeypatch):
     queries = []
-    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=lambda query: (queries.append(query), FilePick())[1])
+    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=_recording_picker(queries))
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)

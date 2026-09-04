@@ -1,15 +1,18 @@
 """@file: mentions: grammar (T1), completion matching/ranking (T3), the path source (T4),
 the FILE MENTIONS resolver (T5), and the 50k-path performance guard (T7)."""
 
+import asyncio
 import os
 import shutil
 import subprocess
 import tempfile
-import threading
 import time
 
+import pytest
 from agent_harness import session
 from prompt_toolkit.document import Document
+
+from wizolt.cli import TuiRuntime
 
 from wizolt.cli.view import CommandCompleter
 from wizolt.mentions import FileMentions, FzfPicker, active_mention, encode_file_mention, scan_mentions
@@ -125,20 +128,20 @@ def test_kind_completion_keeps_canonical_at_prefix():
 # --- T4: source ---
 
 
-def test_path_source_non_git_walk(tmp_path):
+async def test_path_source_non_git_walk(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "a.py").write_text("", encoding="utf-8")
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "node_modules" / "x.js").write_text("", encoding="utf-8")
     (tmp_path / ".hidden.py").write_text("", encoding="utf-8")
     s = session(tmp_path)
-    rels = {rel for _, rel in s.mentions.paths()}
+    rels = {rel for _, rel in await s.mentions.refresh()}
     assert "src/a.py" in rels
     assert "node_modules/x.js" in rels  # only ignore rules and .git exclude paths
     assert ".hidden.py" in rels
 
 
-def test_path_source_git_repo_and_untracked_appears(tmp_path):
+async def test_path_source_git_repo_and_untracked_appears(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
@@ -150,7 +153,7 @@ def test_path_source_git_repo_and_untracked_appears(tmp_path):
     (tmp_path / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
     (tmp_path / "ignored.tmp").write_text("", encoding="utf-8")
     s = session(tmp_path)
-    rels = {rel for _, rel in s.mentions.paths()}
+    rels = {rel for _, rel in await s.mentions.refresh()}
     assert "tracked.py" in rels
     assert "untracked.py" in rels  # git ls-files -o --exclude-standard
     assert "ignored.tmp" not in rels
@@ -158,7 +161,7 @@ def test_path_source_git_repo_and_untracked_appears(tmp_path):
     assert not any(".git" in rel.split("/") for rel in rels)
 
 
-def test_path_source_git_nested_ignore_negation_and_unusual_names(tmp_path):
+async def test_path_source_git_nested_ignore_negation_and_unusual_names(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     nested = tmp_path / "nested"
     nested.mkdir()
@@ -168,27 +171,33 @@ def test_path_source_git_nested_ignore_negation_and_unusual_names(tmp_path):
     (nested / "中文 name.txt").write_text("", encoding="utf-8")
     (nested / "line\nbreak.txt").write_text("", encoding="utf-8")
 
-    rels = {rel for _, rel in session(tmp_path).mentions.paths()}
+    rels = {rel for _, rel in await session(tmp_path).mentions.refresh()}
     assert "nested/drop.tmp" not in rels
     assert "nested/keep.tmp" in rels
     assert "nested/中文 name.txt" in rels
     assert "nested/line\nbreak.txt" in rels
 
 
-def test_git_candidate_queries_run_concurrently(monkeypatch, tmp_path):
+async def test_git_candidate_queries_overlap(monkeypatch, tmp_path):
+    """Both queries only read Git's index, so they run together: one gate neither can pass alone."""
     mentions = session(tmp_path).mentions
-    started = threading.Barrier(2)
+    both_started = asyncio.Event()
+    started = 0
 
-    def git_ls_files(flags):
-        started.wait(timeout=5)
+    async def git_ls_files(flags):
+        nonlocal started
+        started += 1
+        if started == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), 5)
         return ["a.py"] if "--others" in flags else []
 
     monkeypatch.setattr(mentions, "_git_ls_files", git_ls_files)
 
-    assert mentions._git_paths() == ["a.py"]
+    assert await mentions._git_paths() == ["a.py"]
 
 
-def test_python_fallback_honors_nested_gitignore(monkeypatch, tmp_path):
+async def test_python_fallback_honors_nested_gitignore(monkeypatch, tmp_path):
     nested = tmp_path / "nested"
     nested.mkdir()
     (nested / ".gitignore").write_text("*.tmp\n!keep.tmp\n", encoding="utf-8")
@@ -196,19 +205,32 @@ def test_python_fallback_honors_nested_gitignore(monkeypatch, tmp_path):
     (nested / "keep.tmp").write_text("", encoding="utf-8")
     monkeypatch.setattr("wizolt.mentions.shutil.which", lambda _name: None)
 
-    rels = {rel for _, rel in session(tmp_path).mentions.paths()}
+    rels = {rel for _, rel in await session(tmp_path).mentions.refresh()}
     assert "nested/drop.tmp" not in rels
     assert "nested/keep.tmp" in rels
 
 
-def test_path_cache_refreshes_after_window(tmp_path):
+async def test_a_stale_snapshot_is_served_now_and_refreshed_behind_the_caller(tmp_path):
+    """A stale list still opens the picker immediately -- the selection is revalidated anyway --
+    and a fresh one is served as is, without touching the filesystem at all."""
     (tmp_path / "a.py").write_text("", encoding="utf-8")
     s = session(tmp_path)
-    s.mentions._paths_cache = (time.monotonic() - 10, (("a.py", "a.py"),))  # stale: only a.py
     (tmp_path / "b.py").write_text("", encoding="utf-8")
-    assert {rel for _, rel in s.mentions.paths()} == {"a.py", "b.py"}
+
+    s.mentions._paths_cache = (time.monotonic() - 10, (("a.py", "a.py"),))  # stale: only a.py
+    scans = []
+    s.mentions.refresh_owner = lambda: scans.append(True)
+    assert {rel for _, rel in await s.mentions.candidates()} == {"a.py"}
+    assert scans == [True]  # served stale, and refreshed for the next caller
+
     s.mentions._paths_cache = (time.monotonic(), (("a.py", "a.py"),))  # fresh: kept as is
-    assert {rel for _, rel in s.mentions.paths()} == {"a.py"}
+    assert {rel for _, rel in await s.mentions.candidates()} == {"a.py"}
+    assert scans == [True]
+
+    # A cold cache is the one case that waits, and it sees both files.
+    s.mentions._paths_cache = None
+    s.mentions.refresh_owner = None
+    assert {rel for _, rel in await s.mentions.candidates()} == {"a.py", "b.py"}
 
 
 # --- T5: resolver ---
@@ -302,7 +324,7 @@ def fake_fzf(tmp_path, body):
     return str(path)
 
 
-def test_fzf_picker_uses_nul_path_scheme_query_and_isolated_environment(monkeypatch, tmp_path):
+async def test_fzf_picker_uses_nul_path_scheme_query_and_isolated_environment(monkeypatch, tmp_path):
     selected = "docs/中文 notes.txt"
     (tmp_path / "docs").mkdir()
     (tmp_path / selected).write_text("", encoding="utf-8")
@@ -322,23 +344,23 @@ def test_fzf_picker_uses_nul_path_scheme_query_and_isolated_environment(monkeypa
     mentions = session(tmp_path).mentions
     mentions._paths_cache = (time.monotonic(), ((selected.lower(), selected),))
 
-    result = FzfPicker(mentions, executable).pick("notes")
+    result = await FzfPicker(mentions, executable).pick("notes")
 
     assert result.selection == selected
     assert not result.unavailable
 
 
-def test_fzf_picker_cancel_and_protocol_failure_are_bounded(tmp_path):
+async def test_fzf_picker_cancel_and_protocol_failure_are_bounded(tmp_path):
     (tmp_path / "a.py").write_text("", encoding="utf-8")
     mentions = session(tmp_path).mentions
     mentions._paths_cache = (time.monotonic(), (("a.py", "a.py"),))
     cancelled = fake_fzf(tmp_path, "sys.stdin.buffer.read()\nraise SystemExit(130)\n")
-    assert FzfPicker(mentions, cancelled).pick("").selection is None
+    assert (await FzfPicker(mentions, cancelled).pick("")).selection is None
 
     broken = tmp_path / "broken-fzf"
     broken.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
     broken.chmod(0o755)
-    result = FzfPicker(mentions, str(broken)).pick("")
+    result = await FzfPicker(mentions, str(broken)).pick("")
     assert result.unavailable
 
 
@@ -353,50 +375,74 @@ def test_fzf_picker_caches_missing_executable(monkeypatch, tmp_path):
     assert calls == ["fzf"]
 
 
-def test_fzf_picker_candidate_failure_routes_to_fallback(monkeypatch, tmp_path):
+async def test_fzf_picker_candidate_failure_routes_to_fallback(monkeypatch, tmp_path):
     executable = fake_fzf(tmp_path, "sys.stdin.buffer.read()\nraise SystemExit(1)\n")
     mentions = session(tmp_path).mentions
 
-    def fail():
+    async def fail():
         raise RuntimeError("candidate source failed")
 
-    monkeypatch.setattr(mentions, "_collect", fail)
+    monkeypatch.setattr(mentions, "candidates", fail)
 
-    result = FzfPicker(mentions, executable).pick("")
+    result = await FzfPicker(mentions, executable).pick("")
 
     assert result.unavailable
 
 
-def test_fzf_cancel_during_cold_scan_coalesces_background_refresh(monkeypatch, tmp_path):
-    executable = fake_fzf(tmp_path, "import time\ntime.sleep(0.1)\nraise SystemExit(130)\n")
+async def test_escape_closes_fzf_while_a_cold_scan_is_still_running(tmp_path, monkeypatch):
+    """A cold cache races the scan against fzf's own exit. Escape must close the picker rather than
+    hold the terminal until a large worktree has finished being walked."""
+    executable = fake_fzf(tmp_path, "import time\ntime.sleep(0.05)\nraise SystemExit(130)\n")
     mentions = session(tmp_path).mentions
-    started = threading.Event()
-    release = threading.Event()
-    calls = []
+    scanning = asyncio.Event()
 
-    def collect():
-        calls.append(None)
-        started.set()
-        release.wait(2)
-        return ()
+    async def never_finishes():
+        scanning.set()
+        await asyncio.Event().wait()
 
-    monkeypatch.setattr(mentions, "_collect", collect)
+    monkeypatch.setattr(mentions, "candidates", never_finishes)
+
+    result = await FzfPicker(mentions, executable).pick("")
+
+    assert result.selection is None
+    assert scanning.is_set()  # the scan really had started; the picker did not wait for it
+
+
+async def test_concurrent_mention_refreshes_coalesce_onto_one_scan(tmp_path):
+    """Every caller joins the scan already running: one traversal, and all waiters see its result."""
+    from tui_harness import loop as command_loop_for
+
+    command_loop = command_loop_for(tmp_path)
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
+    mentions = command_loop.session.mentions
+    assert mentions is not None
+    scans = 0
+    real_collect = mentions._collect
+
+    def collect(rels):
+        nonlocal scans
+        scans += 1
+        return real_collect(rels)
+
+    mentions._collect = collect
+    command_loop.open_background()
     try:
-        assert FzfPicker(mentions, executable).pick("").selection is None
-        assert started.is_set()
-        assert FzfPicker(mentions, executable).pick("").selection is None
-        assert len(calls) == 1
+        results = await asyncio.gather(*(mentions.candidates() for _ in range(5)))
     finally:
-        release.set()
+        await command_loop.close_background()
+
+    assert scans == 1
+    assert all(result == results[0] for result in results)
+    assert {rel for _, rel in results[0]} == {"a.py"}
 
 
-def test_fzf_picker_uses_stale_snapshot_while_refreshing(monkeypatch, tmp_path):
+async def test_fzf_picker_uses_stale_snapshot_while_refreshing(monkeypatch, tmp_path):
     selected = "a.py"
     (tmp_path / selected).write_text("", encoding="utf-8")
     mentions = session(tmp_path).mentions
     mentions._paths_cache = (0, ((selected, selected),))
-    refresh_callbacks = []
-    monkeypatch.setattr(mentions, "schedule_refresh", lambda callback=None: refresh_callbacks.append(callback))
+    scheduled = []
+    monkeypatch.setattr(mentions, "refresh_owner", lambda: scheduled.append(True))
     executable = fake_fzf(
         tmp_path,
         "items = sys.stdin.buffer.read().split(b'\\0')\n"
@@ -404,10 +450,10 @@ def test_fzf_picker_uses_stale_snapshot_while_refreshing(monkeypatch, tmp_path):
         f"sys.stdout.buffer.write({selected!r}.encode() + b'\\0')\n",
     )
 
-    result = FzfPicker(mentions, executable).pick("")
+    result = await FzfPicker(mentions, executable).pick("")
 
     assert result.selection == selected
-    assert refresh_callbacks == [None]
+    assert scheduled == [True]  # opened on the stale list, refreshed for the next invocation
 
 
 # --- T7: performance ---
@@ -422,3 +468,140 @@ def test_filter_50k_paths_has_no_gross_algorithmic_regression():
     elapsed = time.perf_counter() - start
     assert len(matches) == 50
     assert elapsed < 0.050
+
+
+async def test_a_newer_completion_query_supersedes_an_older_one(tmp_path, monkeypatch):
+    """The menu must show what is being typed now. A query overtaken while it ranked publishes
+    nothing, so a slow early keystroke cannot overwrite the newest cache."""
+    mentions = session(tmp_path).mentions
+    mentions._paths_cache = (time.monotonic(), (("notes.txt", "notes.txt"), ("other.txt", "other.txt")))
+    ready = []
+    release_first = asyncio.Event()
+    real_matches = FileMentions._literal_matches
+
+    def slow_first(paths, query):
+        if query == "n":
+            while not release_first.is_set():
+                time.sleep(0.005)
+        return real_matches(paths, query)
+
+    monkeypatch.setattr(FileMentions, "_literal_matches", staticmethod(slow_first))
+
+    first = asyncio.ensure_future(mentions.complete("n", lambda: ready.append("n")))
+    await asyncio.sleep(0.02)
+    second = asyncio.ensure_future(mentions.complete("other", lambda: ready.append("other")))
+    await second
+    release_first.set()
+    await first
+
+    assert ready == ["other"]  # the superseded query never notified
+    assert mentions.cached_matches("other") == ("other.txt",)
+    assert mentions.cached_matches("n") == ()
+
+
+async def test_no_completion_callback_fires_after_the_owner_closes(tmp_path):
+    """Shutdown means the input widget is gone; a completion that lands afterwards must not call
+    back into it."""
+    from tui_harness import loop as command_loop_for
+
+    command_loop = command_loop_for(tmp_path)
+    runtime = TuiRuntime(command_loop)
+    mentions = command_loop.session.mentions
+    assert mentions is not None
+    mentions._paths_cache = (time.monotonic(), (("a.py", "a.py"),))
+    fired = []
+
+    command_loop.open_background()
+    runtime.complete_mentions("a", lambda: fired.append(True))
+    await command_loop.close_background()
+    fired.clear()
+
+    runtime.complete_mentions("a", lambda: fired.append(True))
+    await asyncio.sleep(0.05)
+
+    assert fired == []
+
+
+async def test_cancelling_a_refresh_reaps_its_discovery_subprocesses(tmp_path, monkeypatch):
+    """`git ls-files` on a large worktree is not something to leave running behind a cancelled
+    refresh: both children are killed and waited for before cancellation is reported."""
+    mentions = session(tmp_path).mentions
+    processes = []
+    both_started = asyncio.Event()
+    real_exec = asyncio.create_subprocess_exec
+
+    async def slow_git(*argv, **kwargs):
+        process = await real_exec("sleep", "30", **kwargs)
+        processes.append(process)
+        if len(processes) == 2:
+            both_started.set()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", slow_git)
+
+    scan = asyncio.ensure_future(mentions.refresh())
+    await asyncio.wait_for(both_started.wait(), 5)
+    scan.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await scan
+
+    assert processes
+    assert all(process.returncode is not None for process in processes)
+
+
+async def test_cancelling_the_picker_kills_and_reaps_fzf(tmp_path):
+    """A shutdown while the picker is up must not leave fzf holding the terminal."""
+    executable = fake_fzf(tmp_path, "import time\nsys.stdin.buffer.read()\ntime.sleep(30)\n")
+    mentions = session(tmp_path).mentions
+    mentions._paths_cache = (time.monotonic(), (("a.py", "a.py"),))
+    picker = FzfPicker(mentions, executable)
+    processes = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def record(*argv, **kwargs):
+        process = await real_exec(*argv, **kwargs)
+        processes.append(process)
+        return process
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(asyncio, "create_subprocess_exec", record)
+        pick = asyncio.ensure_future(picker.pick(""))
+        while not processes:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        pick.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pick
+
+    assert processes[0].returncode is not None
+
+
+async def test_fzf_output_past_the_bound_is_refused_and_the_process_reaped(tmp_path):
+    """A single-selection picker cannot answer with a megabyte, so an answer that long is not one."""
+    executable = fake_fzf(
+        tmp_path,
+        "sys.stdin.buffer.read()\nsys.stdout.buffer.write(b'x' * ((1 << 20) + 16))\nsys.stdout.flush()\nimport time\ntime.sleep(30)\n",
+    )
+    mentions = session(tmp_path).mentions
+    mentions._paths_cache = (time.monotonic(), (("a.py", "a.py"),))
+
+    result = await FzfPicker(mentions, executable).pick("")
+
+    assert result.selection is None
+    assert not result.unavailable
+
+
+async def test_fzf_that_closes_its_input_early_still_returns_the_selection(tmp_path):
+    """fzf reads what it needs and exits; the writer meets a broken pipe and that is not an error."""
+    selected = "a.py"
+    (tmp_path / selected).write_text("", encoding="utf-8")
+    mentions = session(tmp_path).mentions
+    mentions._paths_cache = (time.monotonic(), tuple((f"f{index}.py", f"f{index}.py") for index in range(5000)) + ((selected, selected),))
+    executable = fake_fzf(
+        tmp_path,
+        "sys.stdin.buffer.close()\n" + f"sys.stdout.buffer.write({selected!r}.encode() + b'\\0')\n",
+    )
+
+    result = await FzfPicker(mentions, executable).pick("")
+
+    assert not result.unavailable

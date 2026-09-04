@@ -29,6 +29,11 @@ async def _returns_immediately():
     """Stands in for the runtime's input loop when a test only exercises startup."""
 
 
+async def _noop():
+    """An awaited stand-in that answers at once, for a startup task a test only counts."""
+    return ()
+
+
 def handled_command(exit_now=False, handled=True):
     """A stand-in for `CommandLoop.command`, which dispatch awaits like the real one."""
 
@@ -167,10 +172,10 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(command_loop, "start_session", lambda: None)
     monkeypatch.setattr(command_loop, "take_pending_inputs", list)
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
-    monkeypatch.setattr(command_loop.session.mentions, "schedule_refresh", lambda callback=None: warmed.append(callback))
+    monkeypatch.setattr(command_loop.session.mentions, "refresh", lambda: warmed.append(True) or _noop())
 
     assert runtime.run_sync() == 0
-    assert warmed == [None]
+    assert warmed == [True]
 
 def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     """While a resumed session's transcript is being restored the TUI shows a resuming status, and
@@ -213,7 +218,7 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     monkeypatch.setattr(command_loop, "start_session", lambda: calls.append(("start_session",)))
     monkeypatch.setattr(command_loop, "take_pending_inputs", list)
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
-    monkeypatch.setattr(command_loop.session.mentions, "schedule_refresh", lambda callback=None: None)
+    monkeypatch.setattr(command_loop, "refresh_mentions", lambda: None)
 
     assert runtime.run_sync() == 0
     assert calls == [("running", RESUME_STATUS_LABEL), ("start_session",), ("idle",)]

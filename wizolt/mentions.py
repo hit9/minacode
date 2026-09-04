@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import heapq
 import json
 import os
 import re
 import shutil
-import subprocess
-import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
+
+from wizolt.base import run_blocking
 
 if TYPE_CHECKING:
     from wizolt.session import Session
@@ -132,71 +133,70 @@ class FileMentions:
     def __init__(self, session: Session) -> None:
         self.session = session
         self._paths_cache: tuple[float, tuple[tuple[str, str], ...]] | None = None
-        self._cache_lock = threading.Lock()
-        self._refreshing = False
-        self._refresh_callbacks: list[Callable[[], None]] = []
         self._generation = 0
         self._last_match: tuple[int, str, tuple[str, ...]] | None = None
-        self._match_request: tuple[int, str, Callable[[], None]] | None = None
-        self._match_worker_running = False
+        # Ordinal of the newest completion request. A plain counter, not an asyncio object: it is
+        # what makes the latest query win without keeping loop-bound state on session-owned data.
+        self._match_request = 0
+        # Installed by CommandLoop while its background owner is open, and cleared when it closes.
+        # A callable, never a task: the coalescing task is loop-bound and this object outlives
+        # loops, so a future kept here would be a handle onto a loop the next run cannot await.
+        self.refresh_owner: Callable[[], Awaitable[tuple[tuple[str, str], ...]] | None] | None = None
         self.picker = FzfPicker(self)
-
-    def paths(self) -> tuple[tuple[str, str], ...]:
-        """Return a fresh immutable (lowercase, display) candidate snapshot."""
-        now = time.monotonic()
-        with self._cache_lock:
-            cached = self._paths_cache
-            if cached is not None and now - cached[0] < self.CACHE_TTL:
-                return cached[1]
-        pairs = self._collect()
-        with self._cache_lock:
-            self._paths_cache = (time.monotonic(), pairs)
-            self._generation += 1
-            self._last_match = None
-        return pairs
 
     def cached_paths(self) -> tuple[tuple[str, str], ...] | None:
         """Return the immutable snapshot without starting filesystem work."""
-        with self._cache_lock:
-            return self._paths_cache[1] if self._paths_cache is not None else None
+        return self._paths_cache[1] if self._paths_cache is not None else None
 
     def cached_matches(self, query: str) -> tuple[str, ...]:
-        with self._cache_lock:
-            match = self._last_match
-            return match[2] if match is not None and match[:2] == (self._generation, query) else ()
+        match = self._last_match
+        return match[2] if match is not None and match[:2] == (self._generation, query) else ()
 
-    def schedule_completion(self, query: str, callback: Callable[[], None]) -> None:
-        """Compute the latest literal fallback query on one worker, then notify the TUI."""
+    def schedule_refresh(self) -> Awaitable[tuple[tuple[str, str], ...]] | None:
+        """Ask the owner for its one coalesced scan, without waiting for it.
 
-        def candidates_ready() -> None:
-            with self._cache_lock:
-                self._match_request = (self._generation, query, callback)
-                if self._match_worker_running:
-                    return
-                self._match_worker_running = True
+        Returns the shared task so a caller that does want the result can await it, and None when
+        no owner is admitting work -- a session that is shutting down, or one with no frontend."""
 
-            def match() -> None:
-                while True:
-                    with self._cache_lock:
-                        request, self._match_request = self._match_request, None
-                        paths = self._paths_cache[1] if self._paths_cache is not None else ()
-                    if request is None:
-                        with self._cache_lock:
-                            if self._match_request is None:
-                                self._match_worker_running = False
-                                return
-                        continue
-                    generation, requested, ready = request
-                    matches = self._literal_matches(paths, requested)
-                    with self._cache_lock:
-                        if generation == self._generation:
-                            self._last_match = (generation, requested, matches)
-                    with suppress(Exception):
-                        ready()
+        owner = self.refresh_owner
+        return owner() if owner is not None else None
 
-            threading.Thread(target=match, name="file-matches", daemon=True).start()
+    async def candidates(self) -> tuple[tuple[str, str], ...]:
+        """The candidate snapshot for a picker or a completion.
 
-        self.schedule_refresh(candidates_ready)
+        A stale snapshot is handed back immediately and refreshed behind the caller: the picker
+        revalidates whatever is selected against the exact snapshot it displayed, so a five-second
+        old list is safe, while making every invocation wait for a full scan is not. Only a cold
+        cache waits."""
+
+        cached = self._paths_cache
+        if cached is not None:
+            if time.monotonic() - cached[0] >= self.CACHE_TTL:
+                self.schedule_refresh()
+            return cached[1]
+        scan = self.schedule_refresh()
+        return await scan if scan is not None else await self.refresh()
+
+    async def complete(self, query: str, ready: Callable[[], None] | None = None) -> None:
+        """Rank the literal fallback candidates for one query and publish the newest result.
+
+        Ranking is bounded but not free over a large worktree, so it happens on a worker; the
+        cache and the ready callback are touched here, on the loop. A query superseded while it
+        ranked publishes nothing: the menu must show what the user is typing now, not what they
+        had typed when the scan started."""
+
+        self._match_request += 1
+        request = self._match_request
+        paths = await self.candidates()
+        generation = self._generation
+        matches = await run_blocking(lambda: self._literal_matches(paths, query))
+        if request != self._match_request:
+            return
+        if generation == self._generation:
+            self._last_match = (generation, query, matches)
+        if ready is not None:
+            with suppress(Exception):
+                ready()
 
     @staticmethod
     def _literal_matches(paths: tuple[tuple[str, str], ...], query: str) -> tuple[str, ...]:
@@ -212,50 +212,32 @@ class FileMentions:
 
         return tuple(path for _, _, _, path in heapq.nsmallest(50, ranked()))
 
-    def schedule_refresh(self, callback: Callable[[], None] | None = None) -> None:
-        """Refresh once on a worker and notify all waiters; never block the caller."""
-        notify_now = False
-        start = False
-        with self._cache_lock:
-            cached = self._paths_cache
-            if cached is not None and time.monotonic() - cached[0] < self.CACHE_TTL:
-                notify_now = callback is not None
-            else:
-                if callback is not None:
-                    self._refresh_callbacks.append(callback)
-                if not self._refreshing:
-                    self._refreshing = True
-                    start = True
-        if notify_now:
-            assert callback is not None
-            callback()
-            return
-        if not start:
-            return
+    async def refresh(self) -> tuple[tuple[str, str], ...]:
+        """Rediscover the candidate paths and publish the new immutable snapshot.
 
-        def refresh() -> None:
-            try:
-                pairs = self._collect()
-                with self._cache_lock:
-                    self._paths_cache = (time.monotonic(), pairs)
-                    self._generation += 1
-                    self._last_match = None
-            except Exception:  # noqa: BLE001, S110 - optional completion cannot fail the TUI.
-                pass
-            finally:
-                with self._cache_lock:
-                    self._refreshing = False
-                    callbacks, self._refresh_callbacks = self._refresh_callbacks, []
-                for ready in callbacks:
-                    with suppress(Exception):
-                        ready()
+        The two subprocess sources are native asyncio; only the Python walk and the normalize/stat
+        pass are blocking, and they are one worker call together -- a 50k-path result is 50k stats,
+        which is not something to hand back to the loop one at a time.
 
-        threading.Thread(target=refresh, name="file-candidates", daemon=True).start()
+        A failure keeps the previous snapshot. File completion is an optional convenience and must
+        never be the reason a prompt breaks."""
 
-    def _collect(self) -> tuple[tuple[str, str], ...]:
-        rels = self._git_paths()
-        if rels is None:
-            rels = self._rg_paths()
+        try:
+            rels = await self._git_paths()
+            if rels is None:
+                rels = await self._rg_paths()
+            pairs = await run_blocking(lambda: self._collect(rels))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - optional completion cannot fail the TUI.
+            return self.cached_paths() or ()
+        self._paths_cache = (time.monotonic(), pairs)
+        self._generation += 1
+        self._last_match = None
+        return pairs
+
+    def _collect(self, rels: list[str] | None) -> tuple[tuple[str, str], ...]:
+        """Normalize, deduplicate, stat, and sort one discovery result. Runs on a worker."""
         if rels is None:
             rels = self._walk_paths()
         seen: set[str] = set()
@@ -275,54 +257,81 @@ class FileMentions:
         pairs.sort()
         return tuple(pairs)
 
-    def _git_paths(self) -> list[str] | None:
+    async def _git_paths(self) -> list[str] | None:
         """Git-authoritative candidates, including the tracked-but-ignored subtraction."""
         # These queries only share Git's read-only index. Running them together removes one full
-        # process latency from cold picker preparation in large parent worktrees.
-        from concurrent.futures import ThreadPoolExecutor
-
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="file-git") as pool:
-            included_future = pool.submit(self._git_ls_files, ["--cached", "--others", "--exclude-standard"])
-            ignored_future = pool.submit(self._git_ls_files, ["--cached", "--ignored", "--exclude-standard"])
-            included = included_future.result()
-            ignored = ignored_future.result()
+        # process latency from cold picker preparation in large parent worktrees -- two coroutines
+        # now, so overlapping them costs no threads.
+        queries = [
+            asyncio.ensure_future(self._git_ls_files(["--cached", "--others", "--exclude-standard"])),
+            asyncio.ensure_future(self._git_ls_files(["--cached", "--ignored", "--exclude-standard"])),
+        ]
+        try:
+            included, ignored = await asyncio.gather(*queries)
+        except BaseException:
+            # Both children are reaped before this raises. `gather` reports the first ending, which
+            # would otherwise let a cancelled refresh return while two `git ls-files` are still
+            # walking the worktree behind it.
+            for query in queries:
+                query.cancel()
+            await asyncio.wait(queries)
+            raise
         if included is None or ignored is None:
             return None
         excluded = set(ignored)
         return [path for path in included if path not in excluded]
 
-    def _git_ls_files(self, flags: list[str]) -> list[str] | None:
-        try:
-            result = subprocess.run(
-                ["git", "ls-files", "-z", *flags, "--", "."],
-                cwd=self.session.cwd,
-                capture_output=True,
-                timeout=self.GIT_TIMEOUT,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
+    async def _git_ls_files(self, flags: list[str]) -> list[str] | None:
+        stdout, returncode = await self._read_null_separated(["git", "ls-files", "-z", *flags, "--", "."])
+        if returncode != 0:
             return None
-        if result.returncode != 0:
-            return None
-        return [os.fsdecode(item) for item in result.stdout.split(b"\0") if item]
+        return [os.fsdecode(item) for item in stdout.split(b"\0") if item]
 
-    def _rg_paths(self) -> list[str] | None:
+    async def _rg_paths(self) -> list[str] | None:
         executable = shutil.which("rg")
         if executable is None:
             return None
+        argv = [executable, "--files", "--hidden", "--no-require-git", "--glob", "!**/.git/**", "--null"]
+        stdout, returncode = await self._read_null_separated(argv)
+        if returncode not in (0, 1):
+            return None
+        return [os.fsdecode(item) for item in stdout.split(b"\0") if item]
+
+    async def _read_null_separated(self, argv: list[str]) -> tuple[bytes, int | None]:
+        """Run one discovery command in the workspace and read its NUL-separated output.
+
+        Returns (stdout, returncode), with a None return code standing for "this source did not
+        answer" -- it could not be launched, or it ran past the timeout. Either way the process is
+        killed and reaped before this returns: a refresh that is cancelled or times out must not
+        leave a `git ls-files` walking a large worktree behind it."""
+
         try:
-            result = subprocess.run(
-                [executable, "--files", "--hidden", "--no-require-git", "--glob", "!**/.git/**", "--null"],
+            process = await asyncio.create_subprocess_exec(
+                *argv,
                 cwd=self.session.cwd,
-                capture_output=True,
-                timeout=self.GIT_TIMEOUT,
-                check=False,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if result.returncode not in (0, 1):
-            return None
-        return [os.fsdecode(item) for item in result.stdout.split(b"\0") if item]
+        except OSError:
+            return b"", None
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), self.GIT_TIMEOUT)
+        except TimeoutError:
+            await self._reap(process)
+            return b"", None
+        except BaseException:
+            # Cancellation, or anything else on the way out: the child is this call's to end.
+            await self._reap(process)
+            raise
+        return stdout, process.returncode
+
+    @staticmethod
+    async def _reap(process: asyncio.subprocess.Process) -> None:
+        """Kill one discovery child and wait for it, so nothing is left running behind a refresh."""
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await asyncio.shield(process.wait())
 
     def _walk_paths(self) -> list[str]:
         """Correct non-Git fallback using nested GitIgnoreSpec scopes."""
@@ -474,7 +483,17 @@ class FzfPicker:
             self._resolved = True
         return self._executable is not None
 
-    def pick(self, query: str) -> FilePick:
+    # One selected path, plus a sentinel byte: anything longer is not an answer fzf could have
+    # produced from a single-selection picker, so it is refused rather than parsed.
+    OUTPUT_LIMIT = 1 << 20
+
+    async def pick(self, query: str) -> FilePick:
+        """Open fzf over the candidate snapshot and return what the reader chose.
+
+        The process is the runtime's own child from launch to reap: cancelling this -- a shutdown
+        while the picker is up -- kills fzf and quiesces the candidate work before it returns,
+        rather than leaving a child owning the terminal the application is about to reclaim."""
+
         if not self.available():
             return FilePick(unavailable=True)
         environment = os.environ.copy()
@@ -497,66 +516,119 @@ class FzfPicker:
             query,
         ]
         try:
-            process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=environment)
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=environment,
+            )
         except OSError:
             self._failed = True
             return FilePick(unavailable=True)
 
-        candidates: list[tuple[tuple[str, str], ...]] = []
-        feed_failed = threading.Event()
-
-        def feed() -> None:
-            assert process.stdin is not None
-            try:
-                snapshot = self.mentions.cached_paths()
-                if snapshot is None:
-                    ready = threading.Event()
-                    self.mentions.schedule_refresh(ready.set)
-                    while not ready.wait(0.05):
-                        if process.poll() is not None:
-                            return
-                    snapshot = self.mentions.cached_paths()
-                    if snapshot is None:
-                        feed_failed.set()
-                        return
-                else:
-                    # A stale snapshot is still safe to display: the selected path is revalidated
-                    # below. Refresh it for the next picker without delaying this one's first row.
-                    self.mentions.schedule_refresh()
-                candidates.append(snapshot)
-                for _, path in snapshot:
-                    process.stdin.write(os.fsencode(path) + b"\0")
-            except (BrokenPipeError, OSError):
-                pass
-            except Exception:  # noqa: BLE001 - optional picker must fail closed
-                feed_failed.set()
-            finally:
-                with suppress(OSError):
-                    process.stdin.close()
-
-        feeder = threading.Thread(target=feed, name="fzf-candidates", daemon=True)
-        feeder.start()
-        assert process.stdout is not None
+        feed = asyncio.ensure_future(self._feed(process))
         try:
-            output = process.stdout.read(1 << 20)
-            returncode = process.wait()
-        except OSError:
-            process.kill()
-            with suppress(OSError):
-                process.wait()
-            self._failed = True
-            return FilePick(unavailable=True)
-        finally:
-            feeder.join(timeout=1)
-        if returncode == 1 and feed_failed.is_set():
+            output = await self._read_selection(process)
+        except BaseException:
+            await self._end(process, feed)
+            raise
+        if output is None:
+            # Past the bound. Not something a single-selection picker produces, so the answer is
+            # refused and the process it came from is ended rather than waited on.
+            await self._end(process, feed)
+            return FilePick()
+        returncode = await process.wait()
+        snapshot, feed_failed = await self._settle_feed(feed)
+        if returncode == 1 and feed_failed:
             return FilePick(unavailable=True)
         if returncode in (1, 130):
             return FilePick()
         if returncode != 0:
             self._failed = True
             return FilePick(unavailable=True)
+        return self._selection(output, snapshot)
+
+    async def _feed(self, process: asyncio.subprocess.Process) -> tuple[tuple[str, str], ...]:
+        """Write the candidate snapshot into fzf, and return the exact snapshot that was fed.
+
+        That snapshot is what the selection is revalidated against, so it is the task's result
+        rather than shared state: the list the reader saw is the list their answer must be in.
+
+        On a cold cache the scan is raced against fzf's own exit, so Escape closes the picker
+        instead of waiting for a large worktree to be walked first."""
+
+        stdin = process.stdin
+        assert stdin is not None
+        try:
+            snapshot = self.mentions.cached_paths()
+            if snapshot is None:
+                snapshot = await self._scan_or_exit(process)
+                if snapshot is None:
+                    return ()
+            else:
+                # A stale snapshot is still safe to display: the selected path is revalidated
+                # below. Refresh it for the next picker without delaying this one's first row.
+                self.mentions.schedule_refresh()
+            for _, path in snapshot:
+                stdin.write(os.fsencode(path) + b"\0")
+                await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # fzf closed early -- a selection or an Escape, both handled by the exit code.
+        finally:
+            with suppress(OSError, BrokenPipeError, ConnectionResetError):
+                stdin.close()
+        return snapshot or ()
+
+    async def _scan_or_exit(self, process: asyncio.subprocess.Process) -> tuple[tuple[str, str], ...] | None:
+        """Wait for a cold-cache scan, unless fzf exits first. None means the picker is already gone."""
+
+        scan = asyncio.ensure_future(self.mentions.candidates())
+        exiting = asyncio.ensure_future(process.wait())
+        try:
+            await asyncio.wait({scan, exiting}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not exiting.done():
+                exiting.cancel()
+            if not scan.done():
+                # Only this wrapper is cancelled; a scan coalesced by the loop owner keeps running
+                # for whoever else asked for it.
+                scan.cancel()
+                await asyncio.wait({scan})
+        return scan.result() if not scan.cancelled() else None
+
+    async def _read_selection(self, process: asyncio.subprocess.Process) -> bytes | None:
+        """Read fzf's answer up to the bound. None means it went past it and is not an answer."""
+        stdout = process.stdout
+        assert stdout is not None
+        data = b""
+        while len(data) <= self.OUTPUT_LIMIT:
+            chunk = await stdout.read(self.OUTPUT_LIMIT + 1 - len(data))
+            if not chunk:
+                return data
+            data += chunk
+        return None
+
+    async def _end(self, process: asyncio.subprocess.Process, feed: asyncio.Task) -> None:
+        """Kill and reap fzf, then quiesce the candidate work, before this call returns."""
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await asyncio.shield(process.wait())
+        feed.cancel()
+        await asyncio.wait({feed})
+
+    @staticmethod
+    async def _settle_feed(feed: asyncio.Task) -> tuple[tuple[tuple[str, str], ...], bool]:
+        """The snapshot fed, and whether preparing it failed -- which routes to the fallback menu."""
+        await asyncio.wait({feed})
+        if feed.cancelled() or feed.exception() is not None:
+            return (), True
+        return feed.result(), False
+
+    def _selection(self, output: bytes, snapshot: tuple[tuple[str, str], ...]) -> FilePick:
+        """Revalidate fzf's answer against the exact snapshot it was shown."""
         selected = os.fsdecode(output.split(b"\0", 1)[0]) if output else ""
-        snapshot = candidates[0] if candidates else ()
         if not selected or not any(path == selected for _, path in snapshot) or _has_git_component(selected):
             return FilePick()
         path = self.mentions.session.resolve_path(selected)

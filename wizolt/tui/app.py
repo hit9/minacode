@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -57,6 +57,11 @@ class TuiModal:
     # The result future, created by `show_modal` on the loop that opened it. Every modal is opened
     # and awaited on the application's own loop, so there is no second, thread-facing ending.
     future: Any = None
+
+
+async def _no_file_picker(_query: str) -> FilePick:
+    """The picker when no session supplied one: there is nothing to open, so say so."""
+    return FilePick(unavailable=True)
 
 
 @dataclass(frozen=True)
@@ -204,7 +209,7 @@ class TuiApp:
         input_hint_fn: Callable[[], str] | None = None,
         quick_hints_fn: Callable[[], tuple[str, ...]] | None = None,
         file_picker_available_fn: Callable[[], bool] | None = None,
-        file_picker_fn: Callable[[str], FilePick] | None = None,
+        file_picker_fn: Callable[[str], Awaitable[FilePick]] | None = None,
         file_complete_fn: Callable[[str, Callable[[], None]], None] | None = None,
         editor_context_fn: Callable[[], str] | None = None,
         images: ImageInputs | None = None,
@@ -229,7 +234,7 @@ class TuiApp:
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.quick_hints_fn: Callable[[], tuple[str, ...]] = quick_hints_fn or (lambda: ())
         self.file_picker_available_fn = file_picker_available_fn or (lambda: False)
-        self.file_picker_fn = file_picker_fn or (lambda _query: FilePick(unavailable=True))
+        self.file_picker_fn = file_picker_fn or _no_file_picker
         self.file_complete_fn = file_complete_fn or (lambda _query, ready: ready())
         self.editor_context_fn = editor_context_fn or (lambda: "")
         self.images = images if images is not None else ImageInputs(cwd=image_cwd)
@@ -892,9 +897,12 @@ class TuiApp:
 
         async def pick() -> None:
             try:
-                # The app is suspended while fzf owns the terminal. Launch it inline so there is no
-                # executor gap between erasing the prompt and the child drawing its first frame.
-                result = await run_in_terminal(lambda: self.file_picker_fn(span.payload))
+                # The app is suspended while fzf owns the terminal, and the picker is awaited
+                # inside that suspension: `in_terminal` is prompt-toolkit's asynchronous form of
+                # the same erase/restore, so there is no executor gap between erasing the prompt
+                # and the child drawing its first frame, and no worker parked on a process wait.
+                async with in_terminal():
+                    result = await self.file_picker_fn(span.payload)
                 if result.unavailable:
                     self._refresh_file_completions(buffer)
                     return

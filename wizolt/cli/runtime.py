@@ -211,6 +211,17 @@ class TuiRuntime:
             return
         self.browser = self.spawn(tool_output_viewer(self.loop), name="tool-output")
 
+    def complete_mentions(self, query: str, ready: Callable[[], None]) -> None:
+        """prompt-toolkit's file-completion callback: admission only, no work.
+
+        The callback fires from the input handler on every keystroke, so it may not do the ranking
+        itself. It hands one coroutine to the background owner and returns; `complete` is what
+        decides that a newer query has superseded this one."""
+
+        mentions = self.loop.session.mentions
+        if mentions is not None:
+            self.loop.spawn_background(mentions.complete(query, ready), name="mention-completion")
+
     def spawn(self, coroutine, *, name: str = "") -> asyncio.Task | None:
         """Start one runtime-owned task and keep it until it is done.
 
@@ -289,7 +300,7 @@ class TuiRuntime:
             quick_hints_fn=lambda: self.loop.session.quick_hints,
             file_picker_available_fn=self.loop.session.mentions.picker.available if self.loop.session.mentions else None,
             file_picker_fn=self.loop.session.mentions.picker.pick if self.loop.session.mentions else None,
-            file_complete_fn=self.loop.session.mentions.schedule_completion if self.loop.session.mentions else None,
+            file_complete_fn=self.complete_mentions if self.loop.session.mentions else None,
             editor_context_fn=self.loop.editor_context,
             images=self.loop.session.images,
             history=self.loop.input_history,
@@ -498,10 +509,9 @@ class TuiRuntime:
             if resuming:
                 self.tui.set_idle()
             self.spawn(self.loop.discover_mcp(), name="mcp-discovery")
-            if self.loop.session.mentions is not None:
-                # Git discovery can cost hundreds of milliseconds in a large worktree. Warm its
-                # runtime-only snapshot after the prompt is live so the first picker need not wait.
-                self.loop.session.mentions.schedule_refresh()
+            # Git discovery can cost hundreds of milliseconds in a large worktree. Warm the
+            # runtime-only snapshot after the prompt is live so the first picker need not wait.
+            self.loop.refresh_mentions()
             self.submit_next(self.loop.take_pending_inputs())
             await self.run_agent_loop()
         finally:
