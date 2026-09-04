@@ -1,4 +1,5 @@
 """tui modals (split from tests/test_tui_app.py)."""
+
 import asyncio
 import multiprocessing
 import threading
@@ -38,6 +39,7 @@ def test_interactive_tui_modal_uses_real_j_and_enter_keys(monkeypatch):
 
     assert result == [1]
 
+
 @pytest.mark.parametrize("exclusive", [False, True])
 def test_interactive_tui_modal_survives_repeated_resize(monkeypatch, exclusive):
     app = TuiApp()
@@ -71,6 +73,7 @@ def test_interactive_tui_modal_survives_repeated_resize(monkeypatch, exclusive):
 
     assert result == [None]
 
+
 def test_interactive_tui_renders_a_multi_line_question_as_rows_not_control_characters(monkeypatch):
     """The whole point of the split, on a real screen: every line of a multi-line Ask question is
     visible and no "^J" is drawn."""
@@ -100,6 +103,7 @@ def test_interactive_tui_renders_a_multi_line_question_as_rows_not_control_chara
     for line in ("Which one?", "A) foo", "B) bar"):
         assert line in frames[-1]
 
+
 @pytest.mark.parametrize("exclusive", [False, True])
 def test_interactive_tui_modal_presentation_matches_legacy_scope(monkeypatch, exclusive):
     app = TuiApp(status_fragments_fn=lambda: [("", "status marker")])
@@ -127,6 +131,13 @@ def test_interactive_tui_modal_presentation_matches_legacy_scope(monkeypatch, ex
     assert "status marker" in frames[-1]
     if exclusive:
         assert frames[-1].splitlines()[-1] == "status marker"
+    else:
+        lines = frames[-1].splitlines()
+        modal = lines.index("modal marker")
+        status = lines.index("status marker")
+        assert lines[modal - 1] == ""
+        assert lines[modal + 1 : status] == [""]
+
 
 def test_interactive_command_loop_ctrl_c_stops_llm_and_returns_to_input(tmp_path):
     context = multiprocessing.get_context("spawn")
@@ -159,6 +170,7 @@ def test_interactive_command_loop_ctrl_c_stops_llm_and_returns_to_input(tmp_path
     assert outcome["persisted_user_inputs"] == ["queued one", marked_followup]
     assert outcome["restored_queue"] == []
 
+
 def test_interactive_tui_ctrl_c_closes_modal_and_restores_input_focus(monkeypatch):
     received = []
     app = None
@@ -183,6 +195,7 @@ def test_interactive_tui_ctrl_c_closes_modal_and_restores_input_focus(monkeypatc
 
     assert received == ["after cancel"]
 
+
 def test_interactive_tui_resolved_modal_allows_followup_approval(monkeypatch):
     app = TuiApp()
     selected = []
@@ -206,6 +219,7 @@ def test_interactive_tui_resolved_modal_allows_followup_approval(monkeypatch):
 
     assert selected == ["chosen"]
     assert approved == ["y"]
+
 
 def test_interactive_tui_choice_ctrl_c_reports_cancellation(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)

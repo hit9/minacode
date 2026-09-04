@@ -195,6 +195,31 @@ def test_ask_view_short_terminal_drops_rows_never_slices_from_the_end():
     assert len(_rows(state.fragments(width=120, max_height=5))) == 5
 
 
+def test_ask_view_no_matches_keeps_search_visible_and_obeys_height():
+    state = AskViewState.build([AskSpec("Q?", choices=["Alpha", "Beta"])])
+    page = state.pages[0]
+    page.searching = True
+    page.set_query("missing")
+
+    rows = _rows(state.fragments(width=120, max_height=5))
+
+    assert rows == ["(1/1) Q?", "", "  no matches", "/missing", "↑/↓ or j/k move · Enter select/next · Tab switch · n notes · / search · Esc cancel · (1/1)"]
+
+
+def test_ask_view_search_uses_the_blank_row_above_footer_without_losing_capacity():
+    state = AskViewState.build([AskSpec("Q?", choices=["Alpha", "Beta"])])
+    page = state.pages[0]
+    page.searching = True
+    page.set_query("a")
+
+    rows = _rows(state.fragments(width=120, max_height=6))
+
+    assert "Alpha" in rows[2]
+    assert "Beta" in rows[3]
+    assert rows[4] == "/a"
+    assert len(rows) == 6
+
+
 def test_ask_view_preview_renders_rich_styles():
     state = AskViewState.build([AskSpec("Q?", choices=["Bold"], previews=["**bold text**"])])
     fragments = state.fragments(width=120, max_height=30)

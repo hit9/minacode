@@ -535,6 +535,9 @@ class UiPrinter:
         """
         if not self.color:
             return
+        # Keep this at zero even though the rule owns a blank row below itself: zero also means
+        # "the next block sits directly under a rule", preventing that block from adding a second
+        # leading blank. Once content is emitted, the counter resumes measuring rendered rows.
         self.rows_since_rule = 0
         width = shutil.get_terminal_size((80, 20)).columns
         # A blank row below keeps the rule off whatever follows it (narration, tool output); the

@@ -10,7 +10,8 @@
   the question no longer butts straight against the activity region above it.
 - A very short pane no longer makes the `Ask` modal render nearly every option: when the title,
   footer, and gaps leave no room for the rows, the rows are dropped instead of the list being
-  sliced from the end.
+  sliced from the end. A search with no matches still shows its query and follows the same height
+  limit.
 - Phase rules and `/status`-style compact command output keep one blank row at each boundary, so
   the transcript's seams and a command's table no longer butt straight against what follows them.
 - The agent prompt now asks for a blank line between Markdown blocks (paragraphs, lists,

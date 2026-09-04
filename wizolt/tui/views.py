@@ -438,31 +438,30 @@ class AskViewState:
         elif note := self.notes.get(self.active):
             parts.append(("class:choice.disabled", "notes: " + note + "\n"))
         if not page.enabled():
-            parts.append(("class:choice.disabled", "  no matches\n"))
-            parts.append(("", "\n"))
-            parts.extend(self._footer())
-            return parts
-        option_rows = self._option_rows(page)
-        preview = self.preview_text()
-        side_by_side = width >= 100 and bool(preview)
-        if side_by_side:
-            label_widths = [get_cwidth(page.labels.get(choice, choice)) for choice in page.visible()]
-            # The +9 covers the number prefix ("> " + "N. ", 6 cells) plus a 3-cell visible gutter
-            # between the longest option row and the preview column.
-            left_width = min(max(label_widths) + 9, width * 2 // 5)
-            right_width = max(10, width - left_width - 2)
-            preview_rows = self._preview_rows(preview, right_width)
-            body = self._join_rows(option_rows, preview_rows, left_width)
+            body: list[StyleAndTextTuples] = [[("class:choice.disabled", "  no matches")]]
         else:
-            body = list(option_rows)
-            if preview:
-                preview_rows = self._preview_rows(preview, max(10, width - 4))
-                body.append([("class:choice.disabled", "  " + "─" * max(10, width - 4))])
-                body.extend([("class:choice.preview", "  │ "), *row] for row in preview_rows)
-        # The title's blank line, the footer's, and any notes/searching row are fixed chrome; a
-        # page that cannot fit them leaves no room for option rows. Clamped at zero so a very
-        # short terminal drops the rows instead of slicing the list from the end.
-        fixed = 4 + (1 if self.notes_mode or self.notes.get(self.active) else 0) + (1 if page.searching else 0)
+            option_rows = self._option_rows(page)
+            preview = self.preview_text()
+            side_by_side = width >= 100 and bool(preview)
+            if side_by_side:
+                label_widths = [get_cwidth(page.labels.get(choice, choice)) for choice in page.visible()]
+                # The +9 covers the number prefix ("> " + "N. ", 6 cells) plus a 3-cell visible gutter
+                # between the longest option row and the preview column.
+                left_width = min(max(label_widths) + 9, width * 2 // 5)
+                right_width = max(10, width - left_width - 2)
+                preview_rows = self._preview_rows(preview, right_width)
+                body = self._join_rows(option_rows, preview_rows, left_width)
+            else:
+                body = list(option_rows)
+                if preview:
+                    preview_rows = self._preview_rows(preview, max(10, width - 4))
+                    body.append([("class:choice.disabled", "  " + "─" * max(10, width - 4))])
+                    body.extend([("class:choice.preview", "  │ "), *row] for row in preview_rows)
+        # The title's blank line, the footer's, and any notes row are fixed chrome; searching
+        # replaces the ordinary blank row above the footer, so it costs no extra row. A page that
+        # cannot fit the chrome leaves no room for body rows. Clamped at zero so a very short
+        # terminal drops the rows instead of slicing the list from the end.
+        fixed = 4 + (1 if self.notes_mode or self.notes.get(self.active) else 0)
         budget = max(0, max_height - fixed)
         if len(body) > budget:
             if budget <= 0:
