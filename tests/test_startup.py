@@ -96,6 +96,17 @@ def test_sweep_fast_forwards_no_matter_how_few_frames_ran(monkeypatch):
         _settle(module)
 
 
+def test_completed_prefix_is_consumed_only_by_the_first_session(monkeypatch):
+    """A resumed session gets the regular CommandLoop banner instead of reusing global startup."""
+    module, fake = _sweep(monkeypatch)
+    module.start()
+    assert module.finish_banner(" first") is True
+    written = fake.written
+
+    assert module.finish_banner(" resumed") is False
+    assert fake.written == written
+
+
 def test_abort_takes_the_line_back_without_a_banner(monkeypatch):
     module, fake = _sweep(monkeypatch)
     try:

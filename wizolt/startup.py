@@ -54,7 +54,9 @@ def finish_banner(remainder: str) -> bool:
     started, so the caller prints the banner through its normal channel instead.
     """
     global _finished
-    if not _started:
+    # The prefix is a one-shot handoff from `main` to the first CommandLoop. A later session
+    # resume creates another loop in the same process and must use its normal banner emit path.
+    if not _started or _finished:
         return False
     _stop.set()
     thread = _thread
