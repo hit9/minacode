@@ -22,6 +22,12 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import TUI_MODAL_PENDING, ChoiceViewState
 
 
+async def _refuses_refresh(_index) -> bool:
+    """Stands in for the code index refresh: this scenario has no index to refresh."""
+    return False
+
+
+
 class TestMCPCommands:
     async def test_startup_discovers_auto_servers(self, monkeypatch):
         """The frontends start one discovery task; startup itself does not wait on any server."""
@@ -31,7 +37,7 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "discover_auto", as_async(lambda: calls.append("auto")))
         monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
         monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-        monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
+        monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
         command_loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
         command_loop.start_session()

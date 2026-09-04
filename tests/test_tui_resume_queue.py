@@ -22,6 +22,12 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 
+async def _refuses_refresh(_index) -> bool:
+    """Stands in for the code index refresh: this scenario has no index to refresh."""
+    return False
+
+
+
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):
     saved = session(tmp_path)
     saved.enqueue_user_input("queued one")
@@ -45,8 +51,8 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
 
     command_loop.agent.model = RecordingModel()
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
 
@@ -92,8 +98,8 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
 
     command_loop.agent.model = RecordingModel()
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
 

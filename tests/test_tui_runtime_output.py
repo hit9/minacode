@@ -56,7 +56,7 @@ async def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path
     command_loop.tui.set_running = lambda label: output.append("set_running:" + label)
     command_loop.command = _not_a_command
     command_loop.agent.run = _answering("done")
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
 
     assert not await runtime.dispatch("answer me")
     await runtime.run_agent_turn("answer me")
@@ -77,7 +77,7 @@ async def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, mo
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: None
     command_loop.agent.run = _answering("the final answer")
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     emitted: list[tuple] = []
     command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
 
@@ -99,7 +99,7 @@ async def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monke
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: None
     command_loop.agent.run = _answering("the final answer")
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     emitted: list[tuple] = []
     command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
 
@@ -116,7 +116,7 @@ async def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_pa
     command_loop.tui.set_running = lambda label: None
     command_loop.agent.run = _answering("the final answer")
     command_loop.agent.turn_sources = [{"url": "https://a.example", "title": "A"}]
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     emitted: list[tuple[str, int]] = []
     command_loop.ui.emit_answer = lambda text, **kwargs: emitted.append((text, kwargs.get("indent", 0)))
 
@@ -182,7 +182,7 @@ async def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, mon
 
     command_loop.agent.run = interrupt
     command_loop.emit = lambda text="", indent=0: emitted.append((text, command_loop.view.model_stream_fragments()))
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
 
     await runtime.run_agent_turn("question")
 
@@ -371,7 +371,7 @@ async def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback
     runtime = TuiRuntime(command_loop)
     emitted = []
     command_loop.ui.emit_answer = lambda text, **_kwargs: emitted.append(text)
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
 
     async def answer(_user_input):
         with command_loop.model_stream_lock:
@@ -454,7 +454,7 @@ async def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marke
     command_loop.agent.run = _raising(MalformedToolCallError("Model emitted Bash as text 6 times; none of the textual calls were executed."))
     command_loop.ui.emit_answer = lambda text, **_kwargs: answers.append(text)
     command_loop.ui.emit_turn_end = turns_ended.append
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
 
     await runtime.run_agent_turn("continue")
 

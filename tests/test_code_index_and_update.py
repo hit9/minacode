@@ -1,5 +1,6 @@
 """code index and update (split from tests/test_core_logic.py)."""
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 
@@ -24,6 +25,12 @@ from wizolt.session import SessionSnapshotStore
 from wizolt.tools import CodeIndex
 
 
+async def _refuses_refresh(_index) -> bool:
+    """Stands in for the code index refresh: this scenario has no index to refresh."""
+    return False
+
+
+
 def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
     s = session(tmp_path)
     inside = tmp_path / "inside.py"
@@ -37,7 +44,7 @@ def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
 
     assert paths == [str(inside)]
 
-def test_code_index_update_pending_updates_small_batches_and_skips_large_batches(tmp_path, monkeypatch):
+async def test_code_index_update_pending_updates_small_batches_and_skips_large_batches(tmp_path, monkeypatch):
     (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
     updates = []
 
@@ -49,7 +56,7 @@ def test_code_index_update_pending_updates_small_batches_and_skips_large_batches
     monkeypatch.setattr(csi, "status", status)
     monkeypatch.setattr(csi, "update", lambda paths, *, root: updates.append((root, list(paths))))
 
-    assert CodeIndex(session(tmp_path)).update_pending() == "updated 1 file(s)"
+    assert await CodeIndex(session(tmp_path)).update_pending() == "updated 1 file(s)"
     assert updates == [(str(tmp_path), [str(tmp_path / "a.py")])]
 
     updates.clear()
@@ -60,10 +67,10 @@ def test_code_index_update_pending_updates_small_batches_and_skips_large_batches
             status="stale", message="", reason="changed", pending_changes=CodeIndex.AUTO_UPDATE_LIMIT + 1, pending_files=("a.py",) * 21
         ),
     )
-    assert CodeIndex(session(tmp_path)).update_pending() == ""
+    assert await CodeIndex(session(tmp_path)).update_pending() == ""
     assert updates == []
 
-def test_code_index_sync_uses_python_api_and_updates_status(tmp_path, monkeypatch):
+async def test_code_index_sync_uses_python_api_and_updates_status(tmp_path, monkeypatch):
     calls = []
 
     monkeypatch.setattr(csi, "clean", lambda root: calls.append(("clean", root)))
@@ -75,18 +82,20 @@ def test_code_index_sync_uses_python_api_and_updates_status(tmp_path, monkeypatc
     )
 
     s = session(tmp_path)
-    result = CodeIndex(s).sync(force=True)
+    result = await CodeIndex(s).sync(force=True)
 
     assert calls == [("clean", str(tmp_path)), ("index", str(tmp_path))]
     assert "code_index: rebuilt" in result
     assert s.state.code_index_status == "synced"
 
-def test_code_index_refresh_existing_uses_library_async_refresh(tmp_path, monkeypatch):
+async def test_code_index_refresh_existing_awaits_the_library_worker(tmp_path, monkeypatch):
+    """wizolt owns no waiter thread: the library's own worker is polled for having ended."""
     calls = []
+    finished = threading.Event()
 
     class Worker:
-        def join(self):
-            calls.append(("join",))
+        def is_alive(self):
+            return not finished.is_set()
 
     monkeypatch.setattr(
         csi,
@@ -98,17 +107,47 @@ def test_code_index_refresh_existing_uses_library_async_refresh(tmp_path, monkey
     monkeypatch.setattr(csi, "refresh_async", lambda root: calls.append(("refresh_async", root)) or Worker())
 
     s = session(tmp_path)
-    assert CodeIndex(s).schedule_existing_refresh() is True
-    for _ in range(50):
-        if ("join",) in calls and not s.state.code_index_refreshing:
-            break
-        time.sleep(0.01)
+    refresh = asyncio.ensure_future(CodeIndex(s).refresh_existing())
+    await asyncio.sleep(0.02)
+    assert s.state.code_index_refreshing is True  # truthful while the worker is up
+    finished.set()
 
+    assert await refresh is True
     assert ("refresh_async", str(tmp_path)) in calls
-    assert ("join",) in calls
     assert ("status", True) in calls
     assert s.state.code_index_refreshing is False
     assert s.state.code_index_status == "synced"
+
+
+async def test_cancelling_a_refresh_does_not_claim_the_worker_stopped(tmp_path, monkeypatch):
+    """Cancellation is reported only after the upstream worker really ends. Clearing the refreshing
+    flag early would invite the next turn to query an index still being rewritten under it."""
+    finished = threading.Event()
+
+    class Worker:
+        def is_alive(self):
+            return not finished.is_set()
+
+    monkeypatch.setattr(
+        csi,
+        "status",
+        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
+    )
+    monkeypatch.setattr(csi, "refresh_async", lambda root: Worker())
+
+    s = session(tmp_path)
+    refresh = asyncio.ensure_future(CodeIndex(s).refresh_existing())
+    await asyncio.sleep(0.02)
+    refresh.cancel()
+    await asyncio.sleep(0.05)
+
+    assert not refresh.done()
+    assert s.state.code_index_refreshing is True
+
+    finished.set()
+    with pytest.raises(asyncio.CancelledError):
+        await refresh
+    assert s.state.code_index_refreshing is False
 
 def test_status_bar_animates_refreshing_code_index(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -226,7 +265,7 @@ def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     monkeypatch.setattr(UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "wizolt"])
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
 
     CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=emitted.append).start_session()
 
@@ -272,3 +311,91 @@ def test_retry_status_renders_countdown_from_model_retry_until(tmp_path, monkeyp
     # Notice window expires: nothing at all.
     monkeypatch.setattr(time, "monotonic", lambda: 200.0)
     assert bar.retry_status() == ""
+
+
+async def test_repeated_freshness_triggers_coalesce_onto_one_check(tmp_path, monkeypatch):
+    """A turn end, /status, and a queued command can all ask within a moment. Only the first walks
+    the tree; the rest see the check already claimed and return at once."""
+    from tui_harness import loop as command_loop_for
+
+    checks = 0
+    release = threading.Event()
+
+    def slow_status(root, *, check=False, max_pending_files=20):
+        nonlocal checks
+        if check:
+            checks += 1
+            release.wait(5)
+        return SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=())
+
+    monkeypatch.setattr(csi, "status", slow_status)
+    command_loop = command_loop_for(tmp_path)
+    command_loop.open_background()
+    try:
+        command_loop.schedule_index_freshness()
+        await asyncio.sleep(0.02)
+        command_loop.schedule_index_freshness()
+        command_loop.schedule_index_freshness()
+        await asyncio.sleep(0.02)
+        release.set()
+        await asyncio.sleep(0.05)
+    finally:
+        release.set()
+        await command_loop.close_background()
+
+    assert checks == 1
+
+
+async def test_post_turn_index_check_does_not_delay_the_answer(tmp_path, monkeypatch):
+    """The check walks and hashes the tree; scheduling it must return immediately."""
+    from tui_harness import loop as command_loop_for
+
+    release = threading.Event()
+    monkeypatch.setattr(
+        csi,
+        "status",
+        lambda root, *, check=False, max_pending_files=20: (
+            release.wait(5) if check else None,
+            SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
+        )[1],
+    )
+    command_loop = command_loop_for(tmp_path)
+    command_loop.open_background()
+    try:
+        started = time.monotonic()
+        command_loop.schedule_index_freshness()
+        assert time.monotonic() - started < 0.5
+        await asyncio.sleep(0.02)
+        assert command_loop._background  # still running behind the answer
+    finally:
+        release.set()
+        await command_loop.close_background()
+
+
+async def test_index_command_keeps_the_loop_responsive(tmp_path, monkeypatch):
+    """A manual full index is minutes of third-party work; the prompt must keep breathing."""
+    release = threading.Event()
+    monkeypatch.setattr(csi, "clean", lambda root: None)
+    monkeypatch.setattr(csi, "index", lambda root: release.wait(5))
+    monkeypatch.setattr(
+        csi,
+        "status",
+        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
+    )
+    beats = 0
+
+    async def heartbeat():
+        nonlocal beats
+        while True:
+            beats += 1
+            await asyncio.sleep(0.005)
+
+    pulse = asyncio.ensure_future(heartbeat())
+    sync = asyncio.ensure_future(CodeIndex(session(tmp_path)).sync(force=True))
+    await asyncio.sleep(0.05)
+    assert beats > 3  # the loop kept running while csi.index blocked its worker
+    release.set()
+    assert "code_index: rebuilt" in await sync
+    pulse.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pulse

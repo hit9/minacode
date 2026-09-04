@@ -268,10 +268,15 @@ class FileMentions:
         ]
         try:
             included, ignored = await asyncio.gather(*queries)
+        except asyncio.CancelledError:
+            # `gather` has already cancelled both queries and reports the first ending; it does not
+            # wait for them to unwind. Wait here instead, so a cancelled refresh cannot return
+            # while two `git ls-files` are still walking the worktree behind it. Cancelling them a
+            # second time would interrupt exactly the reap that is being waited for.
+            await asyncio.wait(queries)
+            raise
         except BaseException:
-            # Both children are reaped before this raises. `gather` reports the first ending, which
-            # would otherwise let a cancelled refresh return while two `git ls-files` are still
-            # walking the worktree behind it.
+            # One query failed on its own; the other is still running and is now pointless.
             for query in queries:
                 query.cancel()
             await asyncio.wait(queries)

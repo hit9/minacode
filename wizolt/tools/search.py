@@ -14,7 +14,7 @@ from typing import ClassVar
 
 import code_symbol_index as csi
 
-from wizolt.base import Json, ToolArgs, ToolError
+from wizolt.base import Json, ToolArgs, ToolError, run_blocking
 from wizolt.session import Session
 from wizolt.source import INSPECT, SEARCH, SourceBlock, SourceSpan, SourceViewDraft, ToolOutput
 from wizolt.tools.base import Tool
@@ -389,6 +389,9 @@ class CodeIndex:
     """
 
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
+    # How often the library's refresh thread is checked for having ended. Short enough that the
+    # status stops lying promptly, long enough that a minute-long refresh is not a poll storm.
+    REFRESH_POLL_INTERVAL: ClassVar[float] = 0.05
     # fmt: off
     SYMBOLS: ClassVar[dict[str, str]] = {
         "ready": "✓", "synced": "✓", "stale": "*", "syncing": "~",
@@ -450,23 +453,32 @@ class CodeIndex:
             self.set_status(status, message)
         return status, message
 
-    def sync(self, *, force: bool = False) -> str:
+    async def sync(self, *, force: bool = False) -> str:
+        """Index or rebuild the whole tree, keeping the prompt live while it runs.
+
+        The third-party clean/index pair is a long synchronous walk of the workspace; it goes to a
+        worker whole, and the status the reader sees is written back here on the loop."""
+
         if self.session.state.code_index_refreshing:
             return "code_index: syncing"
-        if force:
-            csi.clean(self.session.cwd)
         self.notice("syncing", refreshing=True)
         try:
-            csi.index(self.session.cwd)
+            await run_blocking(lambda: self._sync_worker(force))
         except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             return "code_index: error\n" + self.fail(error)
         self.finish()
-        status, message = self.status(check=True)
+        status, message = await run_blocking(lambda: self.status(check=True))
         index_path = os.path.join(self.session.cwd, ".code-symbol-index", "index.sqlite")
         lines = ["code_index: " + ("rebuilt" if force else "synced"), "status: " + status, "path: " + index_path]
         if message:
             lines.append("note: " + message)
         return "\n".join(lines)
+
+    def _sync_worker(self, force: bool) -> None:
+        """The blocking third-party half of `sync`. Runs on a worker; touches no session state."""
+        if force:
+            csi.clean(self.session.cwd)
+        csi.index(self.session.cwd)
 
     def update(self, paths: list[str]) -> str:
         paths = self.update_paths(paths)
@@ -480,45 +492,58 @@ class CodeIndex:
         self.finish()
         return "updated " + str(len(paths)) + " file(s)"
 
-    def update_pending(self) -> str:
-        if self.session.state.code_index_refreshing:
-            return ""
-        try:
-            data = csi.status(self.session.cwd, check=True, max_pending_files=self.AUTO_UPDATE_LIMIT + 1)
-        except Exception:  # noqa: BLE001 - background index freshness checks are best-effort.
-            return ""
-        self.set_status(str(getattr(data, "status", "") or "error"), str(getattr(data, "message", None) or getattr(data, "reason", None) or ""))
-        if getattr(data, "status", "") != "stale":
-            return ""
-        pending = getattr(data, "pending_changes", None)
-        files = [str(path) for path in getattr(data, "pending_files", ()) or () if path]
-        if not files or len(files) > self.AUTO_UPDATE_LIMIT or (isinstance(pending, int) and pending > self.AUTO_UPDATE_LIMIT):
-            return ""
-        return self.update([self.session.resolve_path(path) for path in files])
+    async def update_pending(self) -> str:
+        """Check the working tree for drift and apply a small update, off the answer path.
 
-    def schedule_pending_update(self) -> None:
-        """Run the working-tree check (and any auto-update) off the UI critical path.
+        The `check=True` scan walks and hashes the tree, so it and the update it may trigger go to
+        a worker; the coalescing flag and every status field are set here, on the loop."""
 
-        ``update_pending`` does a ``check=True`` scan that walks/hashes the tree — slow on
-        large repos. Running it inline blocks answer emission and /status, so spawn it in a
-        daemon thread. Guarded so only one scan/update runs at a time.
-        """
         if self.session.state.code_index_checking or self.session.state.code_index_refreshing:
-            return
+            return ""
+        # The flag is the coalescing gate: several triggers can arrive per turn (the turn end,
+        # /status, a queued command) and only the first of them should walk the tree.
         self.session.state.code_index_checking = True
-
-        def run() -> None:
+        try:
             try:
-                self.update_pending()
-            finally:
-                self.session.state.code_index_checking = False
+                data = await run_blocking(lambda: csi.status(self.session.cwd, check=True, max_pending_files=self.AUTO_UPDATE_LIMIT + 1))
+            except Exception:  # noqa: BLE001 - background index freshness checks are best-effort.
+                return ""
+            self.set_status(str(getattr(data, "status", "") or "error"), str(getattr(data, "message", None) or getattr(data, "reason", None) or ""))
+            if getattr(data, "status", "") != "stale":
+                return ""
+            pending = getattr(data, "pending_changes", None)
+            files = [str(path) for path in getattr(data, "pending_files", ()) or () if path]
+            if not files or len(files) > self.AUTO_UPDATE_LIMIT or (isinstance(pending, int) and pending > self.AUTO_UPDATE_LIMIT):
+                return ""
+            return await self._update(self.update_paths([self.session.resolve_path(path) for path in files]))
+        finally:
+            self.session.state.code_index_checking = False
 
-        threading.Thread(target=run, daemon=True).start()
+    async def _update(self, paths: list[str]) -> str:
+        """`update` for a caller on the loop: the third-party call on a worker, the status here."""
+        if not paths or self.session.state.code_index_refreshing:
+            return ""
+        self.notice("updating", refreshing=True)
+        try:
+            await run_blocking(lambda: csi.update(paths, root=self.session.cwd))
+        except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
+            return self.fail(error)
+        self.finish()
+        return "updated " + str(len(paths)) + " file(s)"
 
-    def schedule_existing_refresh(self) -> bool:
+    async def refresh_existing(self) -> bool:
+        """Ask the library to refresh an existing index, and own the wait for its worker.
+
+        The library hands back a `threading.Thread`, so the ending is observed by polling
+        `is_alive()` on bounded sleeps rather than by occupying a second thread on `join()`.
+
+        Cancellation does not get to claim the worker stopped: the refreshing status stays true
+        until the thread really ends, and only then is the cancellation surfaced. Saying otherwise
+        would let the next turn query an index that is still being rewritten under it."""
+
         if self.session.state.code_index_refreshing:
             return False
-        status = self.status()[0]
+        status = (await run_blocking(self.status))[0]
         if status not in {"ready", "stale"}:
             return False
         self.notice("syncing", refreshing=True)
@@ -527,17 +552,20 @@ class CodeIndex:
         except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             self.fail(error)
             return False
-
-        def finish() -> None:
-            worker.join()
+        cancelled: asyncio.CancelledError | None = None
+        while worker.is_alive():
             try:
-                self.session.state.code_index_refreshing = False
-                self.session.state.code_index_notice = ""
-                self.status(check=True)
-            except Exception as error:  # noqa: BLE001 - isolate background code-index failures.
-                self.fail(error)
-
-        threading.Thread(target=finish, daemon=True).start()
+                await asyncio.sleep(self.REFRESH_POLL_INTERVAL)
+            except asyncio.CancelledError as error:
+                cancelled = cancelled or error
+        self.session.state.code_index_refreshing = False
+        self.session.state.code_index_notice = ""
+        try:
+            await run_blocking(lambda: self.status(check=True))
+        except Exception as error:  # noqa: BLE001 - isolate background code-index failures.
+            self.fail(error)
+        if cancelled is not None:
+            raise cancelled
         return True
 
     def update_paths(self, paths: list[str]) -> list[str]:

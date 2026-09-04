@@ -33,6 +33,12 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import CallbackPlaceholder, TuiApp
 
 
+async def _refuses_refresh(_index) -> bool:
+    """Stands in for the code index refresh: this scenario has no index to refresh."""
+    return False
+
+
+
 def test_invalidate_ignores_redraw_that_loses_application_shutdown_race():
     app = TuiApp()
     prompt_app = SimpleNamespace(is_running=True)
@@ -94,8 +100,8 @@ def ctrl_c_queue_scenario(cwd, results):
 
     command_loop.agent.model = RecordingModel()
     SessionSnapshotStore.clean_expired = lambda _session: 0
-    CodeIndex.schedule_existing_refresh = lambda _index: False
-    CodeIndex.schedule_pending_update = lambda _index: None
+    CodeIndex.refresh_existing = _refuses_refresh
+    CommandLoop.schedule_index_freshness = lambda _loop: None
     UpdateChecker.load_cached = lambda _checker: False
     real_application = Application
 
@@ -412,7 +418,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
         output_fn=output.append,
     )
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
     full_screen_modes = []

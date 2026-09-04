@@ -19,6 +19,12 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 
+async def _refuses_refresh(_index) -> bool:
+    """Stands in for the code index refresh: this scenario has no index to refresh."""
+    return False
+
+
+
 def test_background_output_is_closed_before_final_output(tmp_path):
     command_loop = loop(tmp_path)
     emitted = []
@@ -39,7 +45,7 @@ def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch
         "status",
         lambda _index, *, check=False, max_pending_files=20: status_checks.append(check) or ("ready", ""),
     )
-    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: pytest.fail("startup refreshed the code index"))
+    monkeypatch.setattr(CodeIndex, "refresh_existing", lambda _index: pytest.fail("startup refreshed the code index"))
 
     command_loop.start_session()
 
@@ -65,7 +71,7 @@ async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monke
     )
 
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
 
     started = asyncio.Event()

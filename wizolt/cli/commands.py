@@ -220,7 +220,7 @@ def status(loop: CommandLoop, args: str) -> str:
         context_budget = usage.last_prompt_budget
     index = CodeIndex(loop.session)
     index_status, index_message = index.status(check=False)
-    index.schedule_pending_update()
+    loop.schedule_index_freshness()
     if loop.session.state.code_index_refreshing:
         index_status, index_message = loop.session.state.code_index_notice or "syncing", ""
     elif loop.session.state.code_index_error:
@@ -753,13 +753,14 @@ async def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
     )
 
 
-def index(loop: CommandLoop, args: str) -> str:
+async def index(loop: CommandLoop, args: str) -> str:
+    """`/index`: sync or rebuild the symbol index without freezing the prompt behind it."""
     value = args.strip()
     if value not in {"", "force"}:
         return "Usage: /index [force]"
     try:
         loop.status_bar.start()
-        return CodeIndex(loop.session).sync(force=value == "force")
+        return await CodeIndex(loop.session).sync(force=value == "force")
     finally:
         loop.status_bar.stop()
 

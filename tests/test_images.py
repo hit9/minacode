@@ -37,6 +37,12 @@ from wizolt.tools import ViewImageTool
 from wizolt.tui import TuiApp
 
 
+async def _refuses_refresh(_index) -> bool:
+    """Stands in for the code index refresh: this scenario has no index to refresh."""
+    return False
+
+
+
 async def _no_close():
     """The async close the provider SDK clients expose; awaited by ModelClient.call_client."""
 
@@ -251,7 +257,7 @@ def test_simple_cli_preserves_images_when_combining_pending_inputs(tmp_path, mon
 
     monkeypatch.setattr(agent, "run", run)
     monkeypatch.setattr(loop_module.UpdateChecker, "load_cached", lambda _self: False)
-    monkeypatch.setattr(loop_module.CodeIndex, "schedule_existing_refresh", lambda _self: False)
+    monkeypatch.setattr(loop_module.CodeIndex, "refresh_existing", _refuses_refresh)
 
     def eof(_prompt):
         raise EOFError

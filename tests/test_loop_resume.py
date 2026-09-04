@@ -255,7 +255,7 @@ async def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, mon
     command_loop = CommandLoop(agent, input_fn=read_input, output_fn=output.append)
     monkeypatch.setattr(loop_module.UpdateChecker, "load_cached", lambda _checker: False)
     monkeypatch.setattr(CodeIndex, "status", lambda _index: False)
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
 
     assert await command_loop.run_simple() == 0
 
@@ -287,7 +287,7 @@ async def test_simple_repl_publishes_the_final_answer_exactly_once(tmp_path, mon
     command_loop = CommandLoop(agent, input_fn=read_input, output_fn=output.append)
     monkeypatch.setattr(loop_module.UpdateChecker, "load_cached", lambda _checker: False)
     monkeypatch.setattr(CodeIndex, "status", lambda _index: False)
-    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
+    monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
 
     assert await command_loop.run_simple() == 0
 

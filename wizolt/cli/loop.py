@@ -479,6 +479,14 @@ Full documentation: https://wizolt.readthedocs.io
         if self.session.mentions is not None:
             self.session.mentions.refresh_owner = self.refresh_mentions
 
+    def schedule_index_freshness(self) -> None:
+        """Admit the post-turn code-index check. Both frontends go through here.
+
+        Never awaited on the answer path: the check walks and hashes the working tree, and a turn's
+        answer must not wait behind it. `update_pending` coalesces repeated triggers itself."""
+
+        self.spawn_background(CodeIndex(self.session).update_pending(), name="code-index-freshness")
+
     def refresh_mentions(self) -> asyncio.Task | None:
         """One mention-candidate scan at a time, owned here.
 
@@ -591,7 +599,7 @@ Full documentation: https://wizolt.readthedocs.io
                 except WizoltError as error:
                     answer = f"Error: {error}"
             finally:
-                CodeIndex(self.session).schedule_pending_update()
+                self.schedule_index_freshness()
                 self.status_bar.stop()
             # Same rule as TuiRuntime.run_agent_turn: the engine publishes its own final answer
             # through output_fn, so only an error it raised before publishing prints here.

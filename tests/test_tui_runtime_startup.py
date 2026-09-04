@@ -25,6 +25,12 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 
+async def _refuses_refresh(_index) -> bool:
+    """Stands in for the code index refresh: this scenario has no index to refresh."""
+    return False
+
+
+
 async def _returns_immediately():
     """Stands in for the runtime's input loop when a test only exercises startup."""
 
@@ -59,7 +65,7 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
     )
     command_loop.ui.color = True
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "refresh_existing", _refuses_refresh)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
     emitted_while_running = []

@@ -15,7 +15,6 @@ from wizolt.base import MalformedToolCallError, TurnBox, WizoltError, fail_if_ru
 from wizolt.cli.modals import tool_output_viewer
 from wizolt.image import UserInput
 from wizolt.render import search_sources_footer
-from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 # The TUI status label shown while a resumed session's transcript is being restored: a quiet
@@ -387,7 +386,7 @@ class TuiRuntime:
         finally:
             self.reset_turn()
             self.loop.session.state.manual_model_retry_requested = False
-            CodeIndex(self.loop.session).schedule_pending_update()
+            self.loop.schedule_index_freshness()
         if cancelled:
             self.loop.emit_turn("Cancelled")
             return
