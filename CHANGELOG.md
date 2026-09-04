@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- The working divider now leaves a blank row above queued follow-up inputs, so the queue reads
+  as its own region below the boundary instead of a list glued to the divider's label.
+- The `Ask` modal opens with a blank row above the question, matching every other selector, so
+  the question no longer butts straight against the activity region above it.
 - `Edit` tolerates a provider omitting `op` only when `source`, `start`, `end`, and explicit
   replacement content make `replace` unambiguous; incomplete create/delete shapes remain errors.
 - A rejected multi-range `Edit` now returns one fresh editable view covering every requested range,

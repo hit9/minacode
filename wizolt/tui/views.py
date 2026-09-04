@@ -428,7 +428,11 @@ class AskViewState:
         preview stacks below the options. The caller caps max_height to the terminal's rows minus
         the reserved chrome (status bar, input row, gaps)."""
         page = self.pages[self.active]
+        # The modal opens inline under the activity region, and a question butted straight against
+        # it reads as another line of that output rather than as a new thing asking. The same
+        # leading break every other modal draws keeps the question standing on its own.
         parts: StyleAndTextTuples = [
+            ("", "\n"),
             ("class:choice.title", f"({self.active + 1}/{len(self.specs)}) {self.specs[self.active].question}\n"),
             ("", "\n"),
         ]
@@ -458,8 +462,9 @@ class AskViewState:
                 preview_rows = self._preview_rows(preview, max(10, width - 4))
                 body.append([("class:choice.disabled", "  " + "─" * max(10, width - 4))])
                 body.extend([("class:choice.preview", "  │ "), *row] for row in preview_rows)
-        # Title and footer now each sit on their own blank line (2 extra rows in the budget).
-        budget = max_height - 4 - (1 if self.notes_mode or self.notes.get(self.active) else 0)
+        # The leading break, the title's own blank line, and the footer's each cost a row (3
+        # extra rows in the budget), so a page that fills the modal never pushes the title off.
+        budget = max_height - 5 - (1 if self.notes_mode or self.notes.get(self.active) else 0)
         if page.searching:
             budget -= 1
         if len(body) > budget:

@@ -1,4 +1,5 @@
 """choice and ask views (split from tests/test_ui_render.py)."""
+
 import wizolt.render as render_module
 from wizolt.base import (
     SELECTION_BACK,
@@ -23,6 +24,7 @@ def test_choice_view_g_and_shift_g_jump_first_and_last():
     assert state.query == "g"
     assert state.selected == 0
 
+
 def test_choice_view_state_default_filtering():
     state = ChoiceViewState(
         choices=("alpha", "---", "beta", "---", "gamma"),
@@ -34,6 +36,7 @@ def test_choice_view_state_default_filtering():
     assert state.clamp() == ("alpha", "beta", "gamma")
     assert state.selected_choice() == "alpha"
 
+
 def test_choice_view_state_search_filters_visible():
     state = ChoiceViewState(
         choices=("alpha", "---", "beta", "---", "gamma"),
@@ -44,6 +47,7 @@ def test_choice_view_state_search_filters_visible():
     assert "beta" in state.visible()
     assert "alpha" not in state.visible()
     assert state.selected == 0
+
 
 def test_choice_view_state_move_navigation():
     state = ChoiceViewState(
@@ -61,6 +65,7 @@ def test_choice_view_state_move_navigation():
     state.move(-1)
     assert state.selected_choice() == "b"
 
+
 def test_choice_view_state_no_enabled_choices_returns_none():
     state = ChoiceViewState(
         choices=("x",),
@@ -69,6 +74,7 @@ def test_choice_view_state_no_enabled_choices_returns_none():
     )
     assert state.enabled() == ()
     assert state.selected_choice() is None
+
 
 def test_choice_view_state_key_navigation_and_selection():
     state = ChoiceViewState(
@@ -85,6 +91,7 @@ def test_choice_view_state_key_navigation_and_selection():
     state.selected = 2
     assert state.handle_key("enter") is SELECTION_FREE_TEXT
 
+
 def test_choice_view_state_search_and_escape_layers():
     state = ChoiceViewState(choices=("alpha", "beta"), labels={}, disabled=set())
 
@@ -100,6 +107,7 @@ def test_choice_view_state_search_and_escape_layers():
     assert state.query == ""
     assert state.handle_key("escape") is SELECTION_BACK
 
+
 def test_choice_view_state_fragments_preserve_headers_and_preview():
     state = ChoiceViewState(
         choices=("--- Models ---", "alpha"),
@@ -114,6 +122,7 @@ def test_choice_view_state_fragments_preserve_headers_and_preview():
     assert ">  1. Alpha" in rendered
     assert "  │ first\n  │ second\n" in rendered
 
+
 def test_emit_answer_compact_drops_invisible_lines(monkeypatch):
     out = []
     monkeypatch.setattr(render_module, "print_formatted_text", lambda text, **kwargs: out.append(getattr(text, "value", str(text))))
@@ -125,6 +134,7 @@ def test_emit_answer_compact_drops_invisible_lines(monkeypatch):
     assert rendered.split("\n") == visible + [""]  # no blank or box-padding lines survive
     assert "Parent" in rendered and "model" in rendered
 
+
 def _ask_state():
     return AskViewState.build(
         [
@@ -133,14 +143,18 @@ def _ask_state():
         ]
     )
 
+
 def _rows(fragments):
     return "".join(text for _, text in fragments).splitlines()
+
 
 def test_ask_view_side_by_side_joins_option_and_preview_rows():
     state = _ask_state()
     rows = _rows(state.fragments(width=120, max_height=30))
-    assert rows[0] == "(1/2) Which shape?"
-    assert rows[1] == ""  # blank line under the title
+    # A leading blank row lifts the modal off whatever the activity region printed above it.
+    assert rows[0] == ""
+    assert rows[1] == "(1/2) Which shape?"
+    assert rows[2] == ""  # blank line under the title
     assert rows[-2] == ""  # blank line above the key legend
     # The selected option's label and its rich preview land on the same rendered row.
     pair = next(row for row in rows if "Flat" in row and "flat table" in row)
@@ -151,6 +165,7 @@ def test_ask_view_side_by_side_joins_option_and_preview_rows():
     assert any("↑/↓ or j/k move" in row for row in rows)
     assert len(rows) <= 30
 
+
 def test_ask_view_stacks_preview_below_options_on_narrow_terminals():
     state = _ask_state()
     rows = _rows(state.fragments(width=80, max_height=30))
@@ -159,6 +174,7 @@ def test_ask_view_stacks_preview_below_options_on_narrow_terminals():
     assert preview_index > option_index  # stacked, not side-by-side
     assert rows[preview_index].startswith("  │ ")
 
+
 def test_ask_view_truncates_overflow_with_more_lines():
     preview = "\n".join(f"line {i}" for i in range(40))
     state = AskViewState.build([AskSpec("Q?", choices=["A"], previews=[preview])])
@@ -166,10 +182,12 @@ def test_ask_view_truncates_overflow_with_more_lines():
     assert len(rows) <= 8
     assert any("more lines" in row for row in rows)
 
+
 def test_ask_view_preview_renders_rich_styles():
     state = AskViewState.build([AskSpec("Q?", choices=["Bold"], previews=["**bold text**"])])
     fragments = state.fragments(width=120, max_height=30)
     assert any(style for style, text in fragments if "bold text" in text)  # markdown bold carried a style
+
 
 def test_ask_view_keys_navigate_advance_and_submit():
     state = _ask_state()
@@ -187,6 +205,7 @@ def test_ask_view_keys_navigate_advance_and_submit():
     assert state.handle_key("enter") is ASK_DONE  # last page submits the batch
     assert state.picked[1] == "core"
 
+
 def test_ask_view_tab_to_last_page_does_not_submit_unanswered():
     """Tabbing to the last page and Enter must not submit a half-answered batch: it records the
     pick and jumps back to the first unanswered page."""
@@ -197,6 +216,7 @@ def test_ask_view_tab_to_last_page_does_not_submit_unanswered():
     assert state.handle_key("enter") is TUI_MODAL_PENDING  # picked on the last page, batch not done
     assert state.picked[2] == "C"
     assert state.active == 0  # first unanswered page
+
 
 def test_ask_view_out_of_order_answers_submit_when_all_answered():
     """Answers may land in any order; the batch only submits once every page has a pick."""
@@ -210,12 +230,14 @@ def test_ask_view_out_of_order_answers_submit_when_all_answered():
     assert state.handle_key("enter") is ASK_DONE  # page 1 picked: all answered
     assert state.picked == ["A", "B", "C"]
 
+
 def test_ask_view_free_text_page_reports_and_escape_cancels():
     state = AskViewState.build([AskSpec("No choices")])
     assert state.handle_key("enter") == (ASK_FREE_TEXT, 0)
     assert state.handle_key("escape") is SELECTION_BACK  # whole batch cancelled
     result = state.handle_key("c-c")
     assert isinstance(result, KeyboardInterrupt)
+
 
 def test_ask_view_notes_mode_edits_and_saves():
     state = AskViewState.build([AskSpec("Q?", choices=["A"])])
@@ -235,12 +257,14 @@ def test_ask_view_notes_mode_edits_and_saves():
     # The saved note renders on the page.
     assert "notes: x" in _rows(state.fragments(width=120, max_height=30))
 
+
 def test_ask_view_notes_mode_opens_via_any_key_routing():
     """The bindings dispatch printable keys outside MODAL_KEYS as ("any", data); `n` must open
     notes mode through that path too, not only as the named key."""
     state = AskViewState.build([AskSpec("Q?", choices=["A"])])
     assert state.handle_key("any", "n") is TUI_MODAL_PENDING
     assert state.notes_mode
+
 
 def test_ask_view_shift_tab_cycles_backwards():
     from wizolt.tui import TuiApp

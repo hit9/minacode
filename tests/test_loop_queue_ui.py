@@ -32,6 +32,9 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     text = "".join(t for _, t in [*sent, *waiting])
     assert "2 queued" in text and "working" in text
     assert "+ run tests" in text and "+ then push" in text
+    # A blank row lifts the queued block off the divider, so the queue reads as its own region.
+    waiting_lines = "".join(t for _, t in waiting).splitlines()
+    assert waiting_lines[waiting_lines.index("+ run tests") - 1] == ""
 
     claimed = s.claim_user_inputs()
     sent, waiting = loop.view.followup_fragments()

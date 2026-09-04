@@ -402,6 +402,10 @@ class View:
         # The divider is a standing boundary for the whole turn. Only messages that have not entered
         # a model request remain below it; sent messages render above it until the request commits them.
         waiting = self.queue_divider_fragments(len(queued))
+        if queued:
+            # A blank row lifts the queued block off the divider, so the queue reads as its own
+            # region below the boundary instead of a list glued to the divider's label.
+            waiting.append(("", "\n"))
         waiting.extend(render(queued, "+ ", UiPrinter.user_log_style()))
         return transcript, waiting
 
