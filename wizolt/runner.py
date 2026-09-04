@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
+import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from wizolt.base import (
     MAX_TOOL_OUTPUT_TOKENS,
@@ -39,6 +40,8 @@ from wizolt.tools import (
     DelegateTool,
     EditTool,
     JobTool,
+    MCPTool,
+    NextHintsTool,
     Tool,
     ToolScript,
     ViewImageTool,
@@ -47,10 +50,113 @@ from wizolt.tools import (
 )
 from wizolt.tools.editplan import EditBatchPlan
 from wizolt.tools.toolblocks import ToolDisplay
+from wizolt.tools.toolscript import ScriptCancelled
 from wizolt.vision import VisionObserver
 
 if TYPE_CHECKING:
     from wizolt.engine import Agent
+
+_ResultT = TypeVar("_ResultT")
+
+
+@dataclass(frozen=True)
+class NestedRequest:
+    """One ToolScript nested invocation, as data.
+
+    The gateway deliberately takes structured calls rather than a coroutine or a callback: nothing
+    a tool hands over gets to decide what runs on the runtime loop, and the runner keeps ownership
+    of validation, approval, segmentation, and cancellation. `batch` is the shape the script asked
+    for -- one call, or a `call_many` whose segmentation and ordering the runner applies."""
+
+    calls: tuple[ToolCall, ...]
+    batch: bool
+
+
+class _NestedGateway:
+    """The loop-side owner of a running ToolScript's nested calls.
+
+    The script is synchronous Python on one dedicated worker, so its `call()` has to reach the
+    runner across a thread boundary and wait for an answer. It does that by handing over call data
+    and blocking its own thread on a plain future -- never by submitting a coroutine, which would
+    put a tool in charge of what the loop runs.
+
+    Admission and shutdown share one lock, so a request cannot pass the gate and then find the
+    runner gone: whoever loses the race completes the worker's future with cancellation instead of
+    leaving it blocked forever."""
+
+    def __init__(self, runner: ToolRunner, loop: asyncio.AbstractEventLoop):
+        self._runner = runner
+        self._loop = loop
+        self._lock = threading.Lock()
+        self._open = True
+        self._futures: set[concurrent.futures.Future] = set()
+        self._active: set[asyncio.Task] = set()
+
+    def submit(self, request: NestedRequest) -> list[tuple[str, str]]:
+        """Called on the script worker: hand the calls over and block this thread on the answer."""
+
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        with self._lock:
+            self._futures.add(future)
+        try:
+            self._loop.call_soon_threadsafe(self._accept, request, future)
+        except RuntimeError:
+            # The loop is already gone; nothing will ever answer, so answer here.
+            self._settle(future, ScriptCancelled())
+        return future.result()
+
+    def _accept(self, request: NestedRequest, future: concurrent.futures.Future) -> None:
+        """On the loop: admit the request, or refuse it because shutdown got here first."""
+
+        with self._lock:
+            if not self._open:
+                self._settle_locked(future, ScriptCancelled())
+                return
+            task = self._loop.create_task(self._serve(request, future))
+            self._active.add(task)
+        task.add_done_callback(self._active.discard)
+
+    async def _serve(self, request: NestedRequest, future: concurrent.futures.Future) -> None:
+        try:
+            outcomes = await self._runner.run_nested_async(request)
+        except asyncio.CancelledError:
+            self._settle(future, ScriptCancelled())
+            raise
+        except BaseException as error:  # noqa: BLE001 - the worker must learn every ending, not hang.
+            self._settle(future, error)
+        else:
+            self._settle(future, None, outcomes)
+
+    def _settle(self, future: concurrent.futures.Future, error: BaseException | None, result=None) -> None:
+        with self._lock:
+            self._settle_locked(future, error, result)
+
+    def _settle_locked(self, future: concurrent.futures.Future, error: BaseException | None, result=None) -> None:
+        self._futures.discard(future)
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    async def close(self) -> None:
+        """Close admission, quiesce active nested work, and unblock every waiting worker.
+
+        Awaited before `run_async` returns, so no gateway task and no blocked worker future can
+        outlive the ToolScript call that owns them."""
+
+        with self._lock:
+            self._open = False
+            active = list(self._active)
+        for task in active:
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
+        with self._lock:
+            waiting = list(self._futures)
+        for future in waiting:
+            self._settle(future, ScriptCancelled())
 
 
 class ToolRunner:
@@ -125,6 +231,16 @@ class ToolRunner:
         # bridge an image tool call -- and shared across calls, since tool calls never overlap a
         # main-model request. See vision_client().
         self._vision_client: ModelClient | None = None
+        # Injected by CommandLoop: resolves a pending TUI approval/Ask prompt with "cancelled", so
+        # a worker parked on the user can be unblocked when the turn is cancelled. None (headless,
+        # piped stdin) means the injected input function owns its own unblocking.
+        self.cancel_input: Callable[[], None] | None = None
+        # Loop-bound state for one run_async() invocation. Never reused across invocations: a
+        # semaphore belongs to the loop that created it, and this runner outlives any single loop.
+        self._capacity: asyncio.Semaphore | None = None
+        self._gateway: _NestedGateway | None = None
+        # The cancellation token of the ToolScript currently running, if any.
+        self._script_budget: object | None = None
 
     @contextlib.contextmanager
     def nested(self):
@@ -175,43 +291,153 @@ class ToolRunner:
         return self._vision_client
 
     def cancel(self) -> None:
-        self._active_bash.apply(lambda tool: tool.cancel())
-        self._active_job.apply(lambda tool: tool.cancel())
+        """TODO(async-phase-4): the caller-thread fan-out, while the turn is still synchronous.
+
+        Phase 4 makes cancelling the turn's task the whole mechanism: task propagation reaches each
+        awaited tool path, which requests its own stop and waits for its own quiescence."""
+
+        self._active_bash.apply(lambda tool: tool.request_stop())
+        self._active_job.apply(lambda tool: tool.request_stop())
         self._active_worker.apply(lambda agent: agent.cancel())
         if self._vision_client is not None:
-            # TODO(async-phase-4): tool cancellation is still a fan-out from the caller's thread;
-            # ask the in-flight observation to end rather than waiting out the provider timeout.
             self._vision_client.cancel_active_request()
 
-    def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str | ToolOutput:
-        if isinstance(tool, DelegateTool):
-            tool.runner = self
-            return tool.call()
+    def request_tool_stop(self, tool: Tool) -> None:
+        """Ask one tool to stop, and note it. Never a claim that anything stopped -- the runner
+        still waits for the invocation to finish before it reports cancellation."""
+
+        with contextlib.suppress(Exception):
+            tool.request_stop()
+        if isinstance(tool, AskTool) and self.cancel_input is not None:
+            # A worker parked on the user answers nothing on its own: resolve the prompt as
+            # cancelled so it returns, which `Ask` reads as a dismissal.
+            with contextlib.suppress(Exception):
+                self.cancel_input()
+
+    @contextlib.asynccontextmanager
+    async def _bounded(self):
+        """Hold one unit of the invocation's tool-execution capacity.
+
+        Acquired before a worker is submitted and released only after that worker has finished,
+        cancellation included: capacity a cancelled call is still quiescing is not capacity."""
+
+        capacity = self._capacity
+        if capacity is None:
+            yield
+            return
+        async with capacity:
+            yield
+
+    async def _run_in_executor(self, invoke: Callable[[], _ResultT], tool: Tool | None = None, *, executor=None, bounded: bool = True) -> _ResultT:
+        """Run one synchronous tool body on a worker, and never abandon it.
+
+        Cancelling the task that is waiting does not cancel the work: the worker keeps running,
+        with whatever files, subprocesses, and session state it is holding. So cancellation here
+        means ask the tool to stop, keep waiting, and only then report cancellation upward. A
+        failure raised by a worker that was already being cancelled is a cleanup detail and must
+        not replace the cancellation the turn is unwinding on."""
+
+        loop = asyncio.get_running_loop()
+        async with contextlib.AsyncExitStack() as stack:
+            if bounded:
+                await stack.enter_async_context(self._bounded())
+            future = loop.run_in_executor(executor, invoke)
+            cancel_error: asyncio.CancelledError | None = None
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError as error:
+                    cancel_error = cancel_error or error
+                    if tool is not None:
+                        self.request_tool_stop(tool)
+                except BaseException:  # noqa: BLE001 - the outcome is read off the future below.
+                    break
+            try:
+                result = future.result()
+            except BaseException as worker_error:
+                if cancel_error is None:
+                    raise
+                self.report_cleanup_error(worker_error)
+                raise cancel_error from None
+            if cancel_error is not None:
+                raise cancel_error
+            return result
+
+    def report_cleanup_error(self, error: BaseException) -> None:
+        """A worker that failed while it was being cancelled. Recorded, never raised over the
+        cancellation: the turn is ending either way, and the tool's own result boundary is gone."""
+
+        if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, ScriptCancelled)):
+            return
+        self.session.record_tool_error("-", "cancel", [], f"ToolError while cancelling: {error}")
+
+    async def call_tool_async(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str | ToolOutput:
+        """Run one tool's own work under the execution policy for its kind.
+
+        The policy lives here rather than on each Tool: what may overlap, what must not be
+        abandoned, and what must stay on the loop are properties of the batch this runner is
+        executing, not of the tool's business logic."""
+
+        if isinstance(tool, ViewImageTool):
+            # The runner owns the vision client, so cancelling the turn reaches an in-flight
+            # observation instead of leaving it to wait out the provider timeout.
+            tool.vision_observe = VisionObserver(self.vision_client()).observe_async
+            return await tool.call_async()
         if isinstance(tool, ToolScript):
             tool.runner = self
-            return tool.call()
-        if isinstance(tool, ViewImageTool):
-            # The runner owns the vision client, so Agent.cancel() reaches an in-flight
-            # observation instead of leaving it to wait out the provider timeout.
-            # TODO(async-phase-3): ViewImage is still a synchronous tool, so the observation gets an
-            # outer boundary here. Phase 3 gives the tool a native `call_async` and this disappears.
-            observer = VisionObserver(self.vision_client())
-
-            def observe(images, question: str = "", observer=observer) -> str:
-                fail_if_running_loop("use await ViewImageTool.call_async(...)")
-                return asyncio.run(observer.observe_async(images, question))
-
-            tool.vision_observe = observe
-            return tool.call()
+            return await self._run_script(tool)
+        if isinstance(tool, DelegateTool):
+            # TODO(async-phase-4): the worker agent is still synchronous, so a send is managed
+            # thread work with the existing worker cancellation hook.
+            tool.runner = self
+            return await self._run_in_executor(tool.call, tool)
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):
-                return tool.call()
+                return await self._run_in_executor(tool.call, tool)
         if isinstance(tool, JobTool):
             with self._active_job.track(tool):
-                return tool.call()
-        return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
+                return await self._run_in_executor(tool.call, tool)
+        if isinstance(tool, MCPTool):
+            # TODO(async-phase-6): MCP still owns its own loop, so a call is managed synchronous
+            # work whose future is awaited here. Phase 6 dispatches it as a native coroutine.
+            return await self._run_in_executor(tool.call, tool)
+        if tool.MUTATES or tool.PRODUCES_MODEL_OBSERVATION or isinstance(tool, NextHintsTool):
+            # Short local mutation stays on the loop: single-writer, and an Edit or a Note can
+            # never outlive the turn that ordered it. Cancellation is observed on both sides.
+            self._raise_if_cancelled()
+            try:
+                return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
+            finally:
+                self._raise_if_cancelled()
+        # Everything else -- reads, searches, MCP calls, Ask -- is bounded synchronous work.
+        return await self._run_in_executor(tool.call, tool)
+
+    @staticmethod
+    def _raise_if_cancelled() -> None:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise asyncio.CancelledError
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
+        """Synchronous entry point for direct tests and embedding; the agent awaits run_async."""
+
+        fail_if_running_loop("use await ToolRunner.run_async(...)")
+        return asyncio.run(self.run_async(calls, batch_suffix))
+
+    async def run_async(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
+        loop = asyncio.get_running_loop()
+        # Per invocation, never per runner: these are loop-bound, and this runner outlives loops.
+        self._capacity = asyncio.Semaphore(max(1, self.session.settings.max_parallel_tools))
+        self._gateway = _NestedGateway(self, loop)
+        try:
+            return await self._run_batch(calls, batch_suffix)
+        finally:
+            gateway, self._gateway = self._gateway, None
+            self._capacity = None
+            if gateway is not None:
+                await gateway.close()
+
+    async def _run_batch(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages: list[Json] = []
         observations: list[Json] = []
         # Shared, mutated across segments: `first` controls which display carries batch_suffix;
@@ -230,13 +456,102 @@ class ToolRunner:
                 continue
             end = self.parallel_segment_end(calls, index)
             if end - index >= 2 and self.session.settings.max_parallel_tools > 1:
-                messages.extend(self.run_parallel(calls[index:end], batch_suffix, state))
+                messages.extend(await self.run_parallel(calls[index:end], batch_suffix, state))
                 index = end
                 continue
             end = index + 1 if self.edit_barrier(calls[index]) else self.edit_segment_end(calls, index)
-            messages.extend(self.run_serial(calls[index:end], batch_suffix, state, observations))
+            messages.extend(await self.run_serial(calls[index:end], batch_suffix, state, observations))
             index = end
         return [*messages, *observations]
+
+    async def run_nested_async(self, request: NestedRequest) -> list[tuple[str, str]]:
+        """The loop-side half of ToolScript's gateway: run one nested request the runner's own way.
+
+        A `call_many` gets the baseline segmentation, concurrency cap, and original-order
+        publication; a single `call` takes the ordinary path, confirmation included. Every call was
+        validated by the script boundary before any of them reached here."""
+
+        calls = list(request.calls)
+        if not request.batch:
+            status, message, _ = await self._run_nested_one(calls[0])
+            return [(status, message)]
+        outcomes: list[tuple[str, str]] = []
+        index = 0
+        while index < len(calls):
+            end = index
+            while end < len(calls) and self.parallel_safe(calls[end]):
+                end += 1
+            segment = calls[index:end]
+            if len(segment) > 1:
+                raw = await self._execute_readonly_segment(segment)
+                for call, outcome in zip(segment, raw):
+                    outcomes.append(("ok" if outcome[0] == "ok" else "failed", self.finalize_outcome(call, outcome)))
+                index = end
+                continue
+            # A lone parallel-safe call has nothing to overlap with, and anything else must run on
+            # its own anyway: both take the ordinary single-call path, confirmation included.
+            status, message, _ = await self._run_nested_one(calls[index])
+            outcomes.append((status, message))
+            index += 1
+        return outcomes
+
+    async def _run_nested_one(self, call: ToolCall) -> tuple[str, str, Json | None]:
+        """One nested call. An Edit goes through a single-element plan so it behaves exactly like a
+        top-level single Edit -- source-view planning, stale checks, write-time verification."""
+
+        if call.name == "Edit":
+            plan = EditBatchPlan(self.session).build([call])
+            return await self.run_one(call, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
+        return await self.run_one(call)
+
+    async def _run_script(self, tool: ToolScript) -> str | ToolOutput:
+        """Run a ToolScript on a worker of its own, with its nested calls served from this loop.
+
+        The dedicated worker is the point: the script blocks synchronously while its nested calls
+        run, so it must not sit in the same bounded capacity those calls need to execute. On
+        cancellation the token is set, the gateway stops admitting and unblocks whatever the script
+        is waiting on, and only then is the worker awaited -- a script is never abandoned."""
+
+        loop = asyncio.get_running_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="toolscript")
+        try:
+            budget_holder: list[Any] = []
+            tool.on_budget = budget_holder.append
+            future = loop.run_in_executor(executor, tool.call)
+            cancel_error: asyncio.CancelledError | None = None
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError as error:
+                    cancel_error = cancel_error or error
+                    for budget in budget_holder:
+                        budget.cancel()
+                    gateway = self._gateway
+                    if gateway is not None:
+                        await gateway.close()
+                except BaseException:  # noqa: BLE001 - the outcome is read off the future below.
+                    break
+            try:
+                result = future.result()
+            except BaseException as worker_error:
+                if cancel_error is None:
+                    raise
+                self.report_cleanup_error(worker_error)
+                result = ""
+            if cancel_error is not None:
+                raise cancel_error
+            return result
+        finally:
+            tool.on_budget = None
+            executor.shutdown(wait=True)
+
+    def nested_calls(self, calls: list[ToolCall], *, batch: bool) -> list[tuple[str, str]]:
+        """Called on the ToolScript worker: hand nested calls to the loop and wait for their results."""
+
+        gateway = self._gateway
+        if gateway is None:
+            raise ToolError("ToolScript nested calls require a running tool runner")
+        return gateway.submit(NestedRequest(tuple(calls), batch))
 
     def builtin_echo_message(self, call: ToolCall) -> Json:
         """Answer a provider's own builtin function by returning its arguments unchanged.
@@ -258,13 +573,13 @@ class ToolRunner:
         content = self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True)
         return {"role": "tool", "tool_call_id": call.id, "content": content}
 
-    def run_serial(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool], observations: list[Json]) -> list[Json]:
+    async def run_serial(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool], observations: list[Json]) -> list[Json]:
         messages: list[Json] = []
         plan = EditBatchPlan(self.session).build(segment) if any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
         for call in segment:
             suffix = batch_suffix if state["first"] else ""
             state["first"] = False
-            status, content, observation = self.run_one(
+            status, content, observation = await self.run_one(
                 call, batch_suffix=suffix, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, "")
             )
             messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
@@ -274,24 +589,42 @@ class ToolRunner:
                 state["refused"] = True
         return messages
 
-    def run_parallel(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool]) -> list[Json]:
+    async def run_parallel(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool]) -> list[Json]:
         # Run the pure tool.call() work concurrently, but apply all side effects (display, session
-        # bookkeeping, tool messages) on this thread in request order, so output and the results
-        # handed back to the model match the order the model issued the calls.
-        cap = max(1, self.session.settings.max_parallel_tools)
-        outcomes: list[tuple[str, str | ToolOutput, str | None, float, object | None] | None] = [None] * len(segment)
-        with ThreadPoolExecutor(max_workers=min(len(segment), cap), thread_name_prefix="tool") as executor:
-            futures = {executor.submit(self.execute_readonly, call): position for position, call in enumerate(segment)}
-            for future in as_completed(futures):
-                outcomes[futures[future]] = future.result()
+        # bookkeeping, tool messages) on the loop in request order, so output and the results handed
+        # back to the model match the order the model issued the calls.
+        outcomes = await self._execute_readonly_segment(segment)
         messages: list[Json] = []
         for call, outcome in zip(segment, outcomes):
             suffix = batch_suffix if state["first"] else ""
             state["first"] = False
-            assert outcome is not None
             content = self.finalize_outcome(call, outcome, batch_suffix=suffix)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
         return messages
+
+    async def _execute_readonly_segment(self, segment: list[ToolCall]) -> list[tuple[str, str | ToolOutput, str | None, float, object | None]]:
+        """Run one run of independent read-only calls concurrently, bounded by the invocation's
+        capacity, and hand their outcomes back in the model's original order.
+
+        Each call is its own child task so cancellation reaches each of them; the whole set is then
+        awaited before cancellation propagates, because a read that is still running is still
+        holding a file handle and a worker. An ordinary tool failure is converted at that call's own
+        result boundary and never cancels a healthy sibling."""
+
+        children = [asyncio.ensure_future(self._run_in_executor(lambda call=call: self.execute_readonly(call))) for call in segment]
+        try:
+            results = await asyncio.gather(*children)
+        except asyncio.CancelledError:
+            for child in children:
+                child.cancel()
+            await asyncio.gather(*children, return_exceptions=True)
+            raise
+        except BaseException:
+            for child in children:
+                child.cancel()
+            await asyncio.gather(*children, return_exceptions=True)
+            raise
+        return list(results)
 
     def parallel_segment_end(self, calls: list[ToolCall], start: int) -> int:
         end = start
@@ -361,7 +694,7 @@ class ToolRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         return call.name != "Edit" and (tool_class is None or tool_class.MUTATES or tool_class.PRODUCES_MODEL_OBSERVATION)
 
-    def run_one(
+    async def run_one(
         self,
         call: ToolCall,
         batch_suffix: str = "",
@@ -416,7 +749,7 @@ class ToolRunner:
                     # closing marker of the delegation bracket and must carry the same yellow
                     # [worker] identity as the start marker.
                     d.nested_display = True
-                confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
+                confirmed, reason = await self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
                     return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, d=d), None
@@ -453,7 +786,7 @@ class ToolRunner:
                     LogBlock.hierarchy(toolblocks.log_root(d.display or tooloutput.short_call(self.session, call), batch_suffix=batch_suffix, call=call), [])
                 )
                 d.nested_display = True
-            output = self.call_tool(tool, planned_edit)
+            output = await self.call_tool_async(tool, planned_edit)
             if isinstance(tool, ViewImageTool) and tool.vision_entry_label:
                 d.vision_entry = tool.vision_entry_label
             observation = tool.model_observation()
@@ -584,7 +917,7 @@ class ToolRunner:
                 paths.append(str(json.loads(match.group(1))))
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
-    def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
+    async def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
         # Decided before the brief is drawn: the brief needs the actions either way -- live in the
         # form, or spelled out in the typed legend when there is no form to show them.

@@ -1,3 +1,4 @@
+import asyncio
 import shlex
 import subprocess
 import sys
@@ -118,28 +119,28 @@ def test_job_wait_budget_is_always_capped_at_twenty_seconds(tmp_path):
     assert "capped at 20s" in JobTool.params_schema()["properties"]["timeout"]["description"]
 
 
-def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypatch):
-    """Ctrl-C during a wait reaches JobTool through the runner and abandons the wait only: the
-    command keeps running, so the agent gets control back without losing the job."""
+async def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypatch):
+    """Cancelling the turn abandons a Job wait and nothing else: the command keeps running and
+    stays addressable, which is the whole point of having backgrounded it.
+
+    The runner does not report cancellation until the wait has actually unwound -- the awaited
+    invocation is the proof, not the request to stop."""
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     JobTool(s, [{"action": "start", "command": "sleep 60"}]).call()
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 900}])
-    result = []
 
-    thread = threading.Thread(target=lambda: result.append(runner.call_tool(tool)))
-    thread.start()
+    call = asyncio.ensure_future(runner.call_tool_async(tool))
     deadline = time.monotonic() + 2
     while runner._active_job.value is not tool and time.monotonic() < deadline:
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
     started = time.monotonic()
-    runner.cancel()
-    thread.join(timeout=5)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
 
-    assert not thread.is_alive(), "cancel did not interrupt the wait"
     assert time.monotonic() - started < 3
-    assert "Still running (the user interrupted the wait)" in result[0]
     assert s.jobs["job.1"].process.poll() is None  # the job itself survives the interrupt
     JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
 
@@ -240,7 +241,7 @@ def test_job_wait_stream_clears_on_cancel(tmp_path, monkeypatch):
     deadline = time.monotonic() + 2
     while not events and time.monotonic() < deadline:
         time.sleep(0.01)
-    tool.cancel()
+    tool.request_stop()
     thread.join(timeout=5)
 
     assert not thread.is_alive(), "cancel did not interrupt the wait"
@@ -362,7 +363,7 @@ def test_bash_cancel_kills_active_process(tmp_path):
     while tool._process is None and time.monotonic() < deadline:
         time.sleep(0.01)
 
-    tool.cancel()
+    tool.request_stop()
 
     assert finished.wait(timeout=1)
     thread.join(timeout=1)

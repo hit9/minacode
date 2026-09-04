@@ -278,7 +278,7 @@ def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_path):
     assert "Edit" not in text
 
 
-def test_tool_runner_captures_edit_turn_diff(tmp_path):
+async def test_tool_runner_captures_edit_turn_diff(tmp_path):
     git_init(tmp_path)
     (tmp_path / "a.py").write_text("old\n", encoding="utf-8")
     s = session(tmp_path)
@@ -290,7 +290,7 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
     read = ReadTool(s, [{"path": "a.py"}]).call()
     key = s.register_source_drafts(list(read.drafts))[0]
     call = ToolCall("edit-1", "Edit", ["a.py", key, [{"op": "replace", "start": 1, "end": 1, "content": "new\n"}]])
-    status, _, observation = runner.run_one(call)
+    status, _, observation = await runner.run_one(call)
 
     assert status == "ok"
     assert observation is None

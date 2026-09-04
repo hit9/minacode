@@ -293,6 +293,17 @@ class TuiApp:
             restored.wait()
         return self._input_result
 
+    def cancel_input(self) -> None:
+        """Resolve a pending `request_input` with the cancel value, from any thread.
+
+        Idempotent and safe when nothing is pending. Cancellation is its own value, never a string:
+        callers read it as a refusal or a dismissal, and any placeholder text would reach the model
+        as something the user actually typed."""
+        pending = self._input_pending
+        if pending is not None:
+            self._input_result = None
+            pending.set()
+
     def set_approval_form(self, actions: list[tuple[str, str]]) -> bool:
         """Give the *next* approval prompt a row of selectable actions, as (label, answer) pairs
         with the default first. Returns whether the form was installed, so the caller can fall back

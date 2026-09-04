@@ -833,3 +833,34 @@ def test_search_skips_a_candidate_it_cannot_hydrate(tmp_path):
     assert [s.get_source_view(key).display_path for key in keys] == ["keep.py"]
     assert "vanishes.py" not in out.retained_text
     assert '<Search pattern="needle" matches=1>' in out.retained_text
+
+
+def test_search_stop_hook_kills_and_reaps_its_child(tmp_path):
+    """Search spends its time inside ripgrep, so cancelling the turn has to reach that process.
+
+    The child is owned rather than run through `subprocess.run`, which gives no handle to kill:
+    a stop kills it, `_run_rg` still reaps it before returning, and no further child is started."""
+    import threading
+    import time
+
+    from wizolt.tools import SearchTool
+
+    s = session(tmp_path)
+    tool = SearchTool(s, [{"pattern": "x"}])
+    result: list[object] = []
+    thread = threading.Thread(target=lambda: result.append(tool._run_rg(["sleep", "30"])))
+    thread.start()
+    deadline = time.monotonic() + 2
+    while tool._process is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert tool._process is not None, "the child never started"
+    child = tool._process
+
+    tool.request_stop()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive(), "the killed child was never reaped"
+    assert child.poll() is not None  # reaped, not left as a zombie
+    assert result and result[0].returncode != 0
+    # Once stopped, no further ripgrep invocation is started at all.
+    assert tool._run_rg(["sleep", "30"]) is None

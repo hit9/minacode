@@ -9,14 +9,14 @@ import json
 import linecache
 import re
 import sys
+import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from wizolt.base import ApprovalView, Json, ToolCall, ToolError
 from wizolt.tools.base import Tool
-from wizolt.tools.editplan import EditBatchPlan
 
 if TYPE_CHECKING:
     from wizolt.runner import ToolRunner
@@ -29,12 +29,25 @@ CALLS_LINE_LIMIT = 200
 _RESULT_KEY_RE = re.compile(r"^tool (tr\.\d+)")
 
 
+class ScriptCancelled(BaseException):
+    """The turn was cancelled while the script was running.
+
+    BaseException, not Exception: a script may wrap its own work in `except Exception` -- catching
+    a per-item failure is exactly what call_many exists to encourage -- and a cancellation caught
+    there would let the script keep making calls after the turn was told to stop."""
+
+
 class _ScriptTimeBudget:
-    """Accumulate wall time across `line` events of <toolscript> frames only.
+    """Accumulate wall time across `line` events of <toolscript> frames only, and carry the
+    cooperative cancellation token the same tracer checks.
 
     Nested calls pause the clock: a human confirmation inside call() must not count against the
     script's pure execution budget. The tracer is installed with sys.settrace and only touches the
     calling thread, so MCP's own event-loop threads are unaffected.
+
+    Cancellation rides the same hook because it needs the same property: a script that never calls
+    a tool again -- a long pure loop -- still executes lines, and that is the only place the worker
+    can be reached from outside without injecting an exception into a thread.
     """
 
     def __init__(self, limit: float):
@@ -42,6 +55,19 @@ class _ScriptTimeBudget:
         self.elapsed = 0.0
         self._last: float | None = None
         self._paused = False
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        """Set the token. Idempotent, and safe from the loop thread: the worker reads it next line."""
+        self._cancelled.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self._cancelled.is_set():
+            raise ScriptCancelled
 
     def tracer(self):
         def trace(frame, event, arg):
@@ -52,6 +78,7 @@ class _ScriptTimeBudget:
             if frame.f_code.co_filename != SCRIPT_FILENAME:
                 return None
             if event == "line":
+                self.raise_if_cancelled()
                 self._check(time.monotonic())
             return trace
 
@@ -130,7 +157,10 @@ class ToolScript(Tool):
         'Learn call shapes before scripting them. Example: {"action":"describe","tools":["Read","server.tool"]}',
     )
     MUTATES = True
-    runner: ToolRunner | None = None  # injected by ToolRunner.call_tool; the runner owns the confirm wiring
+    runner: ToolRunner | None = None  # injected by ToolRunner.call_tool_async; the runner owns the confirm wiring
+    # Injected by the runner for the length of one script: publishes this run's cancellation token,
+    # so the loop can set it without reaching into the worker.
+    on_budget: Callable[[_ScriptTimeBudget], None] | None = None
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -266,6 +296,8 @@ class ToolScript(Tool):
             raise ToolError("ToolScript requires a tool runner")
 
         budget = _ScriptTimeBudget(SCRIPT_TIME_LIMIT)
+        if self.on_budget is not None:
+            self.on_budget(budget)
         keys: list[str] = []
 
         def call_fn(name, args=None, format="text"):
@@ -297,9 +329,9 @@ class ToolScript(Tool):
                         compiled,
                         {"__name__": "__toolscript__", "__builtins__": builtins, "call": call_fn, "call_many": call_many_fn},
                     )
-            except KeyboardInterrupt:
-                # Ctrl-C is the user cancelling the turn, not the script failing. It has to keep
-                # travelling: swallowing it here would report a failed script and carry on.
+            except (ScriptCancelled, KeyboardInterrupt):
+                # Cancelling the turn is not the script failing. It has to keep travelling:
+                # swallowing it here would report a failed script and carry on making calls.
                 raise
             except BaseException:  # noqa: BLE001 - script failures become a failed envelope, not a ToolScript crash.
                 # BaseException, not Exception: `sys.exit()` is an ordinary idiom in written-to-be-
@@ -462,44 +494,21 @@ class ToolScript(Tool):
         return results
 
     def _run_nested_many(self, runner: ToolRunner, calls: list[ToolCall]) -> list[tuple[str, str]]:
-        """Run prepared calls in order, concurrently across each run of parallel-safe ones.
+        """Hand a whole prepared batch to the runner and wait, on this worker, for its answers.
 
-        The segmentation is the runner's own rule and it is here for the runner's own reason: only
-        calls that neither mutate state nor stop for the user may overlap, so a write or a
-        confirmation never runs beside a concurrent read. Each result and its display land back on
-        this thread in the order the script listed them, so the log reads as the script was written
-        rather than as the pool happened to finish.
-        """
-        cap = max(1, self.session.settings.max_parallel_tools)
-        outcomes: list[tuple[str, str]] = []
-        index = 0
-        while index < len(calls):
-            end = index
-            while end < len(calls) and runner.parallel_safe(calls[end]):
-                end += 1
-            segment = calls[index:end]
-            if len(segment) > 1:
-                with ThreadPoolExecutor(max_workers=min(len(segment), cap), thread_name_prefix="toolscript") as executor:
-                    raw = list(executor.map(runner.execute_readonly, segment))
-                for call, outcome in zip(segment, raw):
-                    outcomes.append(("ok" if outcome[0] == "ok" else "failed", runner.finalize_outcome(call, outcome)))
-                index = end
-                continue
-            # A lone parallel-safe call has nothing to overlap with, and anything else must run on
-            # its own anyway: both take the ordinary single-call path, confirmation included.
-            status, message, _ = self._run_nested(runner, calls[index])
-            outcomes.append((status, message))
-            index += 1
-        return outcomes
+        The segmentation, concurrency cap, and original-order publication are the runner's, applied
+        on its loop: only calls that neither mutate state nor stop for the user may overlap, so a
+        write or a confirmation never runs beside a concurrent read, and the log reads as the script
+        was written rather than as the workers happened to finish."""
+
+        return runner.nested_calls(calls, batch=True)
 
     def _run_nested(self, runner: ToolRunner, call: ToolCall) -> tuple[str, str, object | None]:
-        """Run one nested call through the runner. Edits go through a single-element plan so a nested
-        Edit behaves exactly like a top-level single Edit (source-view planning, stale checks, write-time
-        verification) instead of a plan-less EditTool.call()."""
-        if call.name == "Edit":
-            plan = EditBatchPlan(self.session).build([call])
-            return runner.run_one(call, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
-        return runner.run_one(call)
+        """Run one nested call through the runner, over the same gateway. Edit planning happens on
+        the runner's side, so a nested Edit behaves exactly like a top-level single Edit."""
+
+        status, message = runner.nested_calls([call], batch=False)[0]
+        return status, message, None
 
     @staticmethod
     def _message_body(message: str) -> str:

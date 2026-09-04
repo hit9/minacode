@@ -59,7 +59,8 @@ class BashTool(Tool):
         self._process_lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
 
-    def cancel(self) -> None:
+    def request_stop(self) -> None:
+        """Kill the command's whole process group; the runner then waits for `call()` to reap it."""
         with self._process_lock:
             proc = self._process
         if proc is not None and proc.poll() is None:
@@ -414,7 +415,7 @@ class JobTool(Tool):
         super().__init__(session, args)
         self._interrupted = threading.Event()
 
-    def cancel(self) -> None:
+    def request_stop(self) -> None:
         """Ctrl-C during a wait. This abandons the wait, not the job: the command keeps running and
         stays addressable through `Job`, which is the whole point of having backgrounded it."""
         self._interrupted.set()

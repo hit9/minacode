@@ -262,6 +262,7 @@ Full documentation: https://wizolt.readthedocs.io
         self.agent.tools.worker_config_picker = worker.WorkerFlow(self).run_worker_config
         self.agent.tools.text_viewer = lambda view: approval_text_viewer(self, view)
         self.agent.tools.approval_form = self.set_approval_form
+        self.agent.tools.cancel_input = self.cancel_tool_input
         # Worker agent lifecycle callbacks: delegate.py wires these onto the worker agent when set,
         # so a worker's retry backoff, provider-side builtin calls, and compaction show in this TUI.
         self.agent.tools.retry_wait = self.model_retry_wait_status
@@ -863,6 +864,12 @@ Full documentation: https://wizolt.readthedocs.io
         # The selectable action row exists only in the TUI. Headless and piped runs report False so
         # the approval brief keeps advertising the typed protocol they do have.
         return self.tui is not None and self.tui.set_approval_form(actions)
+
+    def cancel_tool_input(self) -> None:
+        """Resolve a pending approval or Ask prompt as cancelled, so whoever is parked on the user
+        returns. Headless runs have no prompt to resolve; their injected input owns its own end."""
+        if self.tui is not None:
+            self.tui.cancel_input()
 
     def tool_input(self, prompt: str = "") -> str | None:
         # Under the TUI, route agent approvals through TuiApp's input widget instead of a separate

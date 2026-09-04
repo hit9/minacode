@@ -1,14 +1,16 @@
 """tool runner (split from tests/test_agent_turn.py)."""
 
+import asyncio
 import threading
 import time
 
+import pytest
 from agent_harness import call, session
 
 from wizolt.base import ToolCall
 from wizolt.context import ContextManager
 from wizolt.runner import ToolRunner
-from wizolt.tools import toolblocks, tooloutput
+from wizolt.tools import Tool, toolblocks, tooloutput
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -182,3 +184,93 @@ def test_edit_barrier_splits_a_batch_and_serializes_its_mutations(tmp_path):
     barrier = [calls[0], ToolCall("b1", "Bash", [":"])]
     assert runner.edit_barrier(barrier[1])  # a mutating non-Edit call ends the edit segment
     assert runner.edit_segment_end(barrier, 0) == 1
+
+
+class _SlowTool(Tool):
+    """A tool that cannot be interrupted, and records exactly when it finished its work."""
+
+    NAME = "Slow"
+    marker = None
+    delay = 0.15
+
+    def call(self):
+        time.sleep(self.delay)
+        assert _SlowTool.marker is not None
+        _SlowTool.marker.write_text("finished", encoding="utf-8")
+        return "done"
+
+
+async def test_cancellation_waits_for_a_thread_backed_tool_before_reporting(tmp_path, monkeypatch):
+    """Cancelling the task that awaits a worker does not stop the worker. So the runner keeps
+    waiting: the tool's own work is finished before cancellation is reported, which is what makes
+    "cancelled" mean the turn is no longer touching anything."""
+    s = session(tmp_path)
+    marker = tmp_path / "marker.txt"
+    monkeypatch.setattr(_SlowTool, "marker", marker)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    call = asyncio.ensure_future(runner.call_tool_async(_SlowTool(s, [])))
+    await asyncio.sleep(0.02)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    # Written before the cancellation surfaced, and nothing writes it afterwards.
+    assert marker.read_text(encoding="utf-8") == "finished"
+    before = marker.stat().st_mtime_ns
+    await asyncio.sleep(0.25)
+    assert marker.stat().st_mtime_ns == before
+
+
+async def test_a_stop_hook_is_requested_once_per_cancellation_and_awaited(tmp_path):
+    """The stop hook is a request the runner makes on the way to waiting, never a substitute for
+    waiting: it may be asked repeatedly, and the invocation is still awaited to quiescence."""
+    s = session(tmp_path)
+    stops = []
+    released = threading.Event()
+
+    class Cooperative(Tool):
+        NAME = "Cooperative"
+
+        def call(self):
+            released.wait(2)
+            return "stopped"
+
+        def request_stop(self):
+            stops.append(True)
+            released.set()
+
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    call = asyncio.ensure_future(runner.call_tool_async(Cooperative(s, [])))
+    await asyncio.sleep(0.02)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    assert stops  # asked to stop ...
+    assert released.is_set()  # ... and the worker really unwound before cancellation surfaced
+
+
+def test_repeated_synchronous_runs_retain_no_loop_bound_state(tmp_path):
+    """`run()` is `asyncio.run` over `run_async`, so anything it left behind would belong to a
+    closed loop. Two calls on the same runner must therefore both work."""
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    s = session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    first = runner.run([ToolCall("r1", "Read", [{"path": "a.txt"}])])
+    second = runner.run([ToolCall("r2", "Read", [{"path": "a.txt"}])])
+
+    assert "alpha" in str(first[0]["content"])
+    assert "alpha" in str(second[0]["content"])
+    assert runner._capacity is None and runner._gateway is None
+
+
+async def test_the_synchronous_facade_refuses_to_run_inside_a_loop(tmp_path):
+    """asyncio.run cannot nest, and the alternative -- a second loop on a helper thread -- would
+    own none of the resources it touched. So the facade names the async method instead."""
+    s = session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    with pytest.raises(RuntimeError, match="ToolRunner.run_async"):
+        runner.run([])

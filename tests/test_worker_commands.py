@@ -264,7 +264,7 @@ def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     assert parent.config.providers["alt"].model == "m"  # untouched
 
 
-def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch):
+async def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -274,7 +274,7 @@ def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch)
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = await runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
@@ -292,7 +292,7 @@ def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch)
     assert any(item.label == "stored" for item, _ in finish.walk())
 
 
-def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatch):
+async def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -304,7 +304,7 @@ def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatc
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     runner.worker_rule = lambda label: labels.append(label)
-    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = await runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
     done = [label for label in labels if label.startswith("worker done · ")]
@@ -321,7 +321,7 @@ def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatc
     assert not any(item.label == "done" and item.text.startswith("steps ") for item, _ in finish.walk())
 
 
-def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypatch):
+async def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypatch):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -332,7 +332,7 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
-    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o", "title": "fix /status blank line"}]))
+    status, _, _ = await runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o", "title": "fix /status blank line"}]))
     assert status == "ok"
 
     done = [label for label in labels if label.startswith("worker done · ")]
@@ -340,7 +340,7 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     assert done[0].startswith("worker done · fix /status blank line · steps 1")
 
 
-def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_path, monkeypatch):
+async def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -351,7 +351,7 @@ def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = await runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
@@ -369,7 +369,7 @@ def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_
     assert "report line 20" not in rendered  # the folded preview only carries the head and tail
 
 
-def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, monkeypatch):
+async def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -381,7 +381,7 @@ def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, m
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     runner.worker_answer = answers.append
-    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = await runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
     assert answers == ["the report"]  # the report went through the markdown hook, exactly once
@@ -389,7 +389,7 @@ def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, m
     assert not auto  # nothing on the plain output channel carries the final report
 
 
-def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
+async def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     from wizolt.base import LogBlock, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -402,7 +402,7 @@ def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
 
-    status, _, _ = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
+    status, _, _ = await runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
     assert status == "ok"
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
@@ -412,7 +412,7 @@ def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     assert "worker context cleared" in str(finish)
 
 
-def test_delegate_reset_finish_worker_rule_label(tmp_path):
+async def test_delegate_reset_finish_worker_rule_label(tmp_path):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -427,7 +427,7 @@ def test_delegate_reset_finish_worker_rule_label(tmp_path):
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     runner.worker_rule = lambda label: labels.append(label)
 
-    status, _, _ = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
+    status, _, _ = await runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
     assert status == "ok"
 
     # Reset is a one-shot tool call, not a delegation bracket: no full-width worker_rule rule

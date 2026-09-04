@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from wizolt.base import Json, ModelError, ToolArgs, ToolError, split_lines
@@ -148,9 +148,9 @@ class ViewImageTool(Tool):
     def __init__(self, session: Session, args: ToolArgs):
         super().__init__(session, args)
         self.image: ImageRef | None = None
-        # Injected by ToolRunner.call_tool. The tool owns validation and result shape; orchestration
-        # owns the model-client lifecycle so Ctrl-C can reach every provider request.
-        self.vision_observe: Callable[[tuple[ImageRef, ...], str], str] | None = None
+        # Injected by ToolRunner.call_tool_async. The tool owns validation and result shape;
+        # orchestration owns the model-client lifecycle so cancellation reaches every request.
+        self.vision_observe: Callable[[tuple[ImageRef, ...], str], Awaitable[str]] | None = None
         self._uses_vision_provider = False
         self._observation_text = ""
         # Set when the explicit call uses [vision], so the runner can render that paid request.
@@ -197,23 +197,41 @@ class ViewImageTool(Tool):
         provider = self.session.config.providers[self.session.config.vision_provider]
         return f"{self.session.config.vision_provider}/{provider.model}"
 
-    def _vision_observe(self, question: str) -> str:
-        assert self.image is not None  # call() loaded it before bridging
+    async def _vision_observe(self, question: str) -> str:
+        assert self.image is not None  # call_async() loaded it before bridging
         if self.vision_observe is None:
             raise ToolError("ViewImage with a configured vision provider requires ToolRunner")
-        return self.vision_observe((self.image,), question)
+        return await self.vision_observe((self.image,), question)
 
     def call(self) -> str:
+        """ViewImage bridges to a provider, so its work is a coroutine; see call_async.
+
+        Reached only if something outside the runner invokes it as an ordinary tool, which cannot
+        do the observation -- the local half still answers, so the model gets the image's identity
+        rather than an error about plumbing."""
+
         path = self.path()
         try:
             self.image = self.session.images.load(path, source_text=self.session.relpath(path))
         except ModelError as error:
             raise ToolError(str(error)) from error
-        header = (
+        return self._header(path) + "/>"
+
+    def _header(self, path: str) -> str:
+        assert self.image is not None
+        return (
             f"<ViewImage path={json.dumps(self.session.relpath(path))} "
             f"media_type={json.dumps(self.image.media_type)} width={self.image.width} "
             f"height={self.image.height} bytes={self.image.size}"
         )
+
+    async def call_async(self) -> str:
+        path = self.path()
+        try:
+            self.image = self.session.images.load(path, source_text=self.session.relpath(path))
+        except ModelError as error:
+            raise ToolError(str(error)) from error
+        header = self._header(path)
         # Main-first: only a text-only route (static catalog or session-learned 400) with a
         # configured [vision] entry bridges here; an unknown route keeps the raw observation so
         # the active multimodal model receives the original pixels even when [vision] exists.
@@ -222,7 +240,7 @@ class ViewImageTool(Tool):
         self._uses_vision_provider = True
         self.vision_entry_label = self._vision_label()
         try:
-            observation = self._vision_observe(self.question())
+            observation = await self._vision_observe(self.question())
         except ModelError as error:
             raise ToolError(f"Vision observation failed: {error}") from error
         self._observation_text = observation

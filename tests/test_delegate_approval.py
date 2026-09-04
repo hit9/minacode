@@ -36,7 +36,7 @@ def test_spawned_worker_reuses_the_parent_catalog(tmp_path):
 
     assert worker.catalog is parent.catalog
 
-def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
+async def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -45,14 +45,14 @@ def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     for answer, expected in [("y", (True, "")), ("", (True, "")), ("n", (False, "")), ("a", (False, "a"))]:
         runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda _prompt, a=answer: a, output_fn=lambda text: None)
-        confirmed, reason = runner.confirm(
+        confirmed, reason = await runner.confirm(
             ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
         )
         assert (confirmed, reason) == expected, answer
 
     # A c-prefixed sentence is an ordinary reason, never the config key (whole-line exact match only).
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "cost too high", output_fn=lambda text: None)
-    confirmed, reason = runner.confirm(
+    confirmed, reason = await runner.confirm(
         ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
     )
     assert (confirmed, reason) == (False, "cost too high")
@@ -120,7 +120,7 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     block = toolblocks.approval_display(parent, ToolCall("edit-1", "Edit", ["new.py", "", [{"op": "create", "content": "x\n"}]]), edit_tool, "confirm")
     assert block.has_children
 
-def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tmp_path):
+async def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tmp_path):
     from dataclasses import replace
 
     from wizolt.base import LogBlock, ToolCall
@@ -157,7 +157,7 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
 
     runner = ToolRunner(parent, ContextManager(parent), input_fn=input_fn, output_fn=outputs.append)
     runner.worker_config_picker = lambda: calls.append(1) or picker()
-    confirmed, reason = runner.confirm(
+    confirmed, reason = await runner.confirm(
         ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
     )
     assert (confirmed, reason) == (True, "")
@@ -183,7 +183,7 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     outputs = []
     answers = iter(["c", "y"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or next(answers), output_fn=outputs.append)
-    confirmed, reason = runner.confirm(
+    confirmed, reason = await runner.confirm(
         ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
     )
     assert (confirmed, reason) == (True, "")
@@ -191,7 +191,7 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     assert parent.config.worker_provider == "alt"  # untouched without a picker
     assert parent.config.worker_api == "responses"  # untouched without a picker
 
-def test_delegate_view_opens_viewer_then_approves(tmp_path):
+async def test_delegate_view_opens_viewer_then_approves(tmp_path):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -205,7 +205,7 @@ def test_delegate_view_opens_viewer_then_approves(tmp_path):
     answers = iter(["v", "y"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
     runner.text_viewer = lambda view: seen.append((view.text, view.rows))
-    confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    confirmed, reason = await runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
     assert (confirmed, reason) == (True, "")
     assert len(seen) == 1  # the `v` key opened the viewer exactly once
     viewed_order, header_rows = seen[0]
@@ -216,7 +216,7 @@ def test_delegate_view_opens_viewer_then_approves(tmp_path):
     assert any(label in {"provider", "model", "effort", "api"} for label, _ in header_rows)
     assert not any(label == "order" for label, _ in header_rows)  # order is shown in full in the viewer
 
-def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
+async def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
     """`c` then `v`: the viewer reports the configuration the send would run under, so it has to
     read that configuration when the key is pressed, not as it stood when the prompt was drawn."""
     from wizolt.base import ToolCall
@@ -232,12 +232,12 @@ def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
     runner.text_viewer = lambda view: seen.append(dict(view.rows))
     runner.worker_config_picker = lambda: setattr(parent.config, "worker_model", "chosen-in-the-c-cycle")
 
-    confirmed, _ = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    confirmed, _ = await runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
 
     assert confirmed
     assert seen and seen[0]["model"] == "chosen-in-the-c-cycle"
 
-def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
+async def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
     from wizolt.base import LogBlock, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -251,12 +251,12 @@ def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
     answers = iter(["v", "n"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=outputs.append)
     # text_viewer stays None: headless / non-CommandLoop runners print the full order instead.
-    confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    confirmed, reason = await runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
     assert (confirmed, reason) == (False, "")
     texts = [item.text for out in outputs if isinstance(out, LogBlock) for item, _ in out.walk()]
     assert all(line in texts for line in order_lines)  # nothing dropped, unlike the brief excerpt
 
-def test_delegate_view_empty_order_is_noop(tmp_path):
+async def test_delegate_view_empty_order_is_noop(tmp_path):
     from wizolt.base import LogBlock, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -269,7 +269,7 @@ def test_delegate_view_empty_order_is_noop(tmp_path):
     answers = iter(["v", "y"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=outputs.append)
     runner.text_viewer = lambda view: seen.append((view.text, view.rows))
-    confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    confirmed, reason = await runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
     # Nothing to view, so `v` is not an action here and falls through to the one thing any other
     # unrecognized line means at this prompt: a refusal carrying what was typed as its reason.
     assert (confirmed, reason) == (False, "v")
@@ -287,7 +287,7 @@ def test_delegate_approval_legend_mentions_view(tmp_path):
     assert legend.role is LogRole.META
     assert "v view order" in legend.text
 
-def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
+async def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
     # The TUI signals Ctrl-C / Ctrl-D-on-empty / app shutdown by returning None from request_input.
     # confirm() must read that as a plain refusal: not "" (the default approve) and not a reason,
     # which would reach the model as text the user never typed. Holds for every tool, not just
@@ -300,12 +300,12 @@ def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
     parent = _delegate_session(tmp_path)
     args = {"action": "send", "order": "o"}
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: None, output_fn=lambda text: None)
-    assert runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args])) == (False, "")
+    assert await runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args])) == (False, "")
 
     call = ToolCall("bash-1", "Bash", ["echo hi"])
-    assert runner.confirm(call, TOOL_REGISTRY["Bash"](parent, ["echo hi"])) == (False, "")
+    assert await runner.confirm(call, TOOL_REGISTRY["Bash"](parent, ["echo hi"])) == (False, "")
 
-def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
+async def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
     # `v` and `c` come back to the same prompt, and each redraw used to stack another full copy of
     # the brief in the transcript. It is printed once; the side trips report themselves.
     from wizolt.base import LogBlock, ToolCall
@@ -319,14 +319,14 @@ def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
     outputs, prompts = [], []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or next(answers), output_fn=outputs.append)
     runner.text_viewer = lambda view: None
-    confirmed, _ = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    confirmed, _ = await runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
 
     assert confirmed is True
     assert len(prompts) == 4  # every side trip re-asked
     briefs = [out for out in outputs if isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk())]
     assert len(briefs) == 1
 
-def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_path):
+async def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_path):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -372,7 +372,7 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
         typed.worker_config_picker = lambda: None
         if answer in {"v", "c"}:
             continue  # these re-ask forever against a constant input_fn; covered by the side-trip test
-        assert typed.confirm(ToolCall("bash-1", "Bash", ["rm -rf build"]), bash) == ((True, "") if answer == "" else (False, ""))
+        assert await typed.confirm(ToolCall("bash-1", "Bash", ["rm -rf build"]), bash) == ((True, "") if answer == "" else (False, ""))
 
 def test_delegate_legend_prints_only_without_an_action_row(tmp_path):
     from wizolt.base import LogEdge
@@ -608,7 +608,7 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     assert rows, "the viewer rendered nothing"
     assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
 
-def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
+async def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -620,11 +620,11 @@ def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatc
     prompts = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
 
-    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = await runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
     assert len(prompts) == 1  # yolo alone does not skip a Delegate send
 
-def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
+async def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -634,7 +634,7 @@ def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "n", output_fn=lambda text: None)
 
-    status, message, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, message, _ = await runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "refused"
     assert "refused" in message
     assert not model.requests  # the worker never ran

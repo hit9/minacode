@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import json
 import os
@@ -35,6 +36,48 @@ class SearchTool(Tool):
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
     SKIP_DIRS: ClassVar[set[str]] = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
+
+    def __init__(self, session: Session, args: ToolArgs):
+        super().__init__(session, args)
+        # A batched search over a large tree spends its time inside ripgrep, so the turn's
+        # cancellation has to reach that process rather than wait out shell_timeout.
+        self._process_lock = threading.Lock()
+        self._process: subprocess.Popen[str] | None = None
+        self._stopped = False
+
+    def request_stop(self) -> None:
+        """Kill the ripgrep child, and refuse to start another one; `call()` reaps what it started."""
+        with self._process_lock:
+            self._stopped = True
+            proc = self._process
+        if proc is not None and proc.poll() is None:
+            with contextlib.suppress(OSError):
+                proc.kill()
+
+    def _run_rg(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
+        """Run one ripgrep invocation, tracked so request_stop can kill it. None once stopped.
+
+        `subprocess.run` would give the same output but no handle to kill, so the process is owned
+        here: started under the lock unless a stop already arrived, always waited for, and always
+        cleared -- a killed child is still reaped before this returns."""
+        with self._process_lock:
+            if self._stopped:
+                return None
+            proc = subprocess.Popen(
+                cmd, cwd=self.session.cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )  # argv built here, never a shell string
+            self._process = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=self.session.settings.shell_timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+        finally:
+            with self._process_lock:
+                if self._process is proc:
+                    self._process = None
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -205,12 +248,10 @@ class SearchTool(Tool):
         if request["glob"]:
             cmd.extend(["--glob", str(request["glob"])])
         cmd.extend([str(request["pattern"]), str(request["path"])])
-        proc = subprocess.run(cmd, cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout, check=False)
-        if proc.returncode == 2:
-            proc = subprocess.run(
-                [*cmd[:1], "--pcre2", *cmd[1:]], cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout, check=False
-            )
-        if proc.returncode not in (0, 1):
+        proc = self._run_rg(cmd)
+        if proc is not None and proc.returncode == 2:
+            proc = self._run_rg([*cmd[:1], "--pcre2", *cmd[1:]])
+        if proc is None or proc.returncode not in (0, 1):
             return None
         rows: list[tuple[str, int]] = []
         for line in proc.stdout.splitlines():

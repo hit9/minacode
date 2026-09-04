@@ -36,9 +36,9 @@ def session(tmp_path, *, vision=True, model="main-model", vision_api="chat"):
     return Session(cwd=str(tmp_path), config=config)
 
 
-def call_view_image(s, args):
+async def call_view_image(s, args):
     tool = ViewImageTool(s, args)
-    output = ToolRunner(s, ContextManager(s), output_fn=lambda _text: None).call_tool(tool)
+    output = await ToolRunner(s, ContextManager(s), output_fn=lambda _text: None).call_tool_async(tool)
     return tool, output
 
 
@@ -119,7 +119,7 @@ async def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monk
     assert IMAGE_REFS_KEY not in json.dumps(captured["messages"])
 
 
-def test_static_text_only_view_image_bridges_with_default_question(tmp_path, monkeypatch):
+async def test_static_text_only_view_image_bridges_with_default_question(tmp_path, monkeypatch):
     s = session(tmp_path, model="deepseek-chat", vision=True)
     image_file(tmp_path / "shot.png")
     captured = {}
@@ -129,7 +129,7 @@ def test_static_text_only_view_image_bridges_with_default_question(tmp_path, mon
         return {}, [], OBSERVATION
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
-    tool, output = call_view_image(s, ["shot.png"])
+    tool, output = await call_view_image(s, ["shot.png"])
 
     assert captured["question"] == VISION_OBSERVE_DEFAULT_QUESTION
     assert output.endswith("\n" + OBSERVATION)
@@ -172,18 +172,18 @@ async def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path
     assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (10_000, 200_000)
 
 
-def test_vision_bridge_requires_runner_and_reports_errors(tmp_path, monkeypatch):
+async def test_vision_bridge_requires_runner_and_reports_errors(tmp_path, monkeypatch):
     s = session(tmp_path, model="deepseek-chat", vision=True)
     image_file(tmp_path / "shot.png")
     with pytest.raises(ToolError, match="requires ToolRunner"):
-        ViewImageTool(s, ["shot.png"]).call()
+        await ViewImageTool(s, ["shot.png"]).call_async()
 
     def fail(*args, **kwargs):
         raise ModelError("boom")
 
     monkeypatch.setattr(ModelClient, "api_request", fail)
     with pytest.raises(ToolError, match="Vision observation failed: boom"):
-        call_view_image(s, ["shot.png"])
+        await call_view_image(s, ["shot.png"])
 
 
 def test_environment_advertises_vision_as_image_fallback_once_and_schema_is_stable(tmp_path):

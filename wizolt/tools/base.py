@@ -207,6 +207,17 @@ class Tool:
     def call(self) -> str | ToolOutput:
         raise NotImplementedError
 
+    def request_stop(self) -> None:
+        """Ask an in-flight `call()` to stop, best effort. Idempotent; safe from another thread.
+
+        The runner calls this when the turn is cancelled, before it waits for the call to finish.
+        It is a request, not a guarantee: a tool that cannot be interrupted leaves the turn in
+        `cancelling` until its work returns, which is the correct outcome -- the alternative is
+        abandoning work that is still touching files. Returning does not mean anything stopped.
+
+        Only tools that block on something outside the process override this: a subprocess to kill,
+        a wait to abandon, a cooperative token to set. Ordinary bounded work does not."""
+
     def strings(self, *, min_count: int = 0, max_count: int | None = None) -> list[str]:
         if len(self.args) < min_count or (max_count is not None and len(self.args) > max_count):
             limit = f"{min_count}" if max_count == min_count else f"{min_count}-{max_count or 'many'}"

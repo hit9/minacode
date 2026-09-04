@@ -1,5 +1,8 @@
 """ToolScript: stage 1 describe + stage 2 scripted nested MCP calls (black-box)."""
 
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -431,7 +434,7 @@ class TestConfirmationBlockShowsScript:
         assert code_lines[0].text == "x0 = 0"
         assert lines[-1].text.startswith("… +20 more lines · ")
 
-    def test_view_action_is_offered_and_opens_the_whole_script(self, tmp_path):
+    async def test_view_action_is_offered_and_opens_the_whole_script(self, tmp_path):
         """`v` at the prompt opens the untruncated script, and the prompt re-asks afterwards."""
         s = _mcp_session(tmp_path)
         runner = _runner(s)
@@ -442,7 +445,7 @@ class TestConfirmationBlockShowsScript:
         runner.text_viewer = views.append
         replies = iter(["v", "y"])
         runner.input_fn = lambda _prompt: next(replies)
-        confirmed, _ = runner.confirm(ToolCall("ts-1", "ToolScript", tool.args), tool)
+        confirmed, _ = await runner.confirm(ToolCall("ts-1", "ToolScript", tool.args), tool)
         assert confirmed
         assert [view.label for view in views] == ["script"]
         assert views[0].text == code and views[0].lexer == "python"
@@ -927,3 +930,76 @@ class TestCallMany:
         content = _run_script(s, 'call_many([("Delegate", {})])\n')
         assert "ToolScript failed" in content
         assert "Delegate is not scriptable" in content
+
+
+class TestScriptCancellation:
+    """Cancelling the turn while a script is running."""
+
+    async def test_a_pure_loop_observes_the_cooperative_token(self, tmp_path):
+        """A script that never calls a tool again cannot be reached through the gateway, so the
+        token rides the trace hook the time budget already uses -- the one place the worker is
+        reachable from outside without injecting an exception into a thread."""
+        s = _mcp_session(tmp_path)
+        runner = _runner(s)
+        code = "import time\nwhile True:\n    time.sleep(0.005)\n"
+
+        batch = asyncio.ensure_future(runner.run_async([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])]))
+        await asyncio.sleep(0.1)
+        batch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await batch
+
+        # The worker unwound and the invocation released everything it owned.
+        assert runner._gateway is None
+        assert threading.active_count() < 30  # the one-worker executor was joined, not leaked
+
+    async def test_cancelling_a_nested_call_waits_for_it_and_unblocks_the_worker(self, tmp_path, monkeypatch):
+        """The script is blocked on a nested call when the turn is cancelled.
+
+        Two things have to hold. The nested call is not abandoned: an MCP call still owns its own
+        loop, so cancellation stays pending until that call returns rather than reporting a turn
+        that is still talking to a server. And when it does return, closing the gateway completes
+        the worker's future -- otherwise the script waits forever and the turn never quiesces."""
+        s = _mcp_session(tmp_path)
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={"readOnlyHint": True})]
+        entered = threading.Event()
+        release = threading.Event()
+
+        async def slow_call(config, headers, name, arguments):
+            entered.set()
+            await asyncio.to_thread(release.wait, 5)
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text="late")])
+
+        monkeypatch.setattr(s.mcp, "_call_tool", slow_call)
+        runner = _runner(s)
+        code = 'call("test.echo", {"n": 1})\nprint("unreachable")\n'
+
+        batch = asyncio.ensure_future(runner.run_async([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])]))
+        deadline = time.monotonic() + 3
+        while not entered.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert entered.is_set(), "the nested call never started"
+
+        batch.cancel()
+        await asyncio.sleep(0.2)
+        assert not batch.done(), "cancellation was reported while the nested call was still running"
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await batch
+
+        assert runner._gateway is None
+
+    async def test_nested_calls_do_not_starve_on_the_bounded_capacity(self, tmp_path):
+        """The script holds a worker of its own while it waits for nested calls, so it must not sit
+        in the capacity those calls need. With a cap of one, a nested call still runs."""
+        s = _mcp_session(tmp_path)
+        s.settings.max_parallel_tools = 1
+        (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+        runner = _runner(s)
+        code = 'print("read" if "alpha" in call("Read", {"path": "a.txt"}) else "missing")\n'
+
+        (message,) = await runner.run_async([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+
+        assert "ToolScript ok" in str(message["content"])
+        assert "read" in str(message["content"])
