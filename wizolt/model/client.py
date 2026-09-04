@@ -528,22 +528,6 @@ class ModelClient:
         request quietly sent on the wrong wire."""
         return self._wires[self.resolved(provider).api]
 
-    def api_request_sync(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None,
-        **kwargs,
-    ) -> tuple[Json, list[ToolCall], str]:
-        """TODO(async-phase-2): the last synchronous secondary-request entry point.
-
-        Compaction and vision issue their own provider requests and are still synchronous, so they
-        need an outer boundary of their own until Phase 2 makes them async end to end. It lives
-        here rather than in either caller so there is one owner to delete, and neither of those
-        modules ever starts a loop."""
-
-        fail_if_running_loop("use await ModelClient.api_request(...)")
-        return asyncio.run(self.api_request(messages, tools, **kwargs))
-
     async def api_request(
         self,
         messages: list[Json],

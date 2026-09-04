@@ -10,7 +10,7 @@ import re
 import shlex
 import shutil
 import tempfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
@@ -315,11 +315,11 @@ class ImageInputs:
         message[IMAGE_TEXT_ONLY_KEY] = True
         return message
 
-    def observe_current(
+    async def observe_current_async(
         self,
         messages: list[Json],
         current: list[Json],
-        observe: Callable[[tuple[ImageRef, ...], str], str],
+        observe: Callable[[tuple[ImageRef, ...], str], Awaitable[str]],
     ) -> list[Json]:
         """Convert each current raw image occurrence in `messages` to a durable text observation.
 
@@ -338,7 +338,7 @@ class ImageInputs:
             if not images:
                 continue
             question = self.tool_observation_question(message)
-            observation = observe(images, question)
+            observation = await observe(images, question)
             if message.get(TOOL_IMAGE_OBSERVATION_KEY):
                 result[index] = self.text_observation(images, observation, question)
             else:

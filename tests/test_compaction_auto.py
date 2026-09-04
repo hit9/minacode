@@ -6,7 +6,7 @@ from test_context import _CountingModel, _huge_history
 from wizolt.context import ContextManager
 
 
-def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):
+async def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):
     # The loop guard. Compaction shrinks history but cannot always get under budget, so "still over
     # budget" must not by itself justify compacting again: re-deciding on the same messages is the
     # runaway compaction this has regressed into before. One automatic pass per scope, until the
@@ -15,7 +15,7 @@ def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):
     model = _CountingModel(s)
 
     for _ in range(5):
-        context.prepare_messages(model, "system")
+        await context.prepare_messages_async(model, "system")
 
     assert model.calls == 1
     assert s.state.compaction_count == 1
@@ -25,12 +25,12 @@ def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):
     # smaller message no longer re-triggers one and the guard under test would never be exercised.
     s.messages.append({"role": "assistant", "content": "another step " + "y" * 700_000})
     for _ in range(5):
-        context.prepare_messages(model, "system")
+        await context.prepare_messages_async(model, "system")
 
     assert model.calls == 2
 
 
-def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
+async def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
     # The recent window is a message count, not a size. Once a session has been compacted, the only
     # compactable head is what sits before the latest user message -- and that is just the previous
     # summary, which is filtered out. So a handful of large messages after that user message left an
@@ -41,7 +41,7 @@ def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
         before = context.request_tokens(context.model_messages("system"), None)
         model = _CountingModel(s)
 
-        context.prepare_messages(model, "system")
+        await context.prepare_messages_async(model, "system")
 
         after = context.request_tokens(context.model_messages("system"), None)
         if before < budget:
@@ -51,7 +51,7 @@ def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
             assert after < budget, f"{steps} steps: still over budget after compacting"
 
 
-def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
+async def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     # The irreducible case: the latest user message and one enormous tool result. The cut may not
     # land between a tool result and the call that produced it, so there is nothing to compact at
     # any window. Say so once rather than silently sending a request the provider will reject.
@@ -68,7 +68,7 @@ def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     model = _CountingModel(s)
 
     for _ in range(4):
-        context.prepare_messages(model, "system")
+        await context.prepare_messages_async(model, "system")
 
     assert model.calls == 0  # nothing could be compacted, so nothing was sent to the model
     assert len(reports) == 1, "the dead end must be reported, and only once"
@@ -79,7 +79,7 @@ def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     # enormous result, the call and its result can be lifted out together, which the old cut --
     # confined to what follows the latest user message -- could never reach.
     s.messages.append({"role": "assistant", "content": "still working"})
-    context.prepare_messages(model, "system")
+    await context.prepare_messages_async(model, "system")
     assert reports[1:] == [(True, ""), (False, "")]
     assert all("read the file" != str(message.get("content") or "") or index == 1 for index, message in enumerate(s.messages))
     assert not any(message.get("tool_calls") for message in s.messages)  # the 1MB pair is gone
@@ -88,13 +88,13 @@ def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     # And that pass actually fixed it: the request fits again, so a further message asks for no
     # further compaction. The dead end was reported once and then stopped being one.
     s.messages.append({"role": "user", "content": "carry on"})
-    context.prepare_messages(model, "system")
+    await context.prepare_messages_async(model, "system")
     assert model.calls == 1
     assert context.request_tokens(context.model_messages("system")) < context.request_token_budget()
     assert reports[-2:] == [(True, ""), (False, "")]
 
 
-def test_automatic_turn_compaction_runs_once_until_the_turn_grows(tmp_path):
+async def test_automatic_turn_compaction_runs_once_until_the_turn_grows(tmp_path):
     # Same guard for the current-turn pass, and it must not carry across turns: a fresh turn is a
     # different (shorter) list, and blocking it because the previous turn was longer would leave the
     # new one uncompactable.
@@ -103,20 +103,20 @@ def test_automatic_turn_compaction_runs_once_until_the_turn_grows(tmp_path):
     turn = [{"role": "user", "content": "request"}, *({"role": "assistant", "content": "t " + "y" * 160_000} for _ in range(30))]
 
     for _ in range(5):
-        context.prepare_messages(model, "system", turn)
+        await context.prepare_messages_async(model, "system", turn)
     first = model.calls
     assert first >= 1
 
     for _ in range(5):
-        context.prepare_messages(model, "system", turn)
+        await context.prepare_messages_async(model, "system", turn)
     assert model.calls == first  # nothing changed, nothing recompacted
 
     next_turn = [{"role": "user", "content": "next"}, *({"role": "assistant", "content": "n " + "y" * 160_000} for _ in range(30))]
-    context.prepare_messages(model, "system", next_turn)
+    await context.prepare_messages_async(model, "system", next_turn)
     assert model.calls > first  # a new turn is not blocked by the previous turn's mark
 
 
-def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch):
+async def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch):
     context = ContextManager(session(tmp_path))
     calls = 0
     original = context.model_messages
@@ -127,6 +127,6 @@ def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch
         return original(base_system, turn_messages)
 
     monkeypatch.setattr(context, "model_messages", model_messages)
-    context.prepare_messages(object(), "system", [{"role": "user", "content": "request"}])
+    await context.prepare_messages_async(object(), "system", [{"role": "user", "content": "request"}])
 
     assert calls == 1

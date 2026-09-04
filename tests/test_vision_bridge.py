@@ -93,7 +93,7 @@ def test_view_image_without_vision_returns_direct_model_observation(tmp_path):
     ("api", "image_type", "text_type"),
     [("chat", "image_url", "text"), ("responses", "input_image", "input_text"), ("anthropic", "image", "text")],
 )
-def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monkeypatch, api, image_type, text_type):
+async def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monkeypatch, api, image_type, text_type):
     """The [vision] wire shape is protocol-specific, reached only when the route bridges."""
     s = session(tmp_path, model="deepseek-chat", vision=True, vision_api=api)
     image_file(tmp_path / "shot.png")
@@ -105,7 +105,7 @@ def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monkeypatc
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
     model = ModelClient(s)
-    observation = VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
+    observation = await VisionObserver(model).observe_async((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
 
     assert observation == OBSERVATION
     assert captured["tools"] is None
@@ -141,7 +141,7 @@ def test_static_text_only_view_image_bridges_with_default_question(tmp_path, mon
     assert not ImageInputs.input_refs(observation)
 
 
-def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path, monkeypatch):
+async def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path, monkeypatch):
     """Vision usage joins the session totals but must not overwrite the last-request ctx/cache
     snapshot the status bar reads."""
     s = session(tmp_path, model="main-model", vision=True, vision_api="chat")
@@ -167,7 +167,7 @@ def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path, monk
             ]
         ),
     )
-    VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "")
+    await VisionObserver(model).observe_async((s.images.load(str(tmp_path / "shot.png")),), "")
     assert (s.usage.calls, s.usage.total_tokens) == (2, 10_820)
     assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (10_000, 200_000)
 

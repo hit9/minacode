@@ -33,3 +33,8 @@ core
 core.*
 .playwright-cli/
 .DS_Store
+
+# Working notes for the async runtime migration: the plan and the user-approved deviations from
+# it. Both describe how the work is being done, not what the code is; they stay out of history.
+ASYNC_RUNTIME_MIGRATION_SPEC.md
+ASYNC_MIGRATION_DEVIATIONS.md

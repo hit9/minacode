@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import email.utils
 import json
-import threading
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -13,7 +12,7 @@ import anthropic
 import httpx
 import openai
 import pytest
-from model_harness import AsyncCloseable, _MockClientFactory, _session, async_create, record_backoff
+from model_harness import AsyncCloseable, _MockClientFactory, _session, record_backoff
 
 from wizolt import compaction
 from wizolt.base import (
@@ -32,7 +31,7 @@ from wizolt.context import ContextManager
 from wizolt.model import ModelClient, resilience
 
 
-def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch):
+async def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = ModelClient(s)
     factory = _MockClientFactory(
@@ -59,8 +58,7 @@ def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    result = compaction.Compactor(ContextManager(s), model).compact("long context")
-
+    result = await compaction.Compactor(ContextManager(s), model).compact_async("long context")
     body = json.loads(factory.calls[0].content)
     assert body["stream"] is False
     assert "stream_options" not in body
@@ -111,7 +109,7 @@ def test_request_retry_exhausted(tmp_path, monkeypatch):
     assert s.usage.calls == 0
 
 
-def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monkeypatch):
+async def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monkeypatch):
     s = _session(tmp_path, response_timeout=0.01)
     model = ModelClient(s)
     client = AsyncCloseable()
@@ -122,12 +120,9 @@ def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monke
         await asyncio.sleep(30)
         return "completed after deadline"
 
-    async def timed_out():
-        with pytest.raises(ModelResponseTimeout, match=r"provider\.response_timeout=0\.01s") as caught:
-            await model.call_client(client, blocked_request)
-        return caught.value
-
-    expiry = asyncio.run(timed_out())
+    with pytest.raises(ModelResponseTimeout, match=r"provider\.response_timeout=0\.01s") as caught:
+        await model.call_client(client, blocked_request)
+    expiry = caught.value
 
     assert started == [True]
     assert client.closed == 1  # the deadline closes the client it opened, on its own loop
@@ -142,12 +137,12 @@ def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monke
 
     monkeypatch.setattr(model, "api_request", expired)
     with pytest.raises(ModelResponseTimeout):
-        model.request([{"role": "user", "content": "hi"}], [])
+        await model.request_async([{"role": "user", "content": "hi"}], [])
     assert calls == 1
     assert s.state.model_retry_count == 0
 
 
-def test_timed_out_request_cannot_emit_after_a_new_request_starts(tmp_path):
+async def test_timed_out_request_cannot_emit_after_a_new_request_starts(tmp_path):
     """A request the deadline already gave up on stays silent even if the provider answers later.
 
     The lease is per attempt, so the expired attempt's stream deltas and builtin reports are
@@ -162,35 +157,33 @@ def test_timed_out_request_cannot_emit_after_a_new_request_starts(tmp_path):
     model.on_builtin_call = lambda label, detail: builtins.append((label, detail))
     finished = []
 
-    async def drive():
-        async def stale_request():
-            try:
-                await release.wait()
-                model._emit_stream("output", "stale")
-                model.report_builtin_call("web_search_call", "stale query")
-                model._emit_stream("", "")
-                return "stale"
-            finally:
-                finished.append(True)
+    async def stale_request():
+        try:
+            await release.wait()
+            model._emit_stream("output", "stale")
+            model.report_builtin_call("web_search_call", "stale query")
+            model._emit_stream("", "")
+            return "stale"
+        finally:
+            finished.append(True)
 
-        stale = asyncio.ensure_future(model.call_client(AsyncCloseable(), stale_request))
-        with pytest.raises(ModelResponseTimeout):
-            await stale
+    stale = asyncio.ensure_future(model.call_client(AsyncCloseable(), stale_request))
+    with pytest.raises(ModelResponseTimeout):
+        await stale
 
-        async def current_request():
-            model._emit_stream("output", "current")
-            return "current"
+    async def current_request():
+        model._emit_stream("output", "current")
+        return "current"
 
-        assert await model.call_client(AsyncCloseable(), current_request, response_timeout=1) == "current"
-        release.set()
-        await asyncio.sleep(0)
+    assert await model.call_client(AsyncCloseable(), current_request, response_timeout=1) == "current"
+    release.set()
+    await asyncio.sleep(0)
 
-    asyncio.run(drive())
     assert stream == [("output", "current")]
     assert builtins == []
 
 
-def test_cancelled_attempt_cannot_emit_into_the_next_one(tmp_path):
+async def test_cancelled_attempt_cannot_emit_into_the_next_one(tmp_path):
     """The same rule for cancellation as for a deadline: a cancelled attempt publishes nothing,
     and there is no process-wide flag the next request has to remember to clear."""
 
@@ -200,44 +193,42 @@ def test_cancelled_attempt_cannot_emit_into_the_next_one(tmp_path):
     model.on_stream = lambda kind, text: stream.append((kind, text))
     reached = []
 
-    async def drive():
-        started = asyncio.Event()
-        release = asyncio.Event()
-        late = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+    late = []
 
-        async def emit_late():
-            # Created inside the stale attempt, so it carries that attempt's lease -- exactly the
-            # shape of a stream callback that outlives the request it belongs to.
-            await release.wait()
-            model._emit_stream("output", "stale")
-            reached.append(True)
+    async def emit_late():
+        # Created inside the stale attempt, so it carries that attempt's lease -- exactly the
+        # shape of a stream callback that outlives the request it belongs to.
+        await release.wait()
+        model._emit_stream("output", "stale")
+        reached.append(True)
 
-        async def stale_request():
-            late.append(asyncio.ensure_future(emit_late()))
-            started.set()
-            await asyncio.sleep(30)
-            return "stale"
+    async def stale_request():
+        late.append(asyncio.ensure_future(emit_late()))
+        started.set()
+        await asyncio.sleep(30)
+        return "stale"
 
-        stale = asyncio.ensure_future(model.call_client(AsyncCloseable(), stale_request))
-        await started.wait()
-        stale.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await stale
+    stale = asyncio.ensure_future(model.call_client(AsyncCloseable(), stale_request))
+    await started.wait()
+    stale.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stale
 
-        async def current_request():
-            model._emit_stream("output", "current")
-            return "current"
+    async def current_request():
+        model._emit_stream("output", "current")
+        return "current"
 
-        assert await model.call_client(AsyncCloseable(), current_request) == "current"
-        release.set()
-        await asyncio.gather(*late)
+    assert await model.call_client(AsyncCloseable(), current_request) == "current"
+    release.set()
+    await asyncio.gather(*late)
 
-    asyncio.run(drive())
     assert reached == [True]  # the late callback ran ...
     assert stream == [("output", "current")]  # ... and was dropped, leaving only the live request
 
 
-def test_zero_response_timeout_does_not_start_deadline_timer(tmp_path, monkeypatch):
+async def test_zero_response_timeout_does_not_start_deadline_timer(tmp_path, monkeypatch):
     s = _session(tmp_path, response_timeout=0)
     model = ModelClient(s)
     client = AsyncCloseable()
@@ -245,12 +236,12 @@ def test_zero_response_timeout_does_not_start_deadline_timer(tmp_path, monkeypat
     async def complete():
         return "complete"
 
-    assert asyncio.run(model.call_client(client, complete)) == "complete"
+    assert await model.call_client(client, complete) == "complete"
     assert client.closed == 1
 
 
 @pytest.mark.parametrize(("configured", "expected"), [(600, 600), (30, 30), (0, 0)])
-def test_compaction_follows_the_configured_response_deadline(tmp_path, monkeypatch, configured, expected):
+async def test_compaction_follows_the_configured_response_deadline(tmp_path, monkeypatch, configured, expected):
     """No hidden cap: the summary call gets exactly the configured total-generation limit, and 0
     disables the deadline for it like for every other request."""
     s = _session(tmp_path)
@@ -264,14 +255,14 @@ def test_compaction_follows_the_configured_response_deadline(tmp_path, monkeypat
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    assert compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
+    assert await compaction.Compactor(ContextManager(s), model).compact_async("long context") == {"summary": "short"}
     assert len(seen) == 1
     assert seen[0]["allow_stream"] is False
     assert seen[0]["response_timeout"] == expected
     assert seen[0]["provider"].response_timeout == configured
 
 
-def test_compaction_timeout_error_names_the_summary(tmp_path, monkeypatch):
+async def test_compaction_timeout_error_names_the_summary(tmp_path, monkeypatch):
     """The fallback log must say the summary timed out, not echo the generic request wording, and
     name the entry that served it -- compaction can run on its own `[compaction]` provider."""
     s = _session(tmp_path)
@@ -284,7 +275,7 @@ def test_compaction_timeout_error_names_the_summary(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "api_request", api_request)
 
     with pytest.raises(ModelResponseTimeout, match=r"compaction summary on `default/gpt-4` exceeded provider.response_timeout=600s"):
-        compaction.Compactor(ContextManager(s), model).compact("long context")
+        await compaction.Compactor(ContextManager(s), model).compact_async("long context")
 
 
 def _retry_wait_recorder(monkeypatch, factory=None):
@@ -362,7 +353,7 @@ def test_retry_after_http_date_respected(tmp_path, monkeypatch):
     """The HTTP-date form is parsed and the remaining delta is waited, not the raw date text."""
     s = _session(tmp_path)
     model = ModelClient(s)
-    stamp = email.utils.format_datetime(datetime.now(UTC) + timedelta(seconds=5), usegmt=True)
+    stamp = email.utils.format_datetime(datetime.now(UTC) + timedelta(seconds=20), usegmt=True)
     factory = _MockClientFactory([httpx.Response(503, json=_OVERLOADED, headers={"retry-after": stamp}), (200, _OK)])
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
@@ -370,8 +361,10 @@ def test_retry_after_http_date_respected(tmp_path, monkeypatch):
     model.request([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
-    # format_datetime truncates to whole seconds, so the remaining delta can be ~1s short of 5.
-    assert 3.8 <= waits()[0] <= 5.5
+    # A date far enough out that the wait is unmistakably the header's rather than the algorithm's
+    # first band (~1s), with room for the request itself and for format_datetime's truncation to
+    # whole seconds. Nothing narrower survives ordinary CI scheduling variance.
+    assert 15.0 <= waits()[0] <= 20.0
 
 
 @pytest.mark.parametrize("value", ["", "   ", "-5", "garbage"])
@@ -406,7 +399,7 @@ def test_retry_after_absurd_value_does_not_stall(tmp_path, monkeypatch):
     assert RETRY_MAX_DELAY - 0.2 <= waits()[0] <= RETRY_MAX_DELAY + 0.2
 
 
-def test_retry_wait_is_cancellable(tmp_path, monkeypatch):
+async def test_retry_wait_is_cancellable(tmp_path, monkeypatch):
     """A backoff is an ordinary cancellable await: cancelling the turn during one ends the request
     there, instead of sleeping the delay out first."""
     s = _session(tmp_path)
@@ -414,14 +407,12 @@ def test_retry_wait_is_cancellable(tmp_path, monkeypatch):
     factory = _MockClientFactory([(503, _OVERLOADED), (503, _OVERLOADED)])
     monkeypatch.setattr(model, "client", factory)
 
-    async def drive():
-        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
-        await _wait_for(lambda: s.state.model_retry_until > 0)
-        request.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await request
+    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+    await _wait_for(lambda: s.state.model_retry_until > 0)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
 
-    asyncio.run(drive())
     assert len(factory.calls) == 1  # cancelled before the retry could be sent
     assert s.state.model_retry_count == 1
     assert s.state.model_retry_until == 0.0
@@ -474,7 +465,7 @@ def test_retry_wait_phase_hook_pairs(tmp_path, monkeypatch):
     assert s.state.model_retry_until == 0.0
 
 
-def test_retry_wait_phase_hook_resets_on_cancel(tmp_path, monkeypatch):
+async def test_retry_wait_phase_hook_resets_on_cancel(tmp_path, monkeypatch):
     """Cancelling mid-wait still emits the closing False in a finally block: the live phase label
     cannot be left stuck on "retrying" by an interrupted wait."""
     s = _session(tmp_path)
@@ -484,19 +475,17 @@ def test_retry_wait_phase_hook_resets_on_cancel(tmp_path, monkeypatch):
     phases: list[bool] = []
     model.on_retry_wait = phases.append
 
-    async def drive():
-        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
-        await _wait_for(lambda: s.state.model_retry_until > 0)
-        request.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await request
+    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+    await _wait_for(lambda: s.state.model_retry_until > 0)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
 
-    asyncio.run(drive())
     assert phases == [True, False]
     assert s.state.model_retry_until == 0.0
 
 
-def test_resend_during_a_backoff_wait_is_refused(tmp_path, monkeypatch):
+async def test_resend_during_a_backoff_wait_is_refused(tmp_path, monkeypatch):
     """`/resend` claims an attempt, and a backoff has none in flight: there is nothing to resend
     while the client is already on its way back to the provider.
 
@@ -509,13 +498,11 @@ def test_resend_during_a_backoff_wait_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     refused = []
 
-    async def drive():
-        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
-        await _wait_for(lambda: s.state.model_retry_until > 0)
-        refused.append(model.retry_active_request())
-        return await request
+    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], None))
+    await _wait_for(lambda: s.state.model_retry_until > 0)
+    refused.append(model.retry_active_request())
+    _, _, content = await request
 
-    _, _, content = asyncio.run(drive())
     assert refused == [False]
     assert content == "ok"
     assert s.state.model_retry_count == 1  # the backoff's own retry, not a resend
@@ -702,7 +689,7 @@ def test_billing_wording_outside_a_429_still_retries():
     assert resilience.retryable_error(ModelError("Error code: 500 - internal error in credit service")) is True
 
 
-def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
+async def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
     """[compaction] overrides reach the summary request: model/reasoning/api come from the resolved
     entry, never the shared parent object, and an empty [compaction] inherits the active entry."""
     s = _session(tmp_path)
@@ -721,7 +708,7 @@ def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    assert compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
+    assert await compaction.Compactor(ContextManager(s), model).compact_async("long context") == {"summary": "short"}
     provider = calls[0]
     assert provider.model == "compactor-1"
     assert provider.reasoning == "off"
@@ -731,7 +718,7 @@ def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
     assert model.last_compaction_model == "compactor-1"
 
 
-def test_compaction_response_timeout_follows_base_entry(tmp_path, monkeypatch):
+async def test_compaction_response_timeout_follows_base_entry(tmp_path, monkeypatch):
     """The summary's total-generation deadline comes from the compaction base entry, not the active
     provider: base 30, active 600 -> the summary call carries 30."""
     s = _session(tmp_path)
@@ -754,12 +741,12 @@ def test_compaction_response_timeout_follows_base_entry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    compaction.Compactor(ContextManager(s), model).compact("long context")
+    await compaction.Compactor(ContextManager(s), model).compact_async("long context")
     assert seen[0]["response_timeout"] == 30
     assert seen[0]["provider"].model == "base-1"
 
 
-def test_compaction_override_reaches_wire_params(tmp_path, monkeypatch):
+async def test_compaction_override_reaches_wire_params(tmp_path, monkeypatch):
     """The resolved entry drives the wire: the summary request body carries the [compaction] model."""
     s = _session(tmp_path)
     s.config = Config.from_dict(
@@ -786,13 +773,13 @@ def test_compaction_override_reaches_wire_params(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assert compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
+    assert await compaction.Compactor(ContextManager(s), model).compact_async("long context") == {"summary": "short"}
     body = json.loads(factory.calls[0].content)
     assert body["model"] == "compactor-2"
     assert model.last_compaction_model == "compactor-2"
 
 
-def test_compaction_retries_once_when_the_model_replies_in_prose(tmp_path, monkeypatch):
+async def test_compaction_retries_once_when_the_model_replies_in_prose(tmp_path, monkeypatch):
     """The observed failure is a model continuing the conversation instead of summarizing it. A bare
     resend would reproduce it, so the retry carries the bad reply back with a correction."""
     s = _session(tmp_path)
@@ -807,14 +794,15 @@ def test_compaction_retries_once_when_the_model_replies_in_prose(tmp_path, monke
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    assert compaction.Compactor(ContextManager(s), model).compact("long context")["title"] == "Part B wrap-up"
+    summary = await compaction.Compactor(ContextManager(s), model).compact_async("long context")
+    assert summary["title"] == "Part B wrap-up"
     assert len(sent) == 2
     # The second attempt shows the model what it did and what to do instead.
     assert sent[1][-1]["role"] == "user" and "not a JSON object" in sent[1][-1]["content"]
     assert sent[1][-2]["role"] == "assistant" and "继续 Part B" in sent[1][-2]["content"]
 
 
-def test_compaction_failure_names_the_provider_entry(tmp_path, monkeypatch):
+async def test_compaction_failure_names_the_provider_entry(tmp_path, monkeypatch):
     """Compaction may run on a cheaper `[compaction]` entry, which is exactly the model that fails
     this way -- the fallback line has to say which one to go look at."""
     s = _session(tmp_path)
@@ -825,7 +813,7 @@ def test_compaction_failure_names_the_provider_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "api_request", api_request)
 
     with pytest.raises(ModelError, match=r"compaction provider `default/gpt-4`"):
-        compaction.Compactor(ContextManager(s), model).compact("long context")
+        await compaction.Compactor(ContextManager(s), model).compact_async("long context")
 
 
 def test_compaction_input_restates_the_contract_after_the_payload(tmp_path):
@@ -838,31 +826,31 @@ def test_compaction_input_restates_the_contract_after_the_payload(tmp_path):
     assert text.index("END OF CONVERSATION TO COMPACT") > text.index("继续 Part B 收尾")
 
 
-def test_compaction_sends_json_response_format_only_where_the_provider_supports_it(tmp_path, monkeypatch):
+async def test_compaction_sends_json_response_format_only_where_the_provider_supports_it(tmp_path, monkeypatch):
     """Constrained decoding is opt-in per provider: an unsupporting gateway answers 400, and the
     only caller is compaction, whose failure is a silent downgrade to deterministic trimming."""
     seen = {}
 
-    def run(host: str) -> object:
+    async def run(host: str) -> None:
         s = _session(tmp_path)
         s.config.provider.url = f"https://{host}/v1"
         model = ModelClient(s)
 
-        def create(**params):
+        async def create(**params):
             seen[host] = params.get("response_format")
             raise RuntimeError("stop after params")
 
         monkeypatch.setattr(model, "client", lambda **_k: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
         with contextlib.suppress(Exception):
-            compaction.Compactor(ContextManager(s), model).compact("long context")
+            await compaction.Compactor(ContextManager(s), model).compact_async("long context")
 
-    run("api.deepseek.com")
-    run("api.moonshot.cn")
+    await run("api.deepseek.com")
+    await run("api.moonshot.cn")
     assert seen["api.deepseek.com"] == {"type": "json_object"}
     assert seen["api.moonshot.cn"] is None
 
 
-def test_compaction_rejects_a_summary_that_copies_the_conversation(tmp_path, monkeypatch):
+async def test_compaction_rejects_a_summary_that_copies_the_conversation(tmp_path, monkeypatch):
     """Constrained decoding forces the shape, never the task: a model that means to continue the
     conversation returns valid JSON with the conversation inside it, which would apply cleanly into
     session.state and be fed back into every later compaction."""
@@ -879,7 +867,7 @@ def test_compaction_rejects_a_summary_that_copies_the_conversation(tmp_path, mon
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    data = compaction.Compactor(ContextManager(s), model).compact("long context", echo_source=f"user:\n{echo}")
+    data = await compaction.Compactor(ContextManager(s), model).compact_async("long context", echo_source=f"user:\n{echo}")
     assert data["summary"].startswith("Wrapped up Part B")
     assert len(sent) == 2
     assert "copied the conversation" in sent[1][-1]["content"]
@@ -895,7 +883,7 @@ def test_compaction_echo_guard_leaves_real_summaries_alone(tmp_path):
     assert not compaction.Compactor.echoes_source("a" * 200, "")  # nothing to copy from
 
 
-def test_whole_turn_cancellation_and_resend_are_distinct_dispositions(tmp_path):
+async def test_whole_turn_cancellation_and_resend_are_distinct_dispositions(tmp_path):
     """Both end the attempt in flight, but they mean opposite things and cannot be confused.
 
     The disposition rides on the claim made under the attempt lock, not on any session flag a
@@ -913,28 +901,24 @@ def test_whole_turn_cancellation_and_resend_are_distinct_dispositions(tmp_path):
 
     model.api_request = hanging
 
-    async def cancelled():
-        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], []))
-        await _wait_for(lambda: len(attempts) == 1)
-        request.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await request
+    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], []))
+    await _wait_for(lambda: len(attempts) == 1)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
 
-    asyncio.run(cancelled())
 
-    async def resent():
-        request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], []))
-        await _wait_for(lambda: len(attempts) == 2)
-        assert model.retry_active_request() is True
-        assert model.retry_active_request() is False  # the same attempt cannot be claimed twice
-        with pytest.raises(ModelRequestRetry):
-            await request
+    request = asyncio.ensure_future(model.request_async([{"role": "user", "content": "hi"}], []))
+    await _wait_for(lambda: len(attempts) == 2)
+    assert model.retry_active_request() is True
+    assert model.retry_active_request() is False  # the same attempt cannot be claimed twice
+    with pytest.raises(ModelRequestRetry):
+        await request
 
-    asyncio.run(resent())
     assert len(attempts) == 2
 
 
-def test_a_claimed_attempt_cannot_publish_a_result_that_arrived_first(tmp_path):
+async def test_a_claimed_attempt_cannot_publish_a_result_that_arrived_first(tmp_path):
     """The narrow race the claim exists for: the provider answered between the claim and the
     cancellation running. The user asked for that attempt to be sent again, so its answer is
     discarded rather than published as if nothing had been asked."""
@@ -950,5 +934,5 @@ def test_a_claimed_attempt_cannot_publish_a_result_that_arrived_first(tmp_path):
     model.api_request = racing
 
     with pytest.raises(ModelRequestRetry):
-        asyncio.run(model.request_async([{"role": "user", "content": "hi"}], []))
+        await model.request_async([{"role": "user", "content": "hi"}], [])
     assert claimed == [True]

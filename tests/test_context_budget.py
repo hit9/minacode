@@ -114,7 +114,7 @@ def test_provider_context_limit_shares_one_denominator_with_usage(tmp_path):
     assert s.usage.last_prompt_budget == ContextManager(s).request_token_budget()
     assert s.usage.last_prompt_budget > request_budget_for(262_144, 16_384), "the runtime default was used, not the entry's"
 
-def test_compaction_uses_configured_context_budget(tmp_path):
+async def test_compaction_uses_configured_context_budget(tmp_path):
     s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 1
     # Note's, and a compaction must leave them exactly as they are even when the summarizer
@@ -139,7 +139,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
             self.input = None
             self.cancel_requested = threading.Event()
 
-        def api_request_sync(self, messages, _tools, **_kwargs):
+        async def api_request(self, messages, _tools, **_kwargs):
             # The inline form carries the conversation as messages; the flattened text is only
             # built when that form cannot serve, so this reads whichever one was actually sent.
             self.input = "\n".join(str(message.get("content") or "") for message in messages)
@@ -150,7 +150,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
             return json.loads(content)
 
     model = FakeModel(s)
-    context.prepare_messages(model, "system", [{"role": "user", "content": "request"}])
+    await context.prepare_messages_async(model, "system", [{"role": "user", "content": "request"}])
     assert compaction_phases == [True, False]
     assert model.input is not None
     assert "old answer" in model.input
@@ -188,7 +188,7 @@ def test_compaction_budget_reserves_output_and_safety(tmp_path):
     s.config.provider.max_tokens = 10_000
     assert context.request_token_budget() == 100_000 - 10_000 - MIN_CONTEXT_SAFETY_TOKENS
 
-def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
+async def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
     s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 30_000
     s.messages = [
@@ -209,7 +209,7 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
             self.called = False
             self.cancel_requested = threading.Event()
 
-        def api_request_sync(self, _messages, _tools, **_kwargs):
+        async def api_request(self, _messages, _tools, **_kwargs):
             self.called = True
             return "", "", json.dumps({"summary": "summary"})
 
@@ -218,6 +218,6 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
             return json.loads(content)
 
     model = FakeModel(s)
-    context.prepare_messages(model, "system", turn, tools)
+    await context.prepare_messages_async(model, "system", turn, tools)
 
     assert model.called is True

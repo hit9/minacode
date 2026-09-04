@@ -1,6 +1,5 @@
 """Anthropic Messages requests: block streaming, thinking, and tool blocks."""
 
-import asyncio
 import json
 from types import SimpleNamespace
 
@@ -11,7 +10,7 @@ from wizolt.base import ModelOutputTruncated, ToolCall
 from wizolt.model import ModelClient, resilience
 
 
-def test_anthropic_request_success(tmp_path, monkeypatch):
+async def test_anthropic_request_success(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
     model = ModelClient(s)
     streamed = []
@@ -33,7 +32,7 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, calls, content = asyncio.run(model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None))
+    assistant, calls, content = await model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     assert content == "hello from claude"
     assert assistant == {
@@ -76,7 +75,7 @@ def test_anthropic_terminal_tool_split_replays_text_once(tmp_path):
     assert converted[-1]["content"] == [{"type": "text", "text": "done"}]
 
 
-def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
+async def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic")
     model = ModelClient(s)
     factory = _AnthropicStreamClientFactory(
@@ -155,7 +154,7 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, calls, content = asyncio.run(model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None))
+    assistant, calls, content = await model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     body = json.loads(factory.calls[0].content)
     assert factory.calls[0].url.path.endswith("/messages")
@@ -172,7 +171,7 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     assert s.usage.completion_tokens == 5
 
 
-def test_anthropic_stream_promotes_when_tool_precedes_completed_text(tmp_path):
+async def test_anthropic_stream_promotes_when_tool_precedes_completed_text(tmp_path):
     model = ModelClient(_session(tmp_path, model="claude-3", api="anthropic"))
     events = [
         {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use"}},
@@ -188,12 +187,12 @@ def test_anthropic_stream_promotes_when_tool_precedes_completed_text(tmp_path):
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: AsyncStreamContext(events)))
 
-    asyncio.run(model.wire(model.session.config.provider)._stream(client, {}))
+    await model.wire(model.session.config.provider)._stream(client, {})
 
     assert streamed == [("output", "hello"), ("output_done", "hello"), ("", "")]
 
 
-def test_anthropic_stream_promotes_completed_text_before_server_tool(tmp_path):
+async def test_anthropic_stream_promotes_completed_text_before_server_tool(tmp_path):
     """A completed text block followed by a provider-side server_tool_use must hand off the answer
     exactly once, before the durable builtin report and the stream teardown."""
     model = ModelClient(_session(tmp_path, model="claude-3", api="anthropic"))
@@ -212,7 +211,7 @@ def test_anthropic_stream_promotes_completed_text_before_server_tool(tmp_path):
     model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
     client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: AsyncStreamContext(events)))
 
-    asyncio.run(model.wire(model.session.config.provider)._stream(client, {}))
+    await model.wire(model.session.config.provider)._stream(client, {})
 
     promoted = ("output_done", "the answer")
     builtin = ("builtin", "Web Search", "q")
@@ -220,7 +219,7 @@ def test_anthropic_stream_promotes_completed_text_before_server_tool(tmp_path):
     assert timeline.index(promoted) < timeline.index(("Web Search", "")) < timeline.index(builtin) < timeline.index(("", ""))
 
 
-def test_anthropic_stream_promotes_server_tool_first_text_at_block_completion(tmp_path):
+async def test_anthropic_stream_promotes_server_tool_first_text_at_block_completion(tmp_path):
     """A server_tool_use before the text block must still promote exactly once, at text block
     completion, with no duplicate at message completion."""
     model = ModelClient(_session(tmp_path, model="claude-3", api="anthropic"))
@@ -237,7 +236,7 @@ def test_anthropic_stream_promotes_server_tool_first_text_at_block_completion(tm
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: AsyncStreamContext(events)))
 
-    asyncio.run(model.wire(model.session.config.provider)._stream(client, {}))
+    await model.wire(model.session.config.provider)._stream(client, {})
 
     assert streamed == [("Web Search", ""), ("output", "hello"), ("output_done", "hello"), ("", "")]
     assert streamed.count(("output_done", "hello")) == 1

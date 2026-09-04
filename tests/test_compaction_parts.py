@@ -73,7 +73,7 @@ def test_compaction_selection_keeps_assistant_text_that_quotes_summary_marker(tm
     assert keep == []
 
 
-def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
+async def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
     summary = COMPACTION_SUMMARY_TITLE + "\nold summary"
@@ -84,7 +84,7 @@ def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
         def compact(self, text, *_args, **_kwargs):
             raise AssertionError(f"synthetic summary was compacted again: {text}")
 
-    ContextManager(s).prepare_messages(FakeModel(), "system")
+    await ContextManager(s).prepare_messages_async(FakeModel(), "system")
 
     assert s.messages == [{"role": "user", "content": summary}]
     assert s.state.compaction_count == 0
@@ -171,7 +171,7 @@ def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path):
     assert s.state.compaction_count == 1
 
 
-def test_interrupted_current_turn_compaction_falls_back_before_cancelling(tmp_path):
+async def test_interrupted_current_turn_compaction_falls_back_before_cancelling(tmp_path):
     s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 1
     context = ContextManager(s)
@@ -184,11 +184,11 @@ def test_interrupted_current_turn_compaction_falls_back_before_cancelling(tmp_pa
             self.session = session
             self.cancel_requested = threading.Event()
 
-        def api_request_sync(self, *_args, **_kwargs):
+        async def api_request(self, *_args, **_kwargs):
             raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
-        context.prepare_messages(InterruptedModel(s), "system", turn)
+        await context.prepare_messages_async(InterruptedModel(s), "system", turn)
 
     # The count is incidental here -- this budget is 1 token, so the size bound collapses the kept
     # tail. What matters is that the trim happened and left its marker before the interrupt flew.
@@ -231,7 +231,7 @@ def test_compaction_parts_for_uses_last_fixed_window(tmp_path):
     assert [message["content"] for message in recent] == [f"m{index}" for index in range(2, 10)]
 
 
-def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
+async def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 999_999
     s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
@@ -243,7 +243,7 @@ def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
         def compact(self, text, *_args, **_kwargs):
             raise AssertionError(text)
 
-    context.prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
+    await context.prepare_messages_async(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
 
     assert compaction_phases == []
     assert s.messages == [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]

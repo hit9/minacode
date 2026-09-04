@@ -154,7 +154,7 @@ def test_compaction_without_compacted_messages_captures_nothing(tmp_path):
     assert s.history == []
 
 
-def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_path):
+async def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_path):
     """An over-budget request can cross both compaction stages in one prepare: the history before the
     latest request becomes seg.1, then the oversized current turn itself becomes seg.2."""
     s = session_with_provider(tmp_path)
@@ -174,7 +174,7 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
             self.calls = 0
             self.cancel_requested = threading.Event()
 
-        def api_request_sync(self, _messages, _tools, **_kwargs):
+        async def api_request(self, _messages, _tools, **_kwargs):
             self.calls += 1
             return "", "", json.dumps({"summary": f"summary {self.calls}"})
 
@@ -183,7 +183,7 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
             return json.loads(content)
 
     model = FakeModel(s)
-    context.prepare_messages(model, "system", turn)
+    await context.prepare_messages_async(model, "system", turn)
 
     assert model.calls == 2
     assert [segment.key for segment in s.history] == ["seg.1", "seg.2"]
@@ -220,7 +220,7 @@ def test_history_index_and_memory_are_not_injected_into_each_request(tmp_path):
     assert not any(content.startswith("--- Memory ---") for content in contents)
 
 
-def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
+async def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
     s.state.summary = "existing"
@@ -234,7 +234,7 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
         def compact(self, text, *_args, **_kwargs):
             raise ModelError("failed")
 
-    context.prepare_messages(FailingModel(), "system", [{"role": "user", "content": "request"}])
+    await context.prepare_messages_async(FailingModel(), "system", [{"role": "user", "content": "request"}])
 
     assert compaction_phases == [True, False]
     assert s.state.summary != "existing"
@@ -269,7 +269,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
             self.session = session
             self.cancel_requested = threading.Event()
 
-        def api_request_sync(self, _messages, _tools, **_kwargs):
+        async def api_request(self, _messages, _tools, **_kwargs):
             assert transitions == ["compacting context"]
             return "", "", json.dumps({"summary": "summary", "plan": ["next"], "known": ["fact"]})
 
@@ -312,7 +312,7 @@ def test_manual_compact_names_the_segment_with_the_compactor_title(tmp_path):
             self.session = session
             self.cancel_requested = threading.Event()
 
-        def api_request_sync(self, _messages, _tools, **_kwargs):
+        async def api_request(self, _messages, _tools, **_kwargs):
             return "", "", json.dumps({"title": "Tokenizer extraction", "summary": "summary"})
 
         @staticmethod
@@ -351,7 +351,7 @@ def test_estimated_text_tokens_stays_on_characters_for_output_trimming(tmp_path)
     assert context.estimated_text_tokens("你好世界") == 1
 
 
-def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
+async def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
     """A CJK-heavy session that the chars/4 estimate kept under budget now compacts: the bytes/4
     estimate clears the same budget, closing the gap between the status-bar fill and the trigger."""
     import json
@@ -380,12 +380,12 @@ def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
     # The chars/4 figure sits under the budget; the UTF-8 bytes/4 estimate clears it.
     assert len(json.dumps(messages, ensure_ascii=False)) // 4 < budget < raw
 
-    context.prepare_messages(FakeModel(), "system", turn)
+    await context.prepare_messages_async(FakeModel(), "system", turn)
     assert compaction_phases == [True, False]
     assert s.state.compaction_count == 1
 
 
-def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
+async def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
     """The last completed request filled >=99% of its budget, so the next one compacts even though the
     bytes/4 estimate still fits: a last line of defense when the estimate is off. Below 99% the
     estimate alone decides, so a small follow-up after an 80% request is not compacted."""
@@ -412,13 +412,13 @@ def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
     # 98%: estimate fits and nothing compacts.
     s.usage.last_prompt_budget = 520
     s.usage.last_prompt_tokens = 510
-    context.prepare_messages(FakeModel(), "system", turn)
+    await context.prepare_messages_async(FakeModel(), "system", turn)
     assert compaction_phases == []
     assert s.state.compaction_count == 0
 
     # 100%: the overdue flag forces compaction despite the fitting estimate.
     s.usage.last_prompt_tokens = 520
-    context.prepare_messages(FakeModel(), "system", turn)
+    await context.prepare_messages_async(FakeModel(), "system", turn)
     assert compaction_phases == [True, False]
     assert s.state.compaction_count == 1
     # Compaction cleared the last-* signals, so the next request is not double-compacted by the
@@ -426,7 +426,7 @@ def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
     # ordinary 100%-full context).
     assert s.usage.last_prompt_tokens == 0
     assert s.usage.last_prompt_budget == 0
-    context.prepare_messages(FakeModel(), "system", turn)
+    await context.prepare_messages_async(FakeModel(), "system", turn)
     assert compaction_phases == [True, False]
     assert s.state.compaction_count == 1
 
@@ -488,7 +488,7 @@ def test_compaction_override_does_not_change_request_budget(tmp_path):
 
 
 @pytest.mark.parametrize("event", RUNTIME_GENERATED_EVENTS)
-def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, event):
+async def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, event):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
     context = ContextManager(s)
@@ -503,8 +503,7 @@ def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, e
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
-    messages = context.prepare_messages(FakeModel(), "system", turn)
-
+    messages = await context.prepare_messages_async(FakeModel(), "system", turn)
     assert turn[0]["content"] == "the whole order"
     assert any(message.get("content") == "the whole order" for message in messages)
     # Kept verbatim instead of summarized: the segment holds the steps, never the order itself.
@@ -531,7 +530,7 @@ def test_history_compaction_keeps_the_request_a_runtime_message_follows(tmp_path
     assert [message["content"] for message in keep][-3:] == ["the whole order", "runtime expansion", "working"]
 
 
-def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
+async def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
     """Compaction is a cache break, and where it breaks is what it costs. Keeping the request in
     place puts the break behind it rather than on it, so the whole stable head -- system,
     environment, the request itself -- is still reused by the request that follows a compaction.
@@ -552,7 +551,7 @@ def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
 
     client = ModelClient(s)
     before = client.wire(client.session.config.provider).messages(context.model_messages("system", turn))
-    after = client.wire(client.session.config.provider).messages(context.prepare_messages(FakeModel(), "system", turn))
+    after = client.wire(client.session.config.provider).messages(await context.prepare_messages_async(FakeModel(), "system", turn))
     shared = 0
     for old, new in zip(before, after):
         if old != new:
@@ -588,7 +587,7 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     assert ContextManager(s).latest_user_index(s.messages) == 0
 
 
-def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
+async def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
     """Surviving one pass is not the same as surviving four. Each pass re-reads what the previous
     one left, so a request kept by accident (a second copy, a stale checkpoint it hides behind)
     would drift round by round: the invariant is one verbatim request, one checkpoint, and a
@@ -616,7 +615,7 @@ def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
             self.calls = 0
             self.cancel_requested = threading.Event()
 
-        def api_request_sync(self, _messages, _tools, **_kwargs):
+        async def api_request(self, _messages, _tools, **_kwargs):
             self.calls += 1
             return "", "", json.dumps({"summary": f"summary {self.calls}"})
 
@@ -632,8 +631,7 @@ def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
         *steps("a"),
     ]
     for round_index in range(4):
-        messages = context.prepare_messages(model, "system", turn)
-
+        messages = await context.prepare_messages_async(model, "system", turn)
         assert [message.get("content") for message in messages].count("the whole order") == 1
         assert turn[0]["content"] == "the whole order"
         assert sum(1 for message in turn if str(message.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE)) == 1

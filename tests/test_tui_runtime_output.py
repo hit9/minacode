@@ -2,9 +2,9 @@
 import threading
 from types import SimpleNamespace
 
+from model_harness import async_create
 from prompt_toolkit.formatted_text import fragment_list_to_text
 from test_tui_runtime import TextRecordingOutput
-from model_harness import async_create
 from tui_harness import loop, run_interactive_tui, session, wait_until
 
 from wizolt.base import (
@@ -104,7 +104,7 @@ def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_path, mo
     assert "a.example" in text
     assert indent == TurnBox.CONTENT_LEVEL
 
-def test_automatic_compaction_replaces_working_divider_status(tmp_path):
+async def test_automatic_compaction_replaces_working_divider_status(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.config.providers["default"] = ProviderConfig(model="gpt-4", url="http://test", key="sk-test")
     command_loop.session.settings.max_context_tokens = 1
@@ -123,7 +123,7 @@ def test_automatic_compaction_replaces_working_divider_status(tmp_path):
 
     command_loop.agent.model.api_request = compact
 
-    command_loop.agent.context.prepare_messages(command_loop.agent.model, "system")
+    await command_loop.agent.context.prepare_messages_async(command_loop.agent.model, "system")
 
     assert "compacting context (" in divider_during_compaction[0]
     assert command_loop.tui.status_label == "working"

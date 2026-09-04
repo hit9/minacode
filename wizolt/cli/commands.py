@@ -7,6 +7,7 @@ UI (e.g. /diff's viewer). The multi-stage /worker flow lives in the WorkerFlow c
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shlex
@@ -29,6 +30,7 @@ from wizolt.base import (
     LogRole,
     ModelUsage,
     Text,
+    fail_if_running_loop,
 )
 from wizolt.cli.modals import (
     choice_application,
@@ -713,7 +715,10 @@ def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
         # Same pairing as the automatic path: the echo guard checks what the model is handed, and
         # the inline slice carries one message more than `compacted` does.
         sent = request[0][:-1] if request else compacted
-        data = compactor.compact(compactor.input(compacted), *(request or ()), echo_source=compactor.echo_source(sent))
+        # TODO(async-phase-5): `/compact` is dispatched from a command thread that owns no loop.
+        # Phase 5 makes network-bearing command dispatch a runtime-owned task and removes this.
+        fail_if_running_loop("await Compactor.compact_async(...) from the runtime loop")
+        data = asyncio.run(compactor.compact_async(compactor.input(compacted), *(request or ()), echo_source=compactor.echo_source(sent)))
     except KeyboardInterrupt:
         return "Cancelled"
     except Exception as error:  # noqa: BLE001 - manual compaction uses the same deterministic fallback as automatic compaction.

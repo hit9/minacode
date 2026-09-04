@@ -62,8 +62,8 @@ class FallbackModel:
         content, calls = outcome
         return {"role": "assistant", "content": content}, calls, content
 
-    def vision_observe(self, images, question=""):
-        # Mirrors ModelClient.vision_observe: an empty attachment question falls back to the
+    async def vision_observe(self, images, question=""):
+        # Mirrors VisionObserver.observe_async: an empty attachment question falls back to the
         # bounded default perception question; only ViewImage carries its own.
         self.vision_calls.append((tuple(image.name for image in images), question.strip() or VISION_OBSERVE_DEFAULT_QUESTION))
         return VISION_TEXT

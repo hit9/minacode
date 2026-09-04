@@ -64,6 +64,7 @@ wizolt = "wizolt.__main__:main"
 dev = [
     "pyright>=1.1.411",
     "pytest>=8.0",
+    "pytest-asyncio>=1.0",
     "pytest-xdist>=3.8",
     "ruff==0.16.0",
 ]
@@ -77,6 +78,10 @@ wizolt = ["builtin_skills/*/SKILL.md", "providers/catalog.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-n", "auto"]
+# A test that awaits the code under test reads better than the same test wrapped in an
+# asyncio.run() driver, so `async def` tests run without a per-test marker. Each gets its own
+# loop, which is also what the production entry points do.
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 160
@@ -95,3 +100,4 @@ include = ["wizolt"]
 exclude = ["build", "dist", "**/__pycache__", "**/.venv"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
+

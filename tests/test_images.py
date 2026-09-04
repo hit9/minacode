@@ -5,11 +5,10 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from model_harness import async_create
 from PIL import Image
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
-
-from model_harness import async_create
 
 import wizolt.cli.loop as loop_module
 import wizolt.tui as tui_module

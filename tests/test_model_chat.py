@@ -1,8 +1,6 @@
 """Chat Completions requests: streaming reassembly, tool-call deltas, and reasoning history."""
 
-import asyncio
 import json
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -345,7 +343,7 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
     assert s.usage.total_tokens == 15
 
 
-def test_chat_stream_waits_for_tool_finish_before_promoting_text(tmp_path):
+async def test_chat_stream_waits_for_tool_finish_before_promoting_text(tmp_path):
     model = ModelClient(_session(tmp_path))
     timeline = []
 
@@ -373,7 +371,7 @@ def test_chat_stream_waits_for_tool_finish_before_promoting_text(tmp_path):
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    message, _, _ = asyncio.run(ChatWire(model)._stream(client, {}))
+    message, _, _ = await ChatWire(model)._stream(client, {})
 
     assert timeline == [
         ("output", "hello"),

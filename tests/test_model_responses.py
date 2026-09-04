@@ -1,8 +1,6 @@
 """Responses API requests: output items, streaming, replay, and reasoning parameters."""
 
-import asyncio
 import json
-import time
 from types import SimpleNamespace
 
 import httpx
@@ -771,14 +769,14 @@ def test_openai_responses_non_reasoning_model_omits_reasoning(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("model", ("custom-model", "gpt-5", "gpt-5-mini"))
-def test_responses_reports_unsupported_reasoning_off_instead_of_guessing(tmp_path, model):
+async def test_responses_reports_unsupported_reasoning_off_instead_of_guessing(tmp_path, model):
     s = _session(tmp_path, api="responses", model=model)
     s.config.provider.reasoning = "off"
     if model.startswith("gpt-5"):
         s.config.provider.url = "https://api.openai.com/v1"
 
     with pytest.raises(ModelError, match="reasoning off is not defined"):
-        asyncio.run(ModelClient(s).wire(s.config.provider).request([{"role": "user", "content": "hi"}], None))
+        await ModelClient(s).wire(s.config.provider).request([{"role": "user", "content": "hi"}], None)
 
 
 def test_responses_replay_drops_reasoning_items_that_carry_no_payload(tmp_path):
@@ -836,7 +834,7 @@ def test_responses_reasoning_history_filters_the_actual_replayed_items(tmp_path)
     assert "rs_current" in replayed_ids
 
 
-def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
+async def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
     """`/provider` can switch protocols mid-session, so history holds assistant turns produced by
     a protocol other than the one now in use. Each protocol replays only its own saved reply and
     never puts wizolt's bookkeeping keys on the wire."""
@@ -880,7 +878,7 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
         ]
     )
     monkeypatch.setattr(model, "client", factory)
-    asyncio.run(model.wire(ProviderConfig(api="chat", model="gpt-4o")).request(history, None))
+    await model.wire(ProviderConfig(api="chat", model="gpt-4o")).request(history, None)
     body = factory.calls[0].content.decode()
     assert "_responses_output" not in body
     assert "_anthropic_content" not in body
@@ -1006,7 +1004,7 @@ def test_unmarked_history_stays_replayable(tmp_path):
     assert any(item.get("encrypted_content") == "opaque" for item in ModelClient(s).wire(s.config.provider).messages(history))
 
 
-def test_configured_reasoning_fields_merge_into_the_managed_object(tmp_path, monkeypatch):
+async def test_configured_reasoning_fields_merge_into_the_managed_object(tmp_path, monkeypatch):
     """`extra_body` is merged over the body, so a whole `reasoning` object configured there used to
     take the resolved effort down with it. Documented extras stay reachable; `/reason` still wins."""
     s = _session(
@@ -1025,14 +1023,14 @@ def test_configured_reasoning_fields_merge_into_the_managed_object(tmp_path, mon
     )
     monkeypatch.setattr(model, "client", factory)
 
-    asyncio.run(model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None))
+    await model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     body = json.loads(factory.calls[0].content)
     assert body["reasoning"] == {"effort": "high", "context": "current_turn"}
     assert body["safety_identifier"] == "u1"
 
 
-def test_catalog_extra_body_paths_do_not_replace_user_extensions(tmp_path, monkeypatch):
+async def test_catalog_extra_body_paths_do_not_replace_user_extensions(tmp_path, monkeypatch):
     """The Responses adapter must expose user extra_body before the catalog recipe runs."""
     s = _session(
         tmp_path,
@@ -1052,14 +1050,14 @@ def test_catalog_extra_body_paths_do_not_replace_user_extensions(tmp_path, monke
 
     monkeypatch.setattr(model, "apply_request", apply_catalog_recipe)
 
-    asyncio.run(model.wire(s.config.provider).request([{"role": "user", "content": "hi"}], None))
+    await model.wire(s.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     body = json.loads(factory.calls[0].content)
     assert body["user_extension"] == "kept"
     assert body["catalog_extension"] == "kept"
 
 
-def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monkeypatch):
+async def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monkeypatch):
     """Nothing to fold into on a non-reasoning model: the configured object passes through whole."""
     s = _session(
         tmp_path,
@@ -1076,7 +1074,7 @@ def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monke
     )
     monkeypatch.setattr(model, "client", factory)
 
-    asyncio.run(model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None))
+    await model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     assert json.loads(factory.calls[0].content)["reasoning"] == {"context": "all_turns"}
 

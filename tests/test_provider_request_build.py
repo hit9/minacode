@@ -1,7 +1,6 @@
 """provider request build (split from tests/test_core_logic.py)."""
 
 import json
-import time
 from types import SimpleNamespace
 
 import pytest

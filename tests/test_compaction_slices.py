@@ -251,7 +251,7 @@ def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
         assert message in carried
 
 
-def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_path):
+async def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_path):
     """Providers with reasoning_history="current_turn" replay reasoning only after the last
     user message, so where the appended instruction sits relative to that boundary decides whether
     the summary request strips the same set the live request did.
@@ -319,7 +319,7 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
             self.cancel_requested = threading.Event()
             self.last_compaction_model = ""
 
-        def api_request_sync(self, messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
+        async def api_request(self, messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
             captured["messages"] = messages
             return None, [], '{"summary": "done"}'
 
@@ -330,7 +330,7 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
     # Snapshot the live projection first: _compact_messages rewrites session.messages, and the
     # prefix being ridden is the one that existed before it did.
     before = ModelClient(midturn).wire(midturn.config.provider).messages(context.model_messages(midturn.system_prompt, turn))
-    assert compaction.Compactor(context, CapturingModel(midturn)).run(compacted, _keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn)
+    assert await compaction.Compactor(context, CapturingModel(midturn)).run_async(compacted, _keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn)
     request = captured["messages"]
     summary = ModelClient(midturn).wire(midturn.config.provider).messages(request)
     at = next((index for index, (a, b) in enumerate(zip(before, summary)) if a != b), None)
@@ -338,7 +338,7 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
     assert SESSION_EVENT_KEY not in ModelClient(midturn).wire(midturn.config.provider).messages(request)[-1]  # never on the wire
 
 
-def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkeypatch):
+async def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkeypatch):
     """compact() ignores `context` whenever inline messages are given, and flattening the span is
     proportional to a conversation large enough to need compacting."""
     live = session(tmp_path)
@@ -354,7 +354,7 @@ def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkey
             self.cancel_requested = threading.Event()
             self.last_compaction_model = ""
 
-        def api_request_sync(self, _messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
+        async def api_request(self, _messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
             return None, [], '{"summary": "done"}'
 
         @staticmethod
@@ -362,7 +362,7 @@ def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkey
             return json.loads(text)
 
     compacted, keep = compaction.Compactor(context, _StubModel()).parts()
-    assert compaction.Compactor(context, FakeModel(live)).run(compacted, keep, PREVIOUS_CONTEXT_TRIMMED)
+    assert await compaction.Compactor(context, FakeModel(live)).run_async(compacted, keep, PREVIOUS_CONTEXT_TRIMMED)
 
 
 def test_recent_window_is_a_floor_for_small_messages_and_a_ceiling_for_large_ones(tmp_path):

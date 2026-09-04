@@ -77,7 +77,7 @@ def test_compaction_prunes_unreferenced_tool_records(tmp_path):
     assert s.get_source_view(kept_view) is not None
 
 
-def test_compaction_keeps_current_turn_tool_records(tmp_path):
+async def test_compaction_keeps_current_turn_tool_records(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
     s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "old answer"}, {"role": "user", "content": "latest"}]
@@ -89,7 +89,7 @@ def test_compaction_keeps_current_turn_tool_records(tmp_path):
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
-    ContextManager(s).prepare_messages(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
+    await ContextManager(s).prepare_messages_async(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
 
     assert old_key not in s.tool_results
     assert current_key in s.tool_results

@@ -3,7 +3,6 @@ import itertools
 import json
 
 import pytest
-
 from test_session_persistence import log_path, read_jsonl, read_lines, session_with_data_dir
 
 from wizolt.base import SESSION_EVENT_KEY

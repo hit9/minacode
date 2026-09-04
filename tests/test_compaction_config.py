@@ -252,7 +252,7 @@ def test_model_client_counts_streamed_output_per_request(tmp_path):
     assert s.state.stream_chars == 2
 
 
-def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatch):
+async def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatch):
     """The label is live display state: a timeout, a cancel, or a provider error must not leave a
     stale row naming a request that is no longer running."""
     s = _compaction_bar_session(tmp_path, provider="cheap", model="haiku")
@@ -265,11 +265,11 @@ def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatc
     monkeypatch.setattr(model, "api_request", explode)
 
     with pytest.raises(ModelError):
-        compaction.Compactor(ContextManager(s), model).compact("context")
+        await compaction.Compactor(ContextManager(s), model).compact_async("context")
     assert s.state.compaction_entry == ""
 
 
-def test_compaction_refuses_an_incomplete_entry_by_name(tmp_path):
+async def test_compaction_refuses_an_incomplete_entry_by_name(tmp_path):
     """The client's own gate checks the active provider, which is the wrong entry when a summary
     runs elsewhere. Without this the SDK reports "Missing credentials", naming nothing the user
     can act on, and compaction silently degrades to trimming on every pass."""
@@ -288,7 +288,7 @@ def test_compaction_refuses_an_incomplete_entry_by_name(tmp_path):
 
     assert s.missing_config() == []  # the active entry is complete; only the compaction one is not
     with pytest.raises(ModelError, match=r"compaction provider `cheap` is missing key, model"):
-        compaction.Compactor(ContextManager(s), ModelClient(s)).compact("context")
+        await compaction.Compactor(ContextManager(s), ModelClient(s)).compact_async("context")
     assert s.state.compaction_entry == ""  # refused before the request, so no stale status row
 
 
@@ -301,7 +301,7 @@ def test_provider_entry_reports_its_own_missing_fields(tmp_path):
     assert s.missing_config() == ["provider.url", "provider.model"]
 
 
-def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, monkeypatch):
+async def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, monkeypatch):
     """A summary can be billed to another account at another price, and is a fresh prefix that
     never hits the conversation's cache. One blended total can be multiplied by neither price."""
     config = Config.from_dict(
@@ -338,7 +338,7 @@ def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, monkey
         ),
     )
 
-    compaction.Compactor(ContextManager(s), model).compact("long context")
+    await compaction.Compactor(ContextManager(s), model).compact_async("long context")
 
     assert (s.usage.calls, s.usage.total_tokens) == (1, 120_900)  # the conversation's row is untouched
     assert (s.compaction_usage.calls, s.compaction_usage.total_tokens) == (1, 95_700)

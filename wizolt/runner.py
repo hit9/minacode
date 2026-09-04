@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import time
@@ -22,6 +23,7 @@ from wizolt.base import (
     ToolCall,
     ToolError,
     builtin_tool_label,
+    fail_if_running_loop,
     oneline,
 )
 from wizolt.context import ContextManager
@@ -191,7 +193,15 @@ class ToolRunner:
         if isinstance(tool, ViewImageTool):
             # The runner owns the vision client, so Agent.cancel() reaches an in-flight
             # observation instead of leaving it to wait out the provider timeout.
-            tool.vision_observe = VisionObserver(self.vision_client()).observe
+            # TODO(async-phase-3): ViewImage is still a synchronous tool, so the observation gets an
+            # outer boundary here. Phase 3 gives the tool a native `call_async` and this disappears.
+            observer = VisionObserver(self.vision_client())
+
+            def observe(images, question: str = "", observer=observer) -> str:
+                fail_if_running_loop("use await ViewImageTool.call_async(...)")
+                return asyncio.run(observer.observe_async(images, question))
+
+            tool.vision_observe = observe
             return tool.call()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):

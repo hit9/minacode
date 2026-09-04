@@ -12,6 +12,7 @@ need the model; `run` drives both.
 
 from __future__ import annotations
 
+import asyncio
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, ClassVar
 
@@ -67,7 +68,7 @@ class Compactor:
         self.ctx = ctx
         self.model = model
 
-    def run(
+    async def run_async(
         self,
         compacted: list[Json],
         keep: list[Json],
@@ -83,7 +84,7 @@ class Compactor:
         if on_compaction is not None:
             on_compaction(True, "")
         error_detail = ""
-        interrupted = False
+        cancelled: BaseException | None = None
         try:
             try:
                 req = self.request(compacted, turn_messages, recent, live_turn=tool_messages)
@@ -91,10 +92,12 @@ class Compactor:
                 # slice carries one message more, and the flattened payload carries `compacted`.
                 sent = req[0][:-1] if req else compacted
                 flat = self.input(compacted) if req is None else ""
-                data = self.compact(flat, *(req or ()), echo_source=self.echo_source(sent))
-            except KeyboardInterrupt:
+                data = await self.compact_async(flat, *(req or ()), echo_source=self.echo_source(sent))
+            except (asyncio.CancelledError, KeyboardInterrupt) as error:
+                # The deterministic trim still runs: a cancelled turn must not be left with a
+                # projection the provider would reject. Cancellation is re-raised after that.
                 error_detail = "cancelled by user"
-                interrupted = True
+                cancelled = error
                 data = None
             except Exception as error:  # noqa: BLE001 - compaction degrades to deterministic trimming on any model failure.
                 error_detail = Text.clip_width(" ".join(str(error).split()) or type(error).__name__, 220)
@@ -112,11 +115,11 @@ class Compactor:
         finally:
             if on_compaction is not None:
                 on_compaction(False, error_detail)
-        if interrupted:
-            raise KeyboardInterrupt
+        if cancelled is not None:
+            raise cancelled
         return True
 
-    def compact(
+    async def compact_async(
         self,
         context: str,
         inline_messages: list[Json] | None = None,
@@ -153,13 +156,15 @@ class Compactor:
         entry_label = f"{entry_name}/{provider.model}"
         model.session.state.compaction_entry = entry_label
         try:
-            data = self.compact_attempts(messages, provider, response_timeout, entry_label, tools=tools if inline else None, echo_source=echo_source)
+            data = await self.compact_attempts_async(
+                messages, provider, response_timeout, entry_label, tools=tools if inline else None, echo_source=echo_source
+            )
         finally:
             model.session.state.compaction_entry = ""
         model.last_compaction_model = provider.model
         return data
 
-    def compact_attempts(
+    async def compact_attempts_async(
         self,
         messages: list[Json],
         provider: ProviderConfig,
@@ -187,7 +192,7 @@ class Compactor:
                 # request exists to reuse -- it would spend the prize to buy the guarantee. The
                 # instruction not to call tools lives in the appended message instead, and a model
                 # that calls one anyway returns no text, which the retry below already handles.
-                _, _, content = model.api_request_sync(
+                _, _, content = await model.api_request(
                     attempt_messages,
                     tools,
                     allow_stream=False,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import threading
@@ -20,6 +21,7 @@ from wizolt.base import (
     ModelRequestRetry,
     Text,
     ToolCall,
+    fail_if_running_loop,
     oneline,
 )
 from wizolt.context import ContextManager
@@ -67,7 +69,7 @@ class Agent:
         self.session = session
         self.model = ModelClient(session)
         self.context = ContextManager(session, self.model)
-        self.vision_observe = VisionObserver(self.model).observe
+        self.vision_observe = VisionObserver(self.model).observe_async
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
         # How a turn's final answer is published, when it should look different from interim
@@ -142,7 +144,9 @@ class Agent:
                             assistant, tool_calls, content = self.model.request(request.messages, request.tools)
                             accepted = request
                         except ModelError as error:
-                            fallback = self._image_fallback_request(error, request)
+                            # TODO(async-phase-4): same temporary outer boundary as prepare_request.
+                            fail_if_running_loop("use await Agent._image_fallback_request_async(...)")
+                            fallback = asyncio.run(self._image_fallback_request_async(error, request))
                             if fallback is None:
                                 raise
                             accepted, replacements = fallback
@@ -481,6 +485,15 @@ class Agent:
         return projected
 
     def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
+        """TODO(async-phase-4): the turn loop is still synchronous and owns no loop of its own.
+
+        One named synchronous caller: `Agent.run`, below. Phase 4 makes the turn a task and this
+        method disappears with it."""
+
+        fail_if_running_loop("use await Agent.prepare_request_async(...)")
+        return asyncio.run(self.prepare_request_async(turn_messages))
+
+    async def prepare_request_async(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
         # Without a queued follow-up this must be the real active-turn list: current-turn compaction
         # rewrites it in place, and a throwaway copy would make the next step compact the same prefix
@@ -506,7 +519,7 @@ class Agent:
             # notice, so a failed vision call never shows a fake described-by success. The reason
             # names the route truthfully: static catalog evidence says text-only; a learned route
             # only ever rejected an image-carrying request with an eligible 400.
-            request_turn = self.session.images.observe_current(request_turn, current, self.vision_observe)
+            request_turn = await self.session.images.observe_current_async(request_turn, current, self.vision_observe)
             reason = "main model is text-only" if self.session.image_route.state() == IMAGE_ROUTE_TEXT_ONLY_STATIC else "main model rejected image input (400)"
             names = tuple(image.name for message in current_raw for image in ImageInputs.input_refs(message))
             self._emit_image_route_notice(ImageRouteNotice(reason, described_by=self._vision_entry_label(), images=names))
@@ -517,11 +530,11 @@ class Agent:
                 turn_messages[:] = request_turn
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
-        messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)
+        messages = await self.context.prepare_messages_async(self.model, self.session.system_prompt, request_turn, tools)
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending, request_turn, tuple(current_raw))
 
-    def _image_fallback_request(
+    async def _image_fallback_request_async(
         self,
         error: ModelError,
         request: PreparedRequest,
@@ -541,11 +554,11 @@ class Agent:
         if not self.session.config.vision_provider:
             self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400); no vision provider configured", images=names))
             return None
-        converted = self.session.images.observe_current(request.turn_messages, current, self.vision_observe)
+        converted = await self.session.images.observe_current_async(request.turn_messages, current, self.vision_observe)
         replacements = [(before, after) for before, after in zip(request.turn_messages, converted, strict=True) if before is not after]
         self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label(), images=names))
         tools = Tool.resolved_schemas(self.session)
-        messages = self.context.prepare_messages(self.model, self.session.system_prompt, converted, tools)
+        messages = await self.context.prepare_messages_async(self.model, self.session.system_prompt, converted, tools)
         self.context.update_percent(messages, tools)
         retry = PreparedRequest(messages, tools, request.pending, converted)
         self.session.state.turn_messages = len(converted)

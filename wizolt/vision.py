@@ -32,7 +32,7 @@ class VisionObserver:
     def __init__(self, model: ModelClient):
         self.model = model
 
-    def observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
+    async def observe_async(self, images: tuple[ImageRef, ...], question: str = "") -> str:
         entry_name = self.model.session.config.vision_provider
         provider = self.model.session.config.providers[entry_name]
         if missing := provider.missing_fields():
@@ -48,7 +48,7 @@ class VisionObserver:
         ]
         # Billed as a vision observation: joins the session totals but must not overwrite the
         # last-request ctx/cache snapshot the status bar reads (see ModelClient._record_usage).
-        _, _, content = self.model.api_request_sync(
+        _, _, content = await self.model.api_request(
             messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
         )
         return content.strip()

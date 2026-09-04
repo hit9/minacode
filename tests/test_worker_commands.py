@@ -1,5 +1,6 @@
 """worker commands (split from tests/test_worker_handoff.py)."""
 
+import asyncio
 import json
 
 import pytest
@@ -475,8 +476,9 @@ def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
 
     calls = []
     worker._agent.context.on_compaction = lambda active, _error: calls.append(active)
-    messages = worker._agent.context.prepare_messages(worker._agent.model, WORKER_PROMPT, turn_messages=None)
-
+    # Synchronous: the delegation above drives the worker through Agent's synchronous entry
+    # point, which refuses to run inside a loop, so this test owns no loop of its own.
+    messages = asyncio.run(worker._agent.context.prepare_messages_async(worker._agent.model, WORKER_PROMPT, turn_messages=None))
     # One compaction, with the lifecycle callback bracketing the phase (True then False).
     assert worker.state.compaction_count == 1
     assert calls == [True, False]
@@ -513,7 +515,7 @@ def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, mon
     _delegate_call(parent, runner, action="send", order="order one")
     worker = _worker_history_for_compaction(parent)
 
-    worker._agent.context.prepare_messages(worker._agent.model, WORKER_PROMPT, turn_messages=None)
+    asyncio.run(worker._agent.context.prepare_messages_async(worker._agent.model, WORKER_PROMPT, turn_messages=None))
     assert worker.state.compaction_count == 1
 
     # Persistence: the snapshot holds the compacted state, not the pre-compaction history.

@@ -213,14 +213,14 @@ def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_path, m
     agent = Agent(s, output_fn=lambda _text: None)
     prepare_calls = 0
 
-    def prepare_messages(_model, _system, turn_messages, _tools):
+    async def prepare_messages_async(_model, _system, turn_messages, _tools):
         nonlocal prepare_calls
         prepare_calls += 1
         if prepare_calls == 2:
             turn_messages[:] = [{"role": "user", "content": "compacted current turn"}]
         return list(turn_messages)
 
-    monkeypatch.setattr(agent.context, "prepare_messages", prepare_messages)
+    monkeypatch.setattr(agent.context, "prepare_messages_async", prepare_messages_async)
     monkeypatch.setattr(agent.context, "update_percent", lambda _messages, _tools: 0)
 
     class Model:
