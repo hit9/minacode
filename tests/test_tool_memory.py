@@ -223,12 +223,32 @@ def test_memory_tools_ignore_schema_valid_empty_and_default_fillers(tmp_path):
     [
         ({"action": "view", "set_goal": "bad"}, "view does not accept"),
         ({"action": "view", "fields": ["goal", "summary"]}, "fields must contain only"),
-        ({"action": "update", "fields": ["goal"], "set_goal": "bad"}, "fields is only valid"),
     ],
 )
 def test_note_actions_reject_conflicting_fields(tmp_path, payload, message):
     with pytest.raises(ToolError, match=message):
         NoteTool(session(tmp_path), [payload]).call()
+
+
+def test_note_update_ignores_redundant_view_fields(tmp_path):
+    """A model may copy the projection field into an otherwise unambiguous update."""
+    s = session(tmp_path)
+
+    result = json.loads(
+        NoteTool(
+            s,
+            [
+                {
+                    "action": "update",
+                    "fields": ["plan"],
+                    "replace_plan": [{"status": "doing", "text": "inspect"}],
+                }
+            ],
+        ).call()
+    )
+
+    assert result["changed"] == ["plan"]
+    assert [(item.status, item.text) for item in s.state.plan] == [("doing", "inspect")]
 
 
 def test_suggest_tool_sets_transient_quick_hints(tmp_path):

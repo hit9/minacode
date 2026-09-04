@@ -8,6 +8,8 @@
   replacement content make `replace` unambiguous; incomplete create/delete shapes remain errors.
 - A rejected multi-range `Edit` now returns one fresh editable view covering every requested range,
   with a direct-retry hint, so recovery does not require reading the same lines again.
+- `Note` ignores a redundant `fields` projection on an otherwise explicit update instead of
+  rejecting the working-state change.
 
 ### Added
 

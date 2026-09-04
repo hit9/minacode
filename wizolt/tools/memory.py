@@ -314,8 +314,6 @@ class NoteTool(Tool):
             if mutation_fields.intersection(data):
                 raise ToolError("Note view does not accept update fields")
             return self.view(data)
-        if "fields" in data:
-            raise ToolError("Note fields is only valid for view")
         if not mutation_fields.intersection(data):
             raise ToolError("Note update requires set_goal, replace_plan, append_known, replace_known, or set_check")
 
