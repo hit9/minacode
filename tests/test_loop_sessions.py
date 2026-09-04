@@ -1,6 +1,9 @@
 """loop sessions (split from tests/test_loop_commands.py)."""
+
+import asyncio
 import json
 import os
+import threading
 import time
 
 from agent_harness import session
@@ -47,6 +50,7 @@ async def test_exit_command_prints_resume_command(tmp_path):
     assert output[-1] == f"Resume 'hello' with:\nwizolt --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
+
 async def stored_session(tmp_path, text, *, name=""):
     """A saved session in the same project, so /sessions has something to list."""
     other = Session(cwd=str(tmp_path), config=Config(data_dir=str(tmp_path / "data")))
@@ -55,6 +59,7 @@ async def stored_session(tmp_path, text, *, name=""):
         other.rename(name)
     await other.save_snapshot()
     return other
+
 
 async def test_resume_is_an_alias_for_sessions(tmp_path):
     s = session(tmp_path)
@@ -68,6 +73,7 @@ async def test_resume_is_an_alias_for_sessions(tmp_path):
     # `--resume` is the flag people already know; the command answers to the same word.
     assert emitted == ["No saved sessions yet."]
     assert "/resume" in CommandLoop.COMMANDS
+
 
 async def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
     s = session(tmp_path)
@@ -86,6 +92,7 @@ async def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
     assert await sessions_command(loop, "nonsense") == "Usage: /sessions [all]"
     assert loop.resume_request == ""
 
+
 async def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
@@ -102,6 +109,7 @@ async def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_pat
     # Choosing a session ends this run the way /exit does; main() starts the next one on it.
     assert (handled, exit_now) == (True, True)
     assert loop.resume_request == target.uid
+
 
 async def test_sessions_command_choosing_the_current_session_changes_nothing(tmp_path):
     s = session(tmp_path)
@@ -120,6 +128,7 @@ async def test_sessions_command_choosing_the_current_session_changes_nothing(tmp
     loop.choice_application = lambda *args, **kwargs: None
     assert await loop.command("/sessions") == (True, False)
     assert loop.resume_request == ""
+
 
 async def test_session_labels_carry_age_and_size(tmp_path):
     s = session(tmp_path)
@@ -142,6 +151,7 @@ async def test_session_labels_carry_age_and_size(tmp_path):
     row = session_rows(rows, widths)[0]
     assert "1 round " in row + " "
     assert session_preview(entry) == []  # no summary, no preview
+
 
 async def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
     """The picker's labels are table rows: each column padded to the widest value in it, so names
@@ -167,6 +177,7 @@ async def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatc
     # char-index find() differs across CJK rows, so compare padded display widths instead.
     assert len({get_cwidth(row[: row.find("3 rounds")]) for row in labels}) == 1
 
+
 async def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(tmp_path, monkeypatch):
     """The picker is exclusive (alternate screen) with a viewport cap, its rows are styled per
     field, and the preview carries the session's recent messages."""
@@ -181,7 +192,9 @@ async def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(t
     loop.tui = TuiApp()
     loop.interactive_input = True
     captured: dict[str, object] = {}
-    monkeypatch.setattr(commands_mod, "choice_application", async_callable(lambda _loop, *args, **kwargs: captured.update(args=args, kwargs=kwargs) or target.uid))
+    monkeypatch.setattr(
+        commands_mod, "choice_application", async_callable(lambda _loop, *args, **kwargs: captured.update(args=args, kwargs=kwargs) or target.uid)
+    )
 
     assert await loop.command("/sessions") == (True, True)
     assert captured["kwargs"]["exclusive"] is True
@@ -190,14 +203,25 @@ async def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(t
     assert label_fn is not None
     assert any(style == "class:choice.meta" for style, _ in label_fn(target.uid))
     assert any(style == "class:choice.live" for style, _ in label_fn(s.uid))
-    preview = "".join(text for _, text in captured["kwargs"]["preview_fn"](target.uid))
-    assert "the latest answer" in preview
+    preview_fn = captured["kwargs"]["preview_fn"]
+    # The first frame is served from the in-memory cache alone (empty), while one runtime-owned
+    # load reads the log tail and fills the cache; re-rendering after it lands shows the summary.
+    assert "the latest answer" not in "".join(text for _, text in preview_fn(target.uid))
+    deadline = time.time() + 5
+    preview = parts = None
+    while time.time() < deadline:
+        await asyncio.sleep(0.01)
+        preview = "".join(text for _, text in preview_fn(target.uid))
+        if "the latest answer" in preview:
+            parts = preview_fn(target.uid)
+            break
+    assert preview is not None and "the latest answer" in preview
     # The preview reads like the transcript: the user bullet takes the prompt colour and the
     # message the transcript's warm tone, newest exchange at the bottom.
-    parts = captured["kwargs"]["preview_fn"](target.uid)
     assert ("class:prompt", "• ") in parts
     assert any(style == "class:choice.user" for style, _ in parts)
     assert parts[-1] == ("", "  the latest answer\n")
+
 
 async def test_session_summary_tails_the_recent_messages(tmp_path):
     other = await stored_session(tmp_path, "opening")
@@ -208,6 +232,7 @@ async def test_session_summary_tails_the_recent_messages(tmp_path):
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "three"), ("assistant", "two"), ("user", "one"), ("user", "opening")]
     assert SessionSnapshotStore.tail_summary(entry.path, limit=2) == [("assistant", "three"), ("assistant", "two")]
+
 
 async def test_session_summary_skips_internal_events(tmp_path):
     """Session-resume markers are stored as user-role messages; the preview must not show them as
@@ -221,6 +246,7 @@ async def test_session_summary_skips_internal_events(tmp_path):
     summary = SessionSnapshotStore.tail_summary(entry.path)
     assert summary[:2] == [("assistant", "real answer"), ("user", "real question")]
     assert all("<session_event" not in text for _, text in summary)
+
 
 async def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path):
     """A tool-heavy session has almost no assistant text; the preview shows the tool names of
@@ -240,6 +266,7 @@ async def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path
     await other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "found it"), ("user", "investigate"), ("tool", "→ Bash, Read")]
+
 
 async def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
     """Tool-only turns collapse into one counted line at the end, and when the preview is already
@@ -262,6 +289,7 @@ async def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
     assert len(summary) == 5
     assert all(not text.startswith("→") for _, text in summary)
 
+
 async def test_session_summary_widens_the_window_to_reach_buried_text(tmp_path):
     """A tool result can bury the conversation under hundreds of kilobytes; the summary widens its
     tail window until it holds enough text, capped by the budget."""
@@ -272,6 +300,7 @@ async def test_session_summary_widens_the_window_to_reach_buried_text(tmp_path):
     await other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     assert SessionSnapshotStore.tail_summary(entry.path) == [("user", f"q{i}") for i in range(5, 0, -1)]
+
 
 def test_session_summary_survives_a_seek_inside_a_cjk_character(tmp_path, monkeypatch):
     """The tail read must never decode from an arbitrary byte: when the seek point lands inside a
@@ -293,6 +322,7 @@ def test_session_summary_survives_a_seek_inside_a_cjk_character(tmp_path, monkey
     path.write_bytes(data)
     entry = SessionEntry(uid="torn", name="", opening="", rounds=0, cwd=str(tmp_path), updated_at=time.time(), path=str(path))
     assert SessionSnapshotStore.tail_summary(entry.path) == [("user", "latest")]
+
 
 async def test_session_label_fn_matches_the_text_layout(tmp_path):
     """The styled rows line up exactly like the plain ones: the styled text of every field is the
@@ -327,6 +357,7 @@ async def test_session_label_fn_matches_the_text_layout(tmp_path):
     assert parts[2][0] == "class:choice.meta"  # rounds dim
     assert parts[-1] == ("class:choice.live", "current")
 
+
 async def test_name_command_shows_and_sets_the_session_name(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "make the divider smoother"})
@@ -340,7 +371,61 @@ async def test_name_command_shows_and_sets_the_session_name(tmp_path):
     # The rename is durable on its own, without waiting for the next turn to save.
     assert Session.load_snapshot(s.uid, config=s.config).name == "divider polish"
 
+
 async def test_name_command_reports_an_unnamed_session(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
     assert await name_command(loop, "") == "Session name: (unnamed)"
+
+
+async def test_session_preview_cache_loads_each_uid_once_and_never_renders_from_disk(tmp_path, monkeypatch):
+    """The preview renderer stays pure: the first selection schedules one load per uid, re-selecting
+    coalesces on it, and the store is never read from inside a render call."""
+    target = await stored_session(tmp_path, "cache me", name="cached")
+    target.messages.append({"role": "assistant", "content": "cached answer"})
+    await target.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(target.config.data_dir, target.cwd)[0]
+    calls: list[str] = []
+    real_tail = SessionSnapshotStore.tail_summary.__func__
+
+    def counting(cls, path, limit=5):
+        calls.append(path)
+        return real_tail(cls, path, limit=limit)
+
+    monkeypatch.setattr(SessionSnapshotStore, "tail_summary", classmethod(counting))
+    cache = commands_mod.SessionPreviewCache(None)
+
+    assert cache.render(entry) == []  # the renderer never reads the store
+    cache.render(entry)  # same selection again: coalesced onto the first load
+    await cache.idle()
+
+    assert cache.cached(entry.uid)
+    assert calls == [entry.path]  # one load despite two renders
+    assert "cached answer" in "".join(text for _, text in cache.render(entry))  # now served from cache
+    assert calls == [entry.path]
+
+
+async def test_session_preview_cache_settle_cancels_outstanding_loads(tmp_path, monkeypatch):
+    """Closing the modal settles preview loads: an in-flight summary is cancelled and waits out its
+    worker, and nothing half-loaded is cached."""
+    target = await stored_session(tmp_path, "slow", name="slow")
+    await target.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(target.config.data_dir, target.cwd)[0]
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(cls, path, limit=5):
+        entered.set()
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(SessionSnapshotStore, "tail_summary", classmethod(slow))
+    cache = commands_mod.SessionPreviewCache(None)
+    cache.render(entry)
+    await asyncio.to_thread(entered.wait, 5)
+    settle = asyncio.create_task(cache.settle())
+    await asyncio.sleep(0.02)
+    release.set()
+    await settle
+
+    assert not cache.cached(entry.uid)
+    assert not cache._inflight  # nothing left running after the modal closed

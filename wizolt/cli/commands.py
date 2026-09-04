@@ -17,7 +17,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit.utils import get_cwidth
 
@@ -31,6 +31,7 @@ from wizolt.base import (
     LogRole,
     ModelUsage,
     Text,
+    run_blocking,
 )
 from wizolt.cli.modals import (
     choice_application,
@@ -481,32 +482,30 @@ async def sessions_command(loop: CommandLoop, args: str) -> str | None:
     argument = args.strip().lower()
     if argument not in {"", "all"}:
         return "Usage: /sessions [all]"
-    entries = SessionSnapshotStore.list_sessions(loop.session.config.data_dir, loop.session.cwd, all_projects=argument == "all")
+    entries = await run_blocking(lambda: SessionSnapshotStore.list_sessions(loop.session.config.data_dir, loop.session.cwd, all_projects=argument == "all"))
     if not entries:
         return "No saved sessions yet."
-    table, widths = session_table(loop, entries, all_projects=argument == "all")
-    rows = session_rows(table, widths)
+    # The listing scan and the table layout are bounded material work; build both off the loop
+    # before the modal opens so a large store never stalls the picker's first frame.
+    table, widths = await run_blocking(lambda: session_table(loop, entries, all_projects=argument == "all"))
+    rows = await run_blocking(lambda: session_rows(table, widths))
     if loop.tui is None or not loop.interactive_input:
         uid_width = max(get_cwidth(entry.uid) for entry in entries)
         return "\n".join(f"{entry.uid}{' ' * (uid_width - get_cwidth(entry.uid))}  {label}" for entry, label in zip(entries, rows))
     labels = {entry.uid: label for entry, label in zip(entries, rows)}
     title = "Sessions" + (" · all projects" if argument == "all" else "")
     # The preview renders on every frame, so it reads the list already in hand, never the store.
-    # Each session's summary is read lazily the first time the cursor lands on it and cached, so
-    # opening the picker costs nothing and a huge log is only read for sessions you actually look
-    # at.
+    # A session's summary is loaded only when the cursor first lands on it: one runtime-owned task
+    # per uid reads the log tail off the loop, caches the result, and invalidates the modal, so
+    # opening the picker costs nothing and a huge log is read only for sessions you actually look
+    # at. The renderer itself stays pure -- it only reads the cache.
     by_uid = {entry.uid: entry for entry in entries}
     fields_by_uid = {entry.uid: row for entry, row in zip(entries, table)}
     height = shutil.get_terminal_size().lines
-    summaries: dict[str, list[tuple[str, str]]] = {}
+    preview_cache = SessionPreviewCache(loop.tui)
 
     def preview_fn(uid: str) -> StyleAndTextTuples:
-        entry = by_uid.get(uid)
-        if entry is None:
-            return []
-        if uid not in summaries:
-            summaries[uid] = SessionSnapshotStore.tail_summary(entry.path)
-        return session_preview(entry, summary=summaries[uid])
+        return preview_cache.render(by_uid.get(uid))
 
     chosen = await choice_application(
         loop,
@@ -522,11 +521,63 @@ async def sessions_command(loop: CommandLoop, args: str) -> str | None:
         # beyond this many rows the list scrolls instead of pushing the preview off the screen.
         max_rows=max(5, min(20, height - 12)),
     )
+    # The modal is closed; settle any preview loads still running (each waits out its worker).
+    await preview_cache.settle()
     if not isinstance(chosen, str) or chosen == loop.session.uid:
         return None
     loop.resume_request = chosen
     await loop.save_and_emit_resume()
     return None
+
+
+class SessionPreviewCache:
+    """The session picker's preview state: a pure renderer over an in-memory cache.
+
+    `render` is called on every frame and never touches the store; the first time the selection
+    lands on an uncached session it schedules one runtime-owned tail-summary load per uid, fills
+    the cache from its result, and invalidates the modal. Re-selecting the same uid coalesces on
+    the inflight task, so one slow log is never read twice. `settle` cancels whatever is still
+    loading and waits each load out past its worker -- the modal-close contract.
+    """
+
+    def __init__(self, tui: Any | None):
+        self._tui = tui
+        self._summaries: dict[str, list[tuple[str, str]]] = {}
+        self._inflight: dict[str, asyncio.Task[None]] = {}
+        self._last_uid: str | None = None
+
+    def render(self, entry: SessionEntry | None) -> StyleAndTextTuples:
+        if entry is None:
+            return []
+        if entry.uid != self._last_uid:
+            self._last_uid = entry.uid
+            if entry.uid not in self._summaries and entry.uid not in self._inflight:
+                self._inflight[entry.uid] = asyncio.create_task(self._load(entry.path, entry.uid))
+        return session_preview(entry, summary=self._summaries.get(entry.uid))
+
+    def cached(self, uid: str) -> bool:
+        return uid in self._summaries
+
+    async def idle(self) -> None:
+        """Wait until nothing is loading (test and settle helper)."""
+        while self._inflight:
+            await asyncio.sleep(0)
+
+    async def settle(self) -> None:
+        """Cancel outstanding preview loads and wait each out past its worker."""
+        tasks = list(self._inflight.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _load(self, path: str, uid: str) -> None:
+        try:
+            self._summaries[uid] = await run_blocking(lambda: SessionSnapshotStore.tail_summary(path))
+        finally:
+            self._inflight.pop(uid, None)
+            if self._tui is not None:
+                self._tui.invalidate()
 
 
 def _session_fields(loop: CommandLoop, entry: SessionEntry, *, all_projects: bool) -> list[str]:
