@@ -1,13 +1,83 @@
 """worker lifecycle (split from tests/test_worker_handoff.py)."""
 
+import asyncio
 import json
 import os
+import threading
 
 import pytest
 from agent_harness import call
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
 from wizolt.base import SESSION_EVENT_KEY, ToolError
+
+
+async def test_delegate_restore_does_not_block_the_event_loop(tmp_path, monkeypatch):
+    from wizolt.session import SessionSnapshotStore
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "answer"}, [], "answer")])
+    monkeypatch.setattr("wizolt.engine.ModelClient", lambda _session: model)
+    entered = threading.Event()
+    release = threading.Event()
+    real_load = SessionSnapshotStore.load
+
+    def blocked_load(*args, **kwargs):
+        entered.set()
+        release.wait(timeout=5)
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(SessionSnapshotStore, "load", blocked_load)
+    task = asyncio.create_task(_delegate_call(parent, _delegate_runner(parent), action="send", order="work"))
+    while not entered.is_set():
+        await asyncio.sleep(0)
+
+    # The restore is still blocked in its worker thread, but the runtime remains responsive and
+    # does not publish a half-restored worker into the parent.
+    await asyncio.sleep(0)
+    assert not task.done()
+    assert parent.worker is None
+
+    release.set()
+    assert "answer" in await task
+    assert parent.worker is not None
+
+
+async def test_cancelled_delegate_reset_finishes_cleanup_before_clearing_runtime(tmp_path, monkeypatch):
+    from wizolt.session import Session, SessionSnapshotStore
+    from wizolt.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    worker.messages.append({"role": "user", "content": "worker request"})
+    await worker.save_snapshot()
+    parent.worker = worker
+    snapshot = SessionSnapshotStore.session_path(parent.config.data_dir, str(tmp_path), worker.uid)
+    entered = threading.Event()
+    release = threading.Event()
+    real_unlink = os.unlink
+
+    def blocked_unlink(path):
+        if os.fspath(path) == snapshot:
+            entered.set()
+            release.wait(timeout=5)
+        return real_unlink(path)
+
+    monkeypatch.setattr("wizolt.tools.delegate.os.unlink", blocked_unlink)
+    task = asyncio.create_task(DelegateTool(parent, [{"action": "reset"}]).call())
+    while not entered.is_set():
+        await asyncio.sleep(0)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    assert parent.worker is worker
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert parent.worker is None
+    assert not os.path.exists(snapshot)
 
 
 async def test_delegate_context_continuity(tmp_path, monkeypatch):

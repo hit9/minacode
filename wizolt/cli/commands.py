@@ -485,10 +485,10 @@ async def sessions_command(loop: CommandLoop, args: str) -> str | None:
     entries = await run_blocking(lambda: SessionSnapshotStore.list_sessions(loop.session.config.data_dir, loop.session.cwd, all_projects=argument == "all"))
     if not entries:
         return "No saved sessions yet."
-    # The listing scan and the table layout are bounded material work; build both off the loop
-    # before the modal opens so a large store never stalls the picker's first frame.
-    table, widths = await run_blocking(lambda: session_table(loop, entries, all_projects=argument == "all"))
-    rows = await run_blocking(lambda: session_rows(table, widths))
+    # Only the store scan is blocking I/O. Formatting the records already in memory is bounded,
+    # pure work; sending each small pass through the executor costs more than it protects.
+    table, widths = session_table(loop, entries, all_projects=argument == "all")
+    rows = session_rows(table, widths)
     if loop.tui is None or not loop.interactive_input:
         uid_width = max(get_cwidth(entry.uid) for entry in entries)
         return "\n".join(f"{entry.uid}{' ' * (uid_width - get_cwidth(entry.uid))}  {label}" for entry, label in zip(entries, rows))

@@ -1,4 +1,5 @@
 """delegate approval (split from tests/test_worker_handoff.py)."""
+
 from agent_harness import session
 from test_worker_handoff import FakeModelClient, _delegate_session
 
@@ -46,9 +47,10 @@ async def test_spawned_worker_reuses_the_parent_catalog(tmp_path):
     parent = _delegate_session(tmp_path)
     parent.catalog = CatalogRuntime(parent.config.data_dir)
 
-    worker = DelegateTool(parent, [{"action": "status"}])._spawn_worker(parent)
+    worker = await DelegateTool(parent, [{"action": "status"}])._spawn_worker(parent)
 
     assert worker.catalog is parent.catalog
+
 
 async def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
     from wizolt.base import ToolCall
@@ -70,6 +72,7 @@ async def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypat
         ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
     )
     assert (confirmed, reason) == (False, "cost too high")
+
 
 async def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     from prompt_toolkit.utils import get_cwidth
@@ -133,6 +136,7 @@ async def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     edit_tool = EditTool(parent, ["new.py", "", [{"op": "create", "content": "x\n"}]])
     block = toolblocks.approval_display(parent, ToolCall("edit-1", "Edit", ["new.py", "", [{"op": "create", "content": "x\n"}]]), edit_tool, "confirm")
     assert block.has_children
+
 
 async def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tmp_path):
     from dataclasses import replace
@@ -205,6 +209,7 @@ async def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_wor
     assert parent.config.worker_provider == "alt"  # untouched without a picker
     assert parent.config.worker_api == "responses"  # untouched without a picker
 
+
 async def test_delegate_view_opens_viewer_then_approves(tmp_path):
     from wizolt.base import ToolCall
     from wizolt.context import ContextManager
@@ -230,6 +235,7 @@ async def test_delegate_view_opens_viewer_then_approves(tmp_path):
     assert any(label in {"provider", "model", "effort", "api"} for label, _ in header_rows)
     assert not any(label == "order" for label, _ in header_rows)  # order is shown in full in the viewer
 
+
 async def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
     """`c` then `v`: the viewer reports the configuration the send would run under, so it has to
     read that configuration when the key is pressed, not as it stood when the prompt was drawn."""
@@ -251,6 +257,7 @@ async def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
     assert confirmed
     assert seen and seen[0]["model"] == "chosen-in-the-c-cycle"
 
+
 async def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
     from wizolt.base import LogBlock, ToolCall
     from wizolt.context import ContextManager
@@ -269,6 +276,7 @@ async def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
     assert (confirmed, reason) == (False, "")
     texts = [item.text for out in outputs if isinstance(out, LogBlock) for item, _ in out.walk()]
     assert all(line in texts for line in order_lines)  # nothing dropped, unlike the brief excerpt
+
 
 async def test_delegate_view_empty_order_is_noop(tmp_path):
     from wizolt.base import LogBlock, ToolCall
@@ -290,6 +298,7 @@ async def test_delegate_view_empty_order_is_noop(tmp_path):
     assert seen == []
     assert not any(isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk()) for out in outputs)
 
+
 async def test_delegate_approval_legend_mentions_view(tmp_path):
     from wizolt.base import LogRole
     from wizolt.tools import toolblocks
@@ -300,6 +309,7 @@ async def test_delegate_approval_legend_mentions_view(tmp_path):
     legend = children[-1]
     assert legend.role is LogRole.META
     assert "v view order" in legend.text
+
 
 async def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
     # The TUI signals Ctrl-C / Ctrl-D-on-empty / app shutdown by returning None from request_input.
@@ -318,6 +328,7 @@ async def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
 
     call = ToolCall("bash-1", "Bash", ["echo hi"])
     assert await runner.confirm(call, TOOL_REGISTRY["Bash"](parent, ["echo hi"])) == (False, "")
+
 
 async def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
     # `v` and `c` come back to the same prompt, and each redraw used to stack another full copy of
@@ -339,6 +350,7 @@ async def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
     assert len(prompts) == 4  # every side trip re-asked
     briefs = [out for out in outputs if isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk())]
     assert len(briefs) == 1
+
 
 async def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_path):
     from wizolt.base import ToolCall
@@ -388,6 +400,7 @@ async def test_approval_form_actions_offered_per_tool_and_only_where_they_work(t
             continue  # these re-ask forever against a constant input_fn; covered by the side-trip test
         assert await typed.confirm(ToolCall("bash-1", "Bash", ["rm -rf build"]), bash) == ((True, "") if answer == "" else (False, ""))
 
+
 async def test_delegate_legend_prints_only_without_an_action_row(tmp_path):
     from wizolt.base import LogEdge
     from wizolt.tools import toolblocks
@@ -409,6 +422,7 @@ async def test_delegate_legend_prints_only_without_an_action_row(tmp_path):
     assert children[-1].edge is LogEdge.END
     assert children[0].edge is LogEdge.BRANCH
 
+
 async def test_delegate_legend_offers_only_the_actions_the_call_has(tmp_path):
     """The action row already hid `View order` when the send carries no order, but the legend -- the
     only guidance a headless run gets -- still advertised it, and typing `v` then re-asked in silence
@@ -424,6 +438,7 @@ async def test_delegate_legend_offers_only_the_actions_the_call_has(tmp_path):
     assert "c worker config" in legend  # the actions it does have are untouched
     assert legend == toolblocks.approval_legend(toolblocks.approval_actions(orderless, True), "order")
 
+
 async def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     # A CJK order is two terminal cells per character. Wrapping by character count (textwrap) makes
     # every row twice as wide as the terminal, and the modal window does not wrap, so the overflow
@@ -437,7 +452,7 @@ async def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((60, 40))
-    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args, **kwargs: size)
 
     captured = {}
     loop = SimpleNamespace(tui=capturing_tui(captured))
@@ -453,6 +468,7 @@ async def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     nested = [row for row in rows if "x = 1" in row]
     assert len(nested) == 1 and nested[0].startswith("       ")
 
+
 async def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     import os
     from types import SimpleNamespace
@@ -463,7 +479,7 @@ async def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
 
     # Fixed terminal size keeps the viewport deterministic: 40 lines - 6 = 34 visible rows.
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args, **kwargs: size)
 
     captured = {}
     loop = SimpleNamespace(tui=capturing_tui(captured))
@@ -505,6 +521,7 @@ async def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     assert handle_key("q", "") is None
     assert handle_key("c-o", "") is None
 
+
 async def test_delegate_order_viewer_renders_markdown(monkeypatch):
     import os
     from types import SimpleNamespace
@@ -513,7 +530,7 @@ async def test_delegate_order_viewer_renders_markdown(monkeypatch):
     from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args, **kwargs: size)
 
     captured = {}
     loop = SimpleNamespace(tui=capturing_tui(captured))
@@ -528,6 +545,7 @@ async def test_delegate_order_viewer_renders_markdown(monkeypatch):
     assert "item two" in rendered
     assert "print(1)" in rendered
 
+
 async def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     # An order's newlines are structural: file lists and step-per-line instructions must not be
     # folded into one paragraph the way Markdown folds in-paragraph newlines to spaces.
@@ -538,7 +556,7 @@ async def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args, **kwargs: size)
 
     captured = {}
     loop = SimpleNamespace(tui=capturing_tui(captured))
@@ -548,6 +566,7 @@ async def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     rows = [row.strip() for row in "".join(text for _, text in captured["fragments_fn"]()).splitlines()]
     for source_line in order.splitlines():
         assert source_line in rows, f"{source_line!r} was folded into another line"
+
 
 async def test_delegate_order_viewer_field_header_alignment(monkeypatch):
     import os
@@ -559,7 +578,7 @@ async def test_delegate_order_viewer_field_header_alignment(monkeypatch):
     from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args, **kwargs: size)
 
     captured = {}
     loop = SimpleNamespace(tui=capturing_tui(captured))
@@ -569,6 +588,7 @@ async def test_delegate_order_viewer_field_header_alignment(monkeypatch):
     cyan = {text for style, text in fragments if style == "ansicyan" and text.strip() in {"title", "lang", "max_steps"}}
     assert len(cyan) == 3
     assert {get_cwidth(text) for text in cyan} == {9}  # every label padded to the widest one
+
 
 async def test_delegate_order_viewer_header_separator(monkeypatch):
     import os
@@ -580,7 +600,7 @@ async def test_delegate_order_viewer_header_separator(monkeypatch):
     from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
-    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args, **kwargs: size)
 
     captured = {}
     loop = SimpleNamespace(tui=capturing_tui(captured))
@@ -594,6 +614,7 @@ async def test_delegate_order_viewer_header_separator(monkeypatch):
     assert order_row
     assert lines.index(separators[0]) < order_row[0]  # separator sits after the fields, before the body
 
+
 async def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     import os
     from types import SimpleNamespace
@@ -604,7 +625,7 @@ async def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     from wizolt.cli.modals import approval_text_viewer
 
     size = os.terminal_size((60, 40))
-    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args: size)
+    monkeypatch.setattr("wizolt.cli.modals.shutil.get_terminal_size", lambda *args, **kwargs: size)
 
     captured = {}
     loop = SimpleNamespace(tui=capturing_tui(captured))
@@ -615,6 +636,7 @@ async def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     rows = rendered.splitlines()
     assert rows, "the viewer rendered nothing"
     assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
+
 
 async def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
     from wizolt.base import ToolCall
@@ -631,6 +653,7 @@ async def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monk
     status, _, _ = await runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
     assert len(prompts) == 1  # yolo alone does not skip a Delegate send
+
 
 async def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
     from wizolt.base import ToolCall

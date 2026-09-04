@@ -75,7 +75,7 @@ async def test_resume_is_an_alias_for_sessions(tmp_path):
     assert "/resume" in CommandLoop.COMMANDS
 
 
-async def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
+async def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -85,12 +85,22 @@ async def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
     older = await stored_session(tmp_path, "sort the picker by date")
     s.messages.append({"role": "user", "content": "current work"})
     await s.save_snapshot()
+    blocking_calls = 0
+    real_run_blocking = commands_mod.run_blocking
+
+    async def count_blocking(invoke, **kwargs):
+        nonlocal blocking_calls
+        blocking_calls += 1
+        return await real_run_blocking(invoke, **kwargs)
+
+    monkeypatch.setattr(commands_mod, "run_blocking", count_blocking)
     listed = await sessions_command(loop, "")
 
     assert older.uid in listed and "sort the picker by date" in listed
     assert s.uid in listed and "current" in listed
     assert await sessions_command(loop, "nonsense") == "Usage: /sessions [all]"
     assert loop.resume_request == ""
+    assert blocking_calls == 1  # the store scan; in-memory table formatting stays on the loop
 
 
 async def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path, monkeypatch):

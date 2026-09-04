@@ -15,7 +15,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from wizolt.base import MEMORY_PREFIXES, ApprovalView, Json, LogBlock, LogLine, LogRole, ToolError, oneline
+from wizolt.base import MEMORY_PREFIXES, ApprovalView, Json, LogBlock, LogLine, LogRole, ToolError, oneline, run_blocking
 from wizolt.prompts import WORKER_PROMPT
 from wizolt.session import Session, SessionSnapshotStore
 from wizolt.tools.base import Tool
@@ -273,7 +273,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         if action == "send":
             return await self._send(payload)
         if action == "reset":
-            return self._reset()
+            return await self._reset()
         if action == "status":
             return self._status()
         raise ToolError(f"unknown action: {action!r}")
@@ -317,7 +317,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         parent = self.session
         worker = parent.worker
         if worker is None:
-            worker = self._spawn_worker(parent)
+            worker = await self._spawn_worker(parent)
             parent.worker = worker
         # Rebuild the settings copy on every send: sharing the parent's RuntimeSettings object would
         # let a per-call max_steps override leak into the parent's budget, and a one-time copy would
@@ -429,7 +429,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         for diff in worker.turn_diffs[start:]:
             parent.store_turn_diff(diff.key, diff.turn, diff.path, diff.diff, before=diff.before, after=diff.after, round=parent.state.round_count)
 
-    def _spawn_worker(self, parent: Session) -> Session:
+    async def _spawn_worker(self, parent: Session) -> Session:
         uid = parent.uid + ".w"
         provider_name = parent.config.worker_provider or parent.config.active_provider
         # replace() is shallow, so the worker needs its own providers dict with a detached copy of
@@ -442,20 +442,26 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         provider = worker_provider_config(parent.config, provider_name)
         config = replace(parent.config, active_provider=provider_name, providers={**parent.config.providers, provider_name: provider})
         settings = replace(parent.settings)
-        try:
-            worker = SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=parent.cwd)
-        except Exception:  # noqa: BLE001 - missing or corrupt snapshot means "no worker yet", never an error.
-            worker = Session(
-                cwd=parent.cwd,
-                system_info=parent.system_info,  # shared: skip a SystemInfo.detect
-                config=config,
-                settings=settings,
-                created_at=parent.created_at,  # cache-critical: the Environment layer must stay identical across spawns
-                uid=uid,
-                skills=parent.skills,  # shared objects, never re-discovered
-                mcp=parent.mcp,
-                catalog=parent.catalog,
-            )
+        cwd, system_info, created_at = parent.cwd, parent.system_info, parent.created_at
+        skills, mcp, catalog = parent.skills, parent.mcp, parent.catalog
+
+        def restore() -> Session:
+            try:
+                return SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=cwd)
+            except Exception:  # noqa: BLE001 - missing or corrupt snapshot means "no worker yet", never an error.
+                return Session(
+                    cwd=cwd,
+                    system_info=system_info,  # shared: skip a SystemInfo.detect
+                    config=config,
+                    settings=settings,
+                    created_at=created_at,  # cache-critical: the Environment layer must stay identical across spawns
+                    uid=uid,
+                    skills=skills,  # shared objects, never re-discovered
+                    mcp=mcp,
+                    catalog=catalog,
+                )
+
+        worker = await run_blocking(restore)
         # load only honors the snapshot's keys, so these return to their defaults; re-set them
         # after load or construction, never before. skills/mcp are shared objects from the parent
         # (never re-discovered or re-connected): a snapshot-loaded worker that kept its own would
@@ -468,42 +474,43 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         worker.catalog = parent.catalog
         return worker
 
-    def _reset(self) -> str:
+    async def _reset(self) -> str:
         parent = self.session
         worker = parent.worker
         uid = worker.uid if worker is not None else parent.uid + ".w"
         directory = SessionSnapshotStore.project_dir(parent.config.data_dir, parent.cwd)
-        snapshot_path = os.path.join(directory, uid + ".jsonl")
-        meta_path = os.path.join(directory, uid + SessionSnapshotStore.META_SUFFIX)
-        assets_path = os.path.join(directory, uid + ".assets")
-        if worker is None and not any(os.path.exists(path) for path in (snapshot_path, meta_path, assets_path)):
-            return '<Delegate action="reset" alive="false"/>'
+        jobs = tuple(worker.jobs.values()) if worker is not None else ()
 
-        # Reset owns the worker runtime, including background processes. Dropping the Session while
-        # one of its Job handles is live would leave an unmanageable process behind.
-        if worker is not None:
-            for job in worker.jobs.values():
+        def reset_transaction() -> bool:
+            snapshot_path = os.path.join(directory, uid + ".jsonl")
+            meta_path = os.path.join(directory, uid + SessionSnapshotStore.META_SUFFIX)
+            assets_path = os.path.join(directory, uid + ".assets")
+            if worker is None and not any(os.path.exists(path) for path in (snapshot_path, meta_path, assets_path)):
+                return False
+
+            # Reset owns the worker runtime, including background processes. Dropping the Session
+            # while one of its Job handles is live would leave an unmanageable process behind.
+            for job in jobs:
                 try:
                     job.kill()
                 except Exception as error:
                     raise ToolError(f"worker reset failed to stop {job.id}: {error}") from error
 
-        # The delete path derives entirely from the parent's own uid; the model's arguments carry no
-        # path, so the worst case is deleting this session's own worker, nothing else.
-        try:
-            os.unlink(snapshot_path)
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            raise ToolError(f"worker reset failed to delete its snapshot: {error}") from error
-        with contextlib.suppress(OSError):
-            os.unlink(meta_path)
-        shutil.rmtree(assets_path, ignore_errors=True)
+            # The delete path derives entirely from the parent's own uid; the model's arguments
+            # carry no path, so the worst case is deleting this session's own worker, nothing else.
+            try:
+                os.unlink(snapshot_path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                raise ToolError(f"worker reset failed to delete its snapshot: {error}") from error
+            with contextlib.suppress(OSError):
+                os.unlink(meta_path)
+            shutil.rmtree(assets_path, ignore_errors=True)
+            return True
 
-        # The worker Session owns its Agent (Session._agent); drop both only after durable context is
-        # gone. Otherwise a failed unlink would report success and the next send would reload it.
-        parent.worker = None
-        return f'<Delegate action="reset" uid="{uid}"/>'
+        cleared = await run_blocking(reset_transaction, commit=lambda cleared: setattr(parent, "worker", None) if cleared else None)
+        return f'<Delegate action="reset" uid="{uid}"/>' if cleared else '<Delegate action="reset" alive="false"/>'
 
     def _status(self) -> str:
         worker = self.session.worker
