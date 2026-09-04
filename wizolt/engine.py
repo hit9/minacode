@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
-import threading
 from collections.abc import Callable
 
 from wizolt.base import (
@@ -58,8 +58,8 @@ class Agent:
     on an error flush. Nothing else may append to that history mid-turn.
 
     The loop alternates model requests and tool batches until the model answers without calling a
-    tool, `max_steps` runs out, or the user cancels. Cancellation arrives from another thread and is
-    observed only at those boundaries.
+    tool, `max_steps` runs out, or the user cancels. A turn is one task, so cancelling it reaches
+    every layer it is awaiting; the turn settles what it has and re-raises.
 
     Queued input is claimed per request and acknowledged only once that request succeeds, so a retry
     never swallows a follow-up.
@@ -75,7 +75,10 @@ class Agent:
         # How a turn's final answer is published, when it should look different from interim
         # text (e.g. markdown rendering). None publishes through output_fn like interim text.
         self.final_output_fn = final_output_fn
-        self.cancel_requested = threading.Event()
+        # The turn in flight and the loop that owns it, installed at turn entry and cleared
+        # together when it ends. cancel() reads them; nothing else does.
+        self._active_task: asyncio.Task | None = None
+        self._active_loop: asyncio.AbstractEventLoop | None = None
         # Image-bearing semantic messages introduced into the active turn since its last accepted
         # main-model request (opening attachment, claimed queued attachment, ViewImage
         # observation). Cleared when a request is accepted; used to decide 400 eligibility and to
@@ -101,18 +104,54 @@ class Agent:
         self.on_queue_flush: Callable[[list[str]], None] | None = None
 
     def cancel(self) -> None:
-        self.cancel_requested.set()
-        self.tools.cancel()
-        # TODO(async-phase-4): the turn is still synchronous, so it cannot cancel the model's task
-        # by propagation; ask the in-flight provider attempt to end and let the interrupt arrive.
-        self.model.cancel_active_request()
+        """Request cancellation of the turn in flight. Safe from a TUI callback on any thread.
 
-    def raise_if_cancelled(self) -> None:
-        if self.cancel_requested.is_set():
-            raise KeyboardInterrupt
+        A request, not an act: the turn is one task, and cancelling it is what reaches the model
+        request, the tool batch, and a delegated worker -- each layer then performs and awaits its
+        own cleanup. Nothing here calls a stop method on ModelClient or ToolRunner from the calling
+        thread, and nothing calls Task.cancel() from a foreign one; the cancellation is scheduled on
+        the loop that owns the task.
+
+        The task and its loop are installed at turn entry and cleared together when it ends, so a
+        request that arrives after the turn finished is ignored and can never reach the next one."""
+
+        task, loop = self._active_task, self._active_loop
+        if task is None or loop is None or task.done():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            task.cancel()
+            return
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(task.cancel)
+
+    @staticmethod
+    def raise_if_cancelled() -> None:
+        """Turn a cancellation already requested on this turn into one, at a batch boundary."""
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise asyncio.CancelledError
 
     def run(self, user_input: str | UserInput) -> str:
-        self.cancel_requested.clear()
+        """Synchronous entry point for direct and headless Python callers."""
+
+        fail_if_running_loop("use await Agent.run_async(...)")
+        return asyncio.run(self.run_async(user_input))
+
+    async def run_async(self, user_input: str | UserInput) -> str:
+        self._active_task = asyncio.current_task()
+        self._active_loop = asyncio.get_running_loop()
+        try:
+            return await self._run_turn(user_input)
+        finally:
+            # Cleared together: a late cancel() must find nothing rather than a stale task.
+            self._active_task = None
+            self._active_loop = None
+
+    async def _run_turn(self, user_input: str | UserInput) -> str:
         self.stopped_at_max_steps = False
         self.turn_sources = []
         self.session.clear_quick_hints()  # a new turn invalidates whatever the previous turn offered
@@ -138,15 +177,13 @@ class Agent:
                 while True:
                     try:
                         self.raise_if_cancelled()
-                        request = self.prepare_request(turn_messages)
+                        request = await self.prepare_request_async(turn_messages)
                         failed_request = request
                         try:
-                            assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                            assistant, tool_calls, content = await self.model.request_async(request.messages, request.tools)
                             accepted = request
                         except ModelError as error:
-                            # TODO(async-phase-4): same temporary outer boundary as prepare_request.
-                            fail_if_running_loop("use await Agent._image_fallback_request_async(...)")
-                            fallback = asyncio.run(self._image_fallback_request_async(error, request))
+                            fallback = await self._image_fallback_request_async(error, request)
                             if fallback is None:
                                 raise
                             accepted, replacements = fallback
@@ -154,13 +191,13 @@ class Agent:
                             while True:
                                 try:
                                     self.raise_if_cancelled()
-                                    assistant, tool_calls, content = self.model.request(accepted.messages, accepted.tools)
+                                    assistant, tool_calls, content = await self.model.request_async(accepted.messages, accepted.tools)
                                     break
                                 except ModelRequestRetry:
                                     # The paid observation is already in `accepted`; resend that
                                     # exact request instead of rebuilding it and observing again.
                                     continue
-                                except KeyboardInterrupt:
+                                except (asyncio.CancelledError, KeyboardInterrupt):
                                     # Preserve successful observations that replace messages already
                                     # in the live turn (notably ViewImage), while staged queued input
                                     # remains outside it and is released by the normal interrupt path.
@@ -187,7 +224,7 @@ class Agent:
                         # order the provider saw, because a sent message can never be taken back.
                         self.accept_pending_inputs(turn_messages, transcript_messages, accepted.pending, accepted.turn_messages)
                         failed_request = None
-                        assistant, tool_calls, content = self.correct_textual_tool_calls(
+                        assistant, tool_calls, content = await self.correct_textual_tool_calls(
                             assistant,
                             tool_calls,
                             content,
@@ -223,7 +260,7 @@ class Agent:
                     self.finish_turn(turn_messages, transcript_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
                 if self.terminal_next_hints(tool_calls):
-                    answer = self.finish_with_next_hints(
+                    answer = await self.finish_with_next_hints(
                         turn_messages,
                         assistant,
                         tool_calls,
@@ -247,7 +284,7 @@ class Agent:
                 if content.strip():
                     self.output_fn(content.strip())
                 tool_batches += 1
-                tool_messages = self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
+                tool_messages = await self.tools.run_async(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
                 if self.on_tool_batch is not None:
                     self.on_tool_batch(not content.strip())
                 turn_messages.extend(tool_messages)
@@ -263,7 +300,10 @@ class Agent:
             self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": stopped})
             (self.final_output_fn or self.output_fn)(stopped)
             return stopped
-        except KeyboardInterrupt:
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            # Everything awaited above has already performed its own cleanup and quiesced by the
+            # time this runs, so the turn is the only thing left to settle: release the claim, write
+            # one settled or retracted turn, save it, and let the cancellation reach the runtime.
             self.session.release_user_inputs()
             self.settle_interrupted_turn(turn_messages, transcript_messages)
             self.session.save_snapshot()
@@ -306,7 +346,7 @@ class Agent:
 
         return self.session.images.message(user_input)
 
-    def correct_textual_tool_calls(
+    async def correct_textual_tool_calls(
         self,
         assistant: Json,
         tool_calls: list[ToolCall],
@@ -333,7 +373,7 @@ class Agent:
             correction_messages = [*base_messages, *corrections]
             while True:
                 try:
-                    assistant, tool_calls, content = self.model.request(correction_messages, tools)
+                    assistant, tool_calls, content = await self.model.request_async(correction_messages, tools)
                     self.record_sources(assistant)
                     break
                 except ModelRequestRetry:
@@ -371,7 +411,7 @@ class Agent:
         """True when a batch is nothing but NextHints calls — a terminal batch that ends the turn."""
         return bool(tool_calls) and all(call.name == "NextHints" for call in tool_calls)
 
-    def finish_with_next_hints(
+    async def finish_with_next_hints(
         self,
         turn_messages: list[Json],
         assistant: Json,
@@ -401,7 +441,7 @@ class Agent:
         turn_messages.append(assistant_message)
         transcript_messages.append(self.transcript_message(assistant_message))
         batches = tool_batches + 1
-        result_messages = self.tools.run(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else "")
+        result_messages = await self.tools.run_async(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else "")
         if self.on_tool_batch is not None:
             self.on_tool_batch(not answer)
         turn_messages.extend(result_messages)
@@ -483,15 +523,6 @@ class Agent:
         if projected is None:
             raise ValueError("internal messages cannot be added to the visible transcript")
         return projected
-
-    def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
-        """TODO(async-phase-4): the turn loop is still synchronous and owns no loop of its own.
-
-        One named synchronous caller: `Agent.run`, below. Phase 4 makes the turn a task and this
-        method disappears with it."""
-
-        fail_if_running_loop("use await Agent.prepare_request_async(...)")
-        return asyncio.run(self.prepare_request_async(turn_messages))
 
     async def prepare_request_async(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()

@@ -76,20 +76,21 @@ def ctrl_c_queue_scenario(cwd, results):
     driver_errors = []
 
     class RecordingModel:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             requests.append([message.get("content") for message in messages if message.get("role") == "user"])
             if len(requests) > 1:
                 return {"role": "assistant", "content": "next request complete"}, [], "next request complete"
             started.set()
             first_running.set()
             try:
-                while True:
-                    time.sleep(0.05)
+                # An await, like the real request: Ctrl-C cancels the turn's task, and the
+                # cancellation reaches the provider call by propagation rather than by a signal.
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancel_calls.append(True)
+                raise
             finally:
                 first_running.clear()
-
-        def cancel_active_request(self):
-            cancel_calls.append(True)
 
     command_loop.agent.model = RecordingModel()
     SessionSnapshotStore.clean_expired = lambda _session: 0

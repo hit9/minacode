@@ -199,21 +199,6 @@ class ModelClient:
             loop.call_soon_threadsafe(task.cancel)
         return True
 
-    def cancel_active_request(self) -> None:
-        """TODO(async-phase-4): abort the in-flight provider attempt with no retry disposition.
-
-        The compatibility path for the whole-turn interrupt while Agent is still synchronous: the
-        turn cannot cancel this client's task by propagation yet, so it asks for the attempt to
-        end and takes the resulting interrupt. Phase 4 deletes this method -- cancelling the Agent
-        task then cancels the attempt through ordinary task propagation."""
-
-        with self._attempt_lock:
-            task, loop = self._attempt, self._attempt_loop
-        if task is None or loop is None or task.done():
-            return
-        with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(task.cancel)
-
     async def close_async(self) -> None:
         """Release what this client still owns: the in-flight attempt, if there is one.
 
@@ -437,9 +422,9 @@ class ModelClient:
             # the user asked for this attempt to be resent, so its result is discarded.
             raise ModelRequestRetry()
         if task.cancelled():
-            # TODO(async-phase-4): only reachable through cancel_active_request(), the temporary
-            # whole-turn interrupt path. Phase 4 makes this ordinary parent cancellation.
-            raise KeyboardInterrupt
+            # The child was cancelled without a claim, which can only mean the cancellation came
+            # from outside this attempt; carry it as one rather than inventing a disposition.
+            raise asyncio.CancelledError
         if error := task.exception():
             raise error
         self._raise_if_parent_cancelled()

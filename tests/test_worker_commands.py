@@ -1,6 +1,5 @@
 """worker commands (split from tests/test_worker_handoff.py)."""
 
-import asyncio
 import json
 
 import pytest
@@ -173,7 +172,7 @@ def test_worker_model_and_reason_overrides(tmp_path):
     assert worker_command(loop, "reason a b") == "Usage: /worker reason [EFFORT]"
 
 
-def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkeypatch):
+async def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkeypatch):
     from wizolt.config import (
         ProviderConfig,
     )
@@ -189,7 +188,7 @@ def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkey
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
 
     worker_provider = parent.worker.config.provider
     assert worker_provider is not parent.config.providers["alt"]
@@ -210,11 +209,11 @@ def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkey
     parent.config.worker_model = "resumed-model"
     fresh = SessionSnapshotStore.load(parent.uid, config=parent.config, settings=parent.settings, cwd=str(tmp_path))
     runner = _delegate_runner(fresh)
-    _delegate_call(fresh, runner, action="send", order="o")
+    await _delegate_call(fresh, runner, action="send", order="o")
     assert fresh.worker.config.provider.model == "resumed-model"
 
 
-def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
+async def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
 
@@ -223,7 +222,7 @@ def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
 
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -239,7 +238,7 @@ def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
     assert parent.config.providers["default"].model == "parent-model"
 
 
-def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
+async def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     from wizolt.cli import CommandLoop
     from wizolt.config import (
         ProviderConfig,
@@ -251,7 +250,7 @@ def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
 
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -460,7 +459,7 @@ def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
     assert all(kind != "output_done" for kind, _ in calls)
 
 
-def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
+async def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
     from wizolt.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
 
     parent = _delegate_session(tmp_path)
@@ -471,14 +470,12 @@ def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
     model = FakeModelClient([({"role": "assistant", "content": "answer one"}, [], "answer one")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="order one")
+    await _delegate_call(parent, runner, action="send", order="order one")
     worker = _worker_history_for_compaction(parent)
 
     calls = []
     worker._agent.context.on_compaction = lambda active, _error: calls.append(active)
-    # Synchronous: the delegation above drives the worker through Agent's synchronous entry
-    # point, which refuses to run inside a loop, so this test owns no loop of its own.
-    messages = asyncio.run(worker._agent.context.prepare_messages_async(worker._agent.model, WORKER_PROMPT, turn_messages=None))
+    messages = await worker._agent.context.prepare_messages_async(worker._agent.model, WORKER_PROMPT, turn_messages=None)
     # One compaction, with the lifecycle callback bracketing the phase (True then False).
     assert worker.state.compaction_count == 1
     assert calls == [True, False]
@@ -498,7 +495,7 @@ def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
     assert worker.usage.last_prompt_budget == 0
 
 
-def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, monkeypatch):
+async def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, monkeypatch):
     from wizolt.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
     from wizolt.session import SessionSnapshotStore
 
@@ -512,10 +509,10 @@ def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, mon
     )
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="order one")
+    await _delegate_call(parent, runner, action="send", order="order one")
     worker = _worker_history_for_compaction(parent)
 
-    asyncio.run(worker._agent.context.prepare_messages_async(worker._agent.model, WORKER_PROMPT, turn_messages=None))
+    await worker._agent.context.prepare_messages_async(worker._agent.model, WORKER_PROMPT, turn_messages=None)
     assert worker.state.compaction_count == 1
 
     # Persistence: the snapshot holds the compacted state, not the pre-compaction history.
@@ -530,7 +527,7 @@ def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, mon
     # history out) and does not re-compact.
     calls = []
     worker._agent.context.on_compaction = lambda active, _error: calls.append(active)
-    _delegate_call(parent, runner, action="send", order="order two")
+    await _delegate_call(parent, runner, action="send", order="order two")
     assert calls == []
     assert worker.state.compaction_count == 1
     second = json.dumps(model.requests[1])

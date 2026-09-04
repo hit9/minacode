@@ -9,12 +9,12 @@ from agent_harness import session
 from wizolt.engine import Agent
 
 
-def _requested_system(tmp_path, custom=None):
+async def _requested_system(tmp_path, custom=None):
     s = session(tmp_path)
     if custom is not None:
         s.system_prompt = custom
     agent = Agent(s, output_fn=lambda text: None)
-    request = agent.prepare_request([{"role": "user", "content": "hi"}])
+    request = await agent.prepare_request_async([{"role": "user", "content": "hi"}])
     return s, request.messages[0]["content"]
 
 
@@ -54,7 +54,7 @@ class FakeModelClient:
         self.received_tools = []
         self.last_compaction_model = ""
 
-    def request(self, messages, request_tools=None):
+    async def request_async(self, messages, request_tools=None):
         self.requests.append(messages)
         self.received_tools.append(request_tools)
         return self.script.pop(0)
@@ -73,12 +73,12 @@ def _delegate_session(tmp_path):
     return parent
 
 
-def _delegate_call(parent, runner, **args):
+async def _delegate_call(parent, runner, **args):
     from wizolt.tools.delegate import DelegateTool
 
     tool = DelegateTool(parent, [args])
     tool.runner = runner
-    return tool.call()
+    return await tool.call_async()
 
 
 def _delegate_runner(parent):

@@ -83,7 +83,7 @@ def test_agent_continues_a_paused_turn_instead_of_answering(tmp_path):
         def __init__(self):
             self.requests = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
                 return {"role": "assistant", "content": None, PAUSED_TURN_KEY: True}, [], ""
@@ -108,7 +108,7 @@ def test_a_paused_turn_is_bounded_by_max_steps(tmp_path):
         def __init__(self):
             self.count = 0
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.count += 1
             return {"role": "assistant", "content": None, PAUSED_TURN_KEY: True}, [], ""
 

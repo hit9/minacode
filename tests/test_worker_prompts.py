@@ -25,15 +25,15 @@ def test_tool_names_filter_resolved_schemas_and_keep_registry_order(tmp_path):
     assert unfiltered == plain
     assert "Read" in unfiltered and "Edit" in unfiltered and "Bash" in unfiltered
 
-def test_system_prompt_comes_from_session(tmp_path):
-    _, system = _requested_system(tmp_path, custom="CUSTOM WORKER ROLE")
+async def test_system_prompt_comes_from_session(tmp_path):
+    _, system = await _requested_system(tmp_path, custom="CUSTOM WORKER ROLE")
     assert system == "CUSTOM WORKER ROLE"
 
-    _, parent_system = _requested_system(tmp_path)
+    _, parent_system = await _requested_system(tmp_path)
     assert parent_system == SYSTEM_PROMPT.strip()
 
-def test_system_prompt_default_matches_prompts_module(tmp_path):
-    _, system = _requested_system(tmp_path)
+async def test_system_prompt_default_matches_prompts_module(tmp_path):
+    _, system = await _requested_system(tmp_path)
     assert system == SYSTEM_PROMPT.strip()
     assert ContextManager(session(tmp_path)).model_messages(SYSTEM_PROMPT)[0]["content"] == SYSTEM_PROMPT.strip()
 

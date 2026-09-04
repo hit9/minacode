@@ -152,7 +152,7 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     requested_tools = []
 
     class FakeModel:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             requested_tools.extend(tools or [])
             return {"role": "assistant", "content": "done"}, [], "done"
 
@@ -182,7 +182,7 @@ def test_simple_repl_schema_stays_next_hints_free_across_requests(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             requested.append({tool["function"]["name"] for tool in (tools or [])})
             self.calls += 1
             if self.calls == 1:

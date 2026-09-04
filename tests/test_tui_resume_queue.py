@@ -35,7 +35,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     requests = []
 
     class RecordingModel:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             requests.append([message.get("content") for message in messages if message.get("role") == "user"])
             return {"role": "assistant", "content": "done"}, [], "done"
 
@@ -77,7 +77,7 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
     requests = []
 
     class RecordingModel:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             requests.append([message.get("content") for message in messages if message.get("role") == "user"])
             if len(requests) == 1:
                 first_request.set()

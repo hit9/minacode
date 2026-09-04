@@ -18,18 +18,17 @@ from wizolt.prompts import LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from wizolt.tools import Tool
 
 
-def test_cancel_active_request_ends_the_in_flight_attempt_and_closes_its_client(tmp_path):
-    """The whole-turn interrupt while the turn itself is still synchronous.
+async def test_cancelling_a_turn_ends_the_in_flight_attempt_and_closes_its_client(tmp_path):
+    """Cancelling the turn is the whole mechanism: no signal, no second cancellation channel.
 
-    Cancellation is asked for from another thread and scheduled on the loop that owns the attempt,
-    so the request ends at once instead of waiting out the provider timeout -- and the attempt
-    closes the client it opened on its way out, on the loop that opened it."""
+    The turn's task is cancelled, that reaches the provider attempt by propagation, and the attempt
+    closes the client it opened on its way out -- so nothing is left holding a connection."""
     s = session(tmp_path)
     s.config.provider.url = "https://example.test/v1"
     s.config.provider.key = "test"
     s.config.provider.model = "model"
-    started = threading.Event()
-    closed = threading.Event()
+    started = asyncio.Event()
+    closed = []
 
     class Completions:
         async def create(self, **_params):
@@ -43,27 +42,38 @@ def test_cancel_active_request_ends_the_in_flight_attempt_and_closes_its_client(
             pass
 
         async def close(self):
-            closed.set()
+            closed.append(True)
 
-    model = ModelClient(s)
-    model.client = Client
-    errors = []
+    agent = Agent(s, output_fn=lambda _text: None)
+    agent.model.client = Client
 
-    def request():
-        try:
-            model.request([{"role": "user", "content": "hello"}], [])
-        except BaseException as error:  # noqa: BLE001 - harness collects every thread failure, KeyboardInterrupt included
-            errors.append(error)
+    turn = asyncio.ensure_future(agent.run_async("hello"))
+    await asyncio.wait_for(started.wait(), 2)
+    agent.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
 
-    thread = threading.Thread(target=request)
-    thread.start()
-    assert started.wait(timeout=2)
-    model.cancel_active_request()
-    thread.join(timeout=2)
+    assert closed  # the attempt closed its own client before the turn unwound
+    assert agent._active_task is None  # and the turn released its cancellation handle
 
-    assert not thread.is_alive()
-    assert len(errors) == 1 and isinstance(errors[0], KeyboardInterrupt)
-    assert closed.is_set()
+
+async def test_a_late_cancel_cannot_reach_the_next_turn(tmp_path):
+    """The task and its loop are cleared together when a turn ends, so a Ctrl-C that arrives just
+    after one finished is ignored rather than cancelling whatever runs next."""
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    class Model:
+        async def request_async(self, messages, tools=None):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = Model()
+    assert await agent.run_async("first") == "done"
+
+    agent.cancel()  # late: the turn is over and there is nothing to cancel
+
+    assert await agent.run_async("second") == "done"
+
 
 def test_agent_injects_pending_user_input_once(tmp_path):
     s = session(tmp_path)
@@ -75,7 +85,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 s.enqueue_user_input("second instruction")
@@ -121,7 +131,7 @@ def test_agent_expands_file_mentions_in_queued_input_before_sending(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             del tools
             self.messages.append(messages)
             return {"role": "assistant", "content": "done"}, [], "done"
@@ -148,7 +158,7 @@ def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
         def __init__(self):
             self.requests = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
                 return {}, [call("Bash", ["echo hi"])], ""
@@ -181,7 +191,7 @@ def test_agent_never_rewrites_a_sent_followup_message(tmp_path):
         def __init__(self):
             self.requests = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append([dict(message) for message in messages])
             if len(self.requests) == 1:
                 return {}, [read], "on it"
@@ -211,7 +221,7 @@ def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
             self.requests = []
             self.on_stream = None
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
                 s.enqueue_user_input("a later follow-up")
@@ -254,7 +264,7 @@ def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
             self.requests = []
             self.on_stream = None
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append(([dict(message) for message in messages], tools))
             if len(self.requests) == 1:
                 return {"role": "assistant", "content": pseudo}, [], pseudo
@@ -290,7 +300,7 @@ def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
             self.requests = []
             self.on_stream = None
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append((messages, tools))
             return {"role": "assistant", "content": pseudo}, [], pseudo
 
@@ -324,7 +334,7 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     class FakeModel:
         received_tools = None
 
-        def request(self, messages, request_tools=None):
+        async def request_async(self, messages, request_tools=None):
             self.received_tools = request_tools
             return {"role": "assistant", "content": "done"}, [], "done"
 
@@ -345,7 +355,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], "I'll inspect that first."

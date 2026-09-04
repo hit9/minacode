@@ -402,7 +402,7 @@ def test_agent_persists_view_image_observation_without_replaying_it_as_user_inpu
         def __init__(self):
             self.requests = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
                 return {}, [ToolCall("image", "ViewImage", ["screen.png"])], ""

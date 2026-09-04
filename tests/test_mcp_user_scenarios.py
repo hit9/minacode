@@ -35,7 +35,7 @@ class TestMCPUserScenarios:
                 self.requests = []
                 self.tools = []
 
-            def request(self, messages, tools=None):
+            async def request_async(self, messages, tools=None):
                 self.requests.append(messages)
                 self.tools.append(tools or [])
                 return {"role": "assistant", "content": "done"}, [], "done"

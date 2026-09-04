@@ -7,7 +7,7 @@ from wizolt.prompts import WORKER_PROMPT
 from wizolt.tools import tooloutput
 
 
-def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
+async def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, oneline
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -19,7 +19,7 @@ def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    _delegate_call(parent, runner, action="send", order=order)
+    await _delegate_call(parent, runner, action="send", order=order)
 
     blocks = [block for block in outputs if isinstance(block, LogBlock)]
     marker = next(block for block in blocks if any(item.role is LogRole.WORKER for item, _ in block.walk()))
@@ -30,7 +30,7 @@ def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
     assert oneline(order, 200) in rendered
 
 
-def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
+async def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
     from wizolt.base import oneline
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -43,7 +43,7 @@ def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
-    _delegate_call(parent, runner, action="send", order=order)
+    await _delegate_call(parent, runner, action="send", order=order)
 
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
@@ -51,7 +51,7 @@ def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
     assert not any("[worker]" in rendered for rendered in labels)  # the rule label replaces the [worker] ▶ line
 
 
-def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch):
+async def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch):
     from wizolt.base import oneline
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -64,7 +64,7 @@ def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
-    _delegate_call(parent, runner, action="send", order=order, title="fix /status blank line")
+    await _delegate_call(parent, runner, action="send", order=order, title="fix /status blank line")
 
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
@@ -72,7 +72,7 @@ def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch)
     assert oneline(order, 60) not in labels[0]
 
 
-def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
+async def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, LogRole, oneline
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -84,7 +84,7 @@ def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    _delegate_call(parent, runner, action="send", order=order, title="fix /status blank line")
+    await _delegate_call(parent, runner, action="send", order=order, title="fix /status blank line")
 
     blocks = [block for block in outputs if isinstance(block, LogBlock)]
     marker = next(block for block in blocks if any(item.role is LogRole.WORKER for item, _ in block.walk()))
@@ -95,7 +95,7 @@ def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
     assert oneline(order, 200) not in rendered
 
 
-def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, monkeypatch):
+async def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, monkeypatch):
     from wizolt.base import oneline
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -108,7 +108,7 @@ def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, mon
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
-    _delegate_call(parent, runner, action="send", order=order)
+    await _delegate_call(parent, runner, action="send", order=order)
 
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
@@ -124,28 +124,28 @@ def test_delegate_rejects_empty_title(tmp_path):
         DelegateTool(parent, [{"action": "send", "order": "work", "title": "   "}]).call()
 
 
-def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, monkeypatch):
+async def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="fix the parser", language="Chinese")
+    await _delegate_call(parent, runner, action="send", order="fix the parser", language="Chinese")
 
     worker_order = model.requests[0][-1]["content"]
     assert worker_order.startswith("fix the parser")
     assert "Reply language: Chinese" in worker_order and "live stream" in worker_order
 
 
-def test_delegate_send_rejects_a_blank_language(tmp_path):
+async def test_delegate_send_rejects_a_blank_language(tmp_path):
     from wizolt.base import ToolError
 
     parent = _delegate_session(tmp_path)
     runner = _delegate_runner(parent)
     with pytest.raises(ToolError, match="language"):
-        _delegate_call(parent, runner, action="send", order="o", language="   ")
+        await _delegate_call(parent, runner, action="send", order="o", language="   ")
 
 
-def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch):
+async def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch):
     from wizolt.context import ContextManager
 
     parent = _delegate_session(tmp_path)
@@ -153,7 +153,7 @@ def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="fix the parser")
+    await _delegate_call(parent, runner, action="send", order="fix the parser")
 
     worker = parent.worker
     assert worker.settings.language == "Chinese"
@@ -164,46 +164,46 @@ def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch
     assert ContextManager(worker).model_messages(worker.system_prompt)[0]["content"] == system
 
 
-def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, monkeypatch):
+async def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, monkeypatch):
     from wizolt.engine import Agent
 
     parent = _delegate_session(tmp_path)
     runner = _delegate_runner(parent)
 
-    def run_stopped(self, order):
+    async def run_stopped(self, order):
         self.stopped_at_max_steps = True
         return "done"
 
-    def run_normal(self, order):
+    async def run_normal(self, order):
         self.stopped_at_max_steps = False
         return "Stopped after max_agent_steps=3 (cosmetic wording only)"
 
-    monkeypatch.setattr(Agent, "run", run_stopped)
-    result = _delegate_call(parent, runner, action="send", order="o")
+    monkeypatch.setattr(Agent, "run_async", run_stopped)
+    result = await _delegate_call(parent, runner, action="send", order="o")
     assert 'stopped_at_max_steps="true"' in result
 
-    monkeypatch.setattr(Agent, "run", run_normal)
-    result = _delegate_call(parent, runner, action="send", order="o")
+    monkeypatch.setattr(Agent, "run_async", run_normal)
+    result = await _delegate_call(parent, runner, action="send", order="o")
     assert 'stopped_at_max_steps="false"' in result  # the words are irrelevant; the fact is not set
 
 
-def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_path, monkeypatch):
+async def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_path, monkeypatch):
     from wizolt.engine import Agent
 
     parent = _delegate_session(tmp_path)
     runner = _delegate_runner(parent)
 
-    def run_quiet(self, order):
+    async def run_quiet(self, order):
         self.stopped_at_max_steps = False
         return "done"
 
-    monkeypatch.setattr(Agent, "run", run_quiet)
-    result = _delegate_call(parent, runner, action="send", order="o")
+    monkeypatch.setattr(Agent, "run_async", run_quiet)
+    result = await _delegate_call(parent, runner, action="send", order="o")
     assert 'tokens="' in result
     assert 'rounds="' in result
     assert 'context_percent="0"' in result  # no usage budget with the fake model: the state fallback
     parent.worker.state.context_percent = 42  # the envelope reports the live fill, not a delta
-    result = _delegate_call(parent, runner, action="send", order="o")
+    result = await _delegate_call(parent, runner, action="send", order="o")
     assert 'context_percent="42"' in result
     summary = tooloutput.delegate_result_summary(result)
     assert " in / " in summary and " out" in summary
@@ -235,7 +235,7 @@ def test_delegate_summary_shows_rounds_and_context_fill(tmp_path):
     assert "ctx 73%" in summary
 
 
-def test_send_rejects_worker_calls_to_excluded_tools(tmp_path, monkeypatch):
+async def test_send_rejects_worker_calls_to_excluded_tools(tmp_path, monkeypatch):
     """End to end at the Delegate boundary: the worker's real tool block has ViewImage and
     ToolScript but not Ask/NextHints/Delegate, a hallucinated call to an excluded tool is
     rejected with a tool message instead of blocking on user input, and ViewImage executes
@@ -264,7 +264,7 @@ def test_send_rejects_worker_calls_to_excluded_tools(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = ToolRunner(parent, ContextManager(parent), input_fn=fail_on_user, output_fn=lambda text: None)
-    result = _delegate_call(parent, runner, action="send", order="do the thing")
+    result = await _delegate_call(parent, runner, action="send", order="do the thing")
 
     names = {(schema.get("function") or schema).get("name") for schema in model.received_tools[0] or [] if isinstance(schema, dict)}
     assert {"ViewImage", "ToolScript"} <= names

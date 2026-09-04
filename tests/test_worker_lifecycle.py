@@ -9,7 +9,7 @@ from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runne
 from wizolt.base import SESSION_EVENT_KEY, ToolError
 
 
-def test_delegate_context_continuity(tmp_path, monkeypatch):
+async def test_delegate_context_continuity(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient(
         [
@@ -19,8 +19,8 @@ def test_delegate_context_continuity(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="order one")
-    _delegate_call(parent, runner, action="send", order="order two")
+    await _delegate_call(parent, runner, action="send", order="order one")
+    await _delegate_call(parent, runner, action="send", order="order two")
 
     assert len(model.requests) == 2
     assert parent.worker is not None
@@ -29,7 +29,7 @@ def test_delegate_context_continuity(tmp_path, monkeypatch):
     assert "order two" in second
     assert model.requests[1][0] == model.requests[0][0]  # same system prompt across delegations
 
-def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
+async def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "answer"}, [], "answer")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
@@ -41,7 +41,7 @@ def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
     runner.builtin_call = builtin_call
     runner.compaction = compaction
 
-    _delegate_call(parent, runner, action="send", order="work")
+    await _delegate_call(parent, runner, action="send", order="work")
 
     agent = parent.worker._agent
     assert agent is not None
@@ -54,13 +54,13 @@ def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
     model2 = FakeModelClient([({"role": "assistant", "content": "answer"}, [], "answer")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model2)
     runner2 = _delegate_runner(parent2)
-    _delegate_call(parent2, runner2, action="send", order="work")
+    await _delegate_call(parent2, runner2, action="send", order="work")
     agent2 = parent2.worker._agent
     assert getattr(agent2.model, "on_retry_wait", None) is None
     assert getattr(agent2.model, "on_builtin_call", None) is None
     assert agent2.context.on_compaction is None
 
-def test_delegate_reset_clears_context_and_snapshot(tmp_path, monkeypatch):
+async def test_delegate_reset_clears_context_and_snapshot(tmp_path, monkeypatch):
     from wizolt.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
@@ -73,23 +73,23 @@ def test_delegate_reset_clears_context_and_snapshot(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="order one")
+    await _delegate_call(parent, runner, action="send", order="order one")
     worker_uid = parent.worker.uid
-    _delegate_call(parent, runner, action="send", order="order two")
+    await _delegate_call(parent, runner, action="send", order="order two")
     assert "order one" in json.dumps(model.requests[1])
 
-    result = _delegate_call(parent, runner, action="reset")
+    result = await _delegate_call(parent, runner, action="reset")
     assert 'action="reset"' in result
     assert parent.worker is None
     directory = SessionSnapshotStore.project_dir(parent.config.data_dir, str(tmp_path))
     assert not os.path.exists(os.path.join(directory, worker_uid + ".jsonl"))
 
-    _delegate_call(parent, runner, action="send", order="fresh start")
+    await _delegate_call(parent, runner, action="send", order="fresh start")
     fresh = json.dumps(model.requests[-1])
     assert "order one" not in fresh and "order two" not in fresh
     assert "fresh start" in fresh
 
-def test_delegate_reset_stops_worker_jobs_before_dropping_runtime(tmp_path):
+async def test_delegate_reset_stops_worker_jobs_before_dropping_runtime(tmp_path):
     from wizolt.session import Session
 
     parent = _delegate_session(tmp_path)
@@ -108,13 +108,13 @@ def test_delegate_reset_stops_worker_jobs_before_dropping_runtime(tmp_path):
     job = Job()
     worker.jobs[job.id] = job
 
-    result = _delegate_call(parent, _delegate_runner(parent), action="reset")
+    result = await _delegate_call(parent, _delegate_runner(parent), action="reset")
 
     assert 'action="reset"' in result
     assert job.killed is True
     assert parent.worker is None
 
-def test_delegate_reset_keeps_worker_when_snapshot_delete_fails(tmp_path, monkeypatch):
+async def test_delegate_reset_keeps_worker_when_snapshot_delete_fails(tmp_path, monkeypatch):
     from wizolt.base import ToolError
     from wizolt.session import Session, SessionSnapshotStore
 
@@ -134,11 +134,11 @@ def test_delegate_reset_keeps_worker_when_snapshot_delete_fails(tmp_path, monkey
     monkeypatch.setattr("wizolt.tools.delegate.os.unlink", fail_snapshot)
 
     with pytest.raises(ToolError, match="failed to delete its snapshot"):
-        _delegate_call(parent, _delegate_runner(parent), action="reset")
+        await _delegate_call(parent, _delegate_runner(parent), action="reset")
     assert parent.worker is worker
     assert os.path.isfile(snapshot)
 
-def test_delegate_reset_deletes_disk_only_worker_after_parent_resume(tmp_path):
+async def test_delegate_reset_deletes_disk_only_worker_after_parent_resume(tmp_path):
     from wizolt.session import Session, SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
@@ -148,7 +148,7 @@ def test_delegate_reset_deletes_disk_only_worker_after_parent_resume(tmp_path):
     snapshot = SessionSnapshotStore.session_path(parent.config.data_dir, str(tmp_path), worker.uid)
     assert parent.worker is None and os.path.isfile(snapshot)
 
-    result = _delegate_call(parent, _delegate_runner(parent), action="reset")
+    result = await _delegate_call(parent, _delegate_runner(parent), action="reset")
 
     assert 'action="reset"' in result
     assert not os.path.exists(snapshot)
@@ -162,7 +162,7 @@ def test_delegate_rejects_invalid_max_steps(tmp_path, max_steps):
     with pytest.raises(ToolError, match="integer >= 1"):
         DelegateTool(parent, [{"action": "send", "order": "work", "max_steps": max_steps}]).call()
 
-def test_delegate_merges_worker_diffs_into_parent(tmp_path, monkeypatch):
+async def test_delegate_merges_worker_diffs_into_parent(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     parent.settings.yolo = True
     model = FakeModelClient(
@@ -182,28 +182,32 @@ def test_delegate_merges_worker_diffs_into_parent(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    result = _delegate_call(parent, runner, action="send", order="create f.txt")
+    result = await _delegate_call(parent, runner, action="send", order="create f.txt")
 
     assert "f.txt" in result
     assert (tmp_path / "f.txt").read_text() == "x"
     assert any(diff.path == "f.txt" for diff in parent.turn_diffs)
 
-def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
-    import threading
+async def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
+    """Cancelling the parent's Delegate call cancels the worker's turn by propagation.
+
+    There is no second cancellation channel: the worker's turn is a child of the parent's, so the
+    parent's cancellation reaches the worker's own model request. The worker still settles its
+    history, and its diffs still merge -- otherwise the user never sees what it did."""
+    import asyncio
 
     from wizolt.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
     parent.settings.yolo = True
-    started = threading.Event()
-    cancelled = threading.Event()
+    started = asyncio.Event()
 
     class SlowModel(FakeModelClient):
         def __init__(self):
             super().__init__([])
             self.requests = []
 
-        def request(self, messages, request_tools=None):
+        async def request_async(self, messages, request_tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
                 return (
@@ -217,33 +221,20 @@ def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
                     "editing",
                 )
             started.set()
-            cancelled.wait(5)
-            raise KeyboardInterrupt
-
-        def cancel_active_request(self):
-            pass
+            await asyncio.sleep(30)
+            raise AssertionError("the worker's second request must not complete in this test")
 
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: SlowModel())
     runner = _delegate_runner(parent)
     tool = DelegateTool(parent, [{"action": "send", "order": "create f.txt"}])
     tool.runner = runner
-    raised = []
 
-    def run():
-        try:
-            tool.call()
-        except BaseException as error:  # noqa: BLE001 - the delegate must surface the interrupt.
-            raised.append(error)
+    send = asyncio.ensure_future(tool.call_async())
+    await asyncio.wait_for(started.wait(), 5)
+    send.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await send
 
-    thread = threading.Thread(target=run)
-    thread.start()
-    assert started.wait(5)
-    runner.cancel()  # fans out to the worker agent
-    cancelled.set()
-    thread.join(5)
-
-    assert not thread.is_alive()
-    assert len(raised) == 1 and isinstance(raised[0], KeyboardInterrupt)
     assert (tmp_path / "f.txt").read_text() == "x"
     assert any(diff.path == "f.txt" for diff in parent.turn_diffs)
     # Every tool call the model issued has a matched result in the settled turn.
@@ -251,7 +242,7 @@ def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
     assert "f.txt" in worker_messages
     assert '"role": "tool"' in worker_messages
 
-def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, monkeypatch):
+async def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, monkeypatch):
     from wizolt.base import ToolError
     from wizolt.prompts import FAILED_TOOL_CALL_RESULT
     from wizolt.runner import ToolRunner
@@ -277,19 +268,19 @@ def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, 
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
-    real_run = ToolRunner.run
+    real_run = ToolRunner.run_async
     batches = {"n": 0}
 
-    def run_then_fail(self, tool_calls, **kwargs):
+    async def run_then_fail(self, tool_calls, **kwargs):
         batches["n"] += 1
         if batches["n"] == 2:
             raise RuntimeError("provider timeout")
-        return real_run(self, tool_calls, **kwargs)
+        return await real_run(self, tool_calls, **kwargs)
 
-    monkeypatch.setattr(ToolRunner, "run", run_then_fail)
+    monkeypatch.setattr(ToolRunner, "run_async", run_then_fail)
 
     with pytest.raises(ToolError) as excinfo:
-        _delegate_call(parent, runner, action="send", order="create f.txt then die")
+        await _delegate_call(parent, runner, action="send", order="create f.txt then die")
     message = str(excinfo.value)
     assert "worker failed after 2 steps" in message
     assert 'alive="true"' in message
@@ -319,11 +310,11 @@ def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, 
     assert dangling == []
 
     # The next delegation on the same worker goes out normally on the settled history.
-    result = _delegate_call(parent, runner, action="send", order="continue")
+    result = await _delegate_call(parent, runner, action="send", order="continue")
     assert 'rounds="2"' in result
     assert "done" in result
 
-def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypatch):
+async def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypatch):
     from wizolt.base import ToolCall, ToolError
     from wizolt.prompts import FAILED_TOOL_CALL_RESULT
     from wizolt.runner import ToolRunner
@@ -352,23 +343,23 @@ def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypa
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
-    real_run = ToolRunner.run
+    real_run = ToolRunner.run_async
     batches = {"n": 0}
 
-    def run_then_die(self, tool_calls, **kwargs):
+    async def run_then_die(self, tool_calls, **kwargs):
         batches["n"] += 1
         if batches["n"] == 2:
             # The first call of the dying batch really runs against the worker's session (file on
             # disk, diff recorded); the second never starts. The batch then dies before any result
             # is committed to the turn.
-            real_run(self, tool_calls[:1], **kwargs)
+            await real_run(self, tool_calls[:1], **kwargs)
             raise RuntimeError("provider timeout")
-        return real_run(self, tool_calls, **kwargs)
+        return await real_run(self, tool_calls, **kwargs)
 
-    monkeypatch.setattr(ToolRunner, "run", run_then_die)
+    monkeypatch.setattr(ToolRunner, "run_async", run_then_die)
 
     with pytest.raises(ToolError) as excinfo:
-        _delegate_call(parent, runner, action="send", order="create f.txt then die mid-batch")
+        await _delegate_call(parent, runner, action="send", order="create f.txt then die mid-batch")
     message = str(excinfo.value)
     assert "worker failed after 2 steps" in message
     # The edit from the dying batch is not lost: its diff was merged and the envelope names it.
@@ -394,10 +385,10 @@ def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypa
     assert dangling == []
 
     # The next delegation on the same worker goes out normally on the settled history.
-    result = _delegate_call(parent, runner, action="send", order="continue")
+    result = await _delegate_call(parent, runner, action="send", order="continue")
     assert 'rounds="2"' in result and "done" in result
 
-def test_delegate_status_reports_last_failure_until_a_success(tmp_path, monkeypatch):
+async def test_delegate_status_reports_last_failure_until_a_success(tmp_path, monkeypatch):
     from wizolt.base import ToolError
     from wizolt.runner import ToolRunner
 
@@ -415,26 +406,30 @@ def test_delegate_status_reports_last_failure_until_a_success(tmp_path, monkeypa
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
 
-    real_run = ToolRunner.run
-    monkeypatch.setattr(ToolRunner, "run", lambda self, tool_calls, **kwargs: (_ for _ in ()).throw(RuntimeError("provider timeout")))
-    with pytest.raises(ToolError):
-        _delegate_call(parent, runner, action="send", order="first")
+    real_run = ToolRunner.run_async
 
-    status = _delegate_call(parent, runner, action="status")
+    async def fail(self, tool_calls, **kwargs):
+        raise RuntimeError("provider timeout")
+
+    monkeypatch.setattr(ToolRunner, "run_async", fail)
+    with pytest.raises(ToolError):
+        await _delegate_call(parent, runner, action="send", order="first")
+
+    status = await _delegate_call(parent, runner, action="status")
     assert 'last_error="provider timeout"' in status
     assert 'last_error_round="1"' in status
     assert 'rounds="1"' in status
     assert 'alive="true"' in status
 
     # A successful send clears the remembered failure.
-    monkeypatch.setattr(ToolRunner, "run", real_run)
-    _delegate_call(parent, runner, action="send", order="second")
+    monkeypatch.setattr(ToolRunner, "run_async", real_run)
+    await _delegate_call(parent, runner, action="send", order="second")
     assert parent.worker.state.last_error == "" and parent.worker.state.last_error_round == 0
-    status = _delegate_call(parent, runner, action="status")
+    status = await _delegate_call(parent, runner, action="status")
     assert "last_error" not in status
     assert 'rounds="2"' in status
 
-def test_delegate_failure_bounds_and_sanitizes_the_error_text(tmp_path, monkeypatch):
+async def test_delegate_failure_bounds_and_sanitizes_the_error_text(tmp_path, monkeypatch):
     from wizolt.base import ToolError
     from wizolt.runner import ToolRunner
 
@@ -451,12 +446,15 @@ def test_delegate_failure_bounds_and_sanitizes_the_error_text(tmp_path, monkeypa
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     body = 'HTTP 400: {"error": "bad "quoted" thing"}\nsecond line\n' + "x" * 3000
-    monkeypatch.setattr(ToolRunner, "run", lambda self, tool_calls, **kwargs: (_ for _ in ()).throw(RuntimeError(body)))
+    async def fail(self, tool_calls, **kwargs):
+        raise RuntimeError(body)
+
+    monkeypatch.setattr(ToolRunner, "run_async", fail)
     with pytest.raises(ToolError):
-        _delegate_call(parent, runner, action="send", order="first")
+        await _delegate_call(parent, runner, action="send", order="first")
 
     # The status tag stays parseable: one line, no bare double quote inside the attribute value.
-    status = _delegate_call(parent, runner, action="status")
+    status = await _delegate_call(parent, runner, action="status")
     head = status.splitlines()[0]
     assert head.endswith(">") and head.count('"') % 2 == 0
     value = head.split('last_error="', 1)[1].split('"', 1)[0]
@@ -473,7 +471,7 @@ def test_delegate_failure_bounds_and_sanitizes_the_error_text(tmp_path, monkeypa
     assert len(marker) <= 330 and "\n" not in marker
     assert "HTTP 400" in marker and marker.endswith("]")
 
-def test_worker_cache_prefix_stable_across_delegations(tmp_path, monkeypatch):
+async def test_worker_cache_prefix_stable_across_delegations(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient(
         [
@@ -483,11 +481,11 @@ def test_worker_cache_prefix_stable_across_delegations(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="order one")
-    _delegate_call(parent, runner, action="send", order="order two")
+    await _delegate_call(parent, runner, action="send", order="order one")
+    await _delegate_call(parent, runner, action="send", order="order two")
     assert model.requests[0][:3] == model.requests[1][:3]
 
-def test_delegate_settings_isolated_and_fresh(tmp_path, monkeypatch):
+async def test_delegate_settings_isolated_and_fresh(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     parent.settings.max_steps = 7
     model = FakeModelClient(
@@ -498,16 +496,16 @@ def test_delegate_settings_isolated_and_fresh(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="o", max_steps=3)
+    await _delegate_call(parent, runner, action="send", order="o", max_steps=3)
     assert parent.settings.max_steps == 7  # the parent's budget is untouched
     assert parent.worker.settings.max_steps == 3
     assert parent.worker.settings is not parent.settings
 
     parent.settings.yolo = True
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
     assert parent.worker.settings.yolo is True  # fresh copy sees the runtime change
 
-def test_worker_reset_appends_event_message(tmp_path):
+async def test_worker_reset_appends_event_message(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
     from wizolt.session import Session
@@ -527,10 +525,10 @@ def test_worker_reset_appends_event_message(tmp_path):
     assert parent.worker is None
     assert parent.messages[-1].get(SESSION_EVENT_KEY) == "worker_reset"
     assert parent.messages[-1].get("role") == "user"
-    request = agent.prepare_request([{"role": "user", "content": "continue"}])
+    request = await agent.prepare_request_async([{"role": "user", "content": "continue"}])
     assert any(message.get("role") == "user" and "starts from scratch" in str(message.get("content")) for message in request.messages)
 
-def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):
+async def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):
     from wizolt.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
@@ -539,7 +537,7 @@ def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):
     model = FakeModelClient([({"role": "assistant", "content": "one"}, [], "one")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
 
     first_worker = parent.worker
     first_agent = first_worker._agent
@@ -551,14 +549,14 @@ def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):
     fresh = SessionSnapshotStore.load(parent.uid, config=parent.config, settings=parent.settings, cwd=str(tmp_path))
     assert fresh.worker is None
     runner = _delegate_runner(fresh)
-    _delegate_call(fresh, runner, action="send", order="o")
+    await _delegate_call(fresh, runner, action="send", order="o")
 
     second_worker = fresh.worker
     assert second_worker is not first_worker
     assert second_worker._agent is not first_agent  # the old Agent died with the old worker object
     assert second_worker._agent.session is second_worker  # and the new one is bound to the new object
 
-def test_snapshot_restored_worker_shares_parent_skills_and_mcp(tmp_path, monkeypatch):
+async def test_snapshot_restored_worker_shares_parent_skills_and_mcp(tmp_path, monkeypatch):
     from wizolt.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
@@ -567,7 +565,7 @@ def test_snapshot_restored_worker_shares_parent_skills_and_mcp(tmp_path, monkeyp
     model = FakeModelClient([({"role": "assistant", "content": "one"}, [], "one")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
     parent.worker.messages.append({"role": "user", "content": "worker request"})
     parent.worker.save_snapshot()
 
@@ -575,12 +573,12 @@ def test_snapshot_restored_worker_shares_parent_skills_and_mcp(tmp_path, monkeyp
     model.script.append(({"role": "assistant", "content": "two"}, [], "two"))
     fresh = SessionSnapshotStore.load(parent.uid, config=parent.config, settings=parent.settings, cwd=str(tmp_path))
     runner = _delegate_runner(fresh)
-    _delegate_call(fresh, runner, action="send", order="o")
+    await _delegate_call(fresh, runner, action="send", order="o")
     worker = fresh.worker
     assert worker.skills is fresh.skills
     assert worker.mcp is fresh.mcp
 
-def test_worker_and_parent_source_views_do_not_cross(tmp_path, monkeypatch):
+async def test_worker_and_parent_source_views_do_not_cross(tmp_path, monkeypatch):
     """A worker has its own Session, so it has its own view namespace. Both sides start at view.1
     for different files, and a view id a worker mentions in its prose means nothing to the parent:
     the parent's Edit resolves that id against its own registry or refuses it as missing."""
@@ -592,7 +590,7 @@ def test_worker_and_parent_source_views_do_not_cross(tmp_path, monkeypatch):
     model = FakeModelClient([({"role": "assistant", "content": "used view.1"}, [], "used view.1")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
     worker = parent.worker
 
     parent_key = parent.register_source_drafts(list(ReadTool(parent, [{"path": "parent.txt"}]).call().drafts))[0]

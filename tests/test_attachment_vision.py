@@ -39,7 +39,7 @@ class SequenceModel:
         self.outcomes = iter(outcomes)
         self.requests = []
 
-    def request(self, messages, tools=None):
+    async def request_async(self, messages, tools=None):
         self.requests.append(messages)
         outcome = next(self.outcomes)
         if isinstance(outcome, Exception):
@@ -146,7 +146,7 @@ def test_failed_queued_image_is_committed_text_only_instead_of_requeued(tmp_path
         def __init__(self):
             self.requests = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
                 s.enqueue_user_input(s.images.recognize("look queued.png"))

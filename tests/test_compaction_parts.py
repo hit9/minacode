@@ -124,7 +124,7 @@ def test_turn_compaction_evicts_the_prefix_before_a_late_followup(tmp_path):
     assert [message["content"] for message in keep[1:]] == [f"new step {index}" for index in range(2, 10)]
 
 
-def test_prepare_request_persists_current_turn_compaction_without_pending_input(tmp_path):
+async def test_prepare_request_persists_current_turn_compaction_without_pending_input(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
     agent = Agent(s, output_fn=lambda _text: None)
@@ -136,7 +136,7 @@ def test_prepare_request_persists_current_turn_compaction_without_pending_input(
     ]
     agent.model.compact = lambda _text, *_args, **_kwargs: {"summary": "compact summary"}
 
-    agent.prepare_request(turn)
+    await agent.prepare_request_async(turn)
 
     assert len(turn) < 21  # incidental: a 1-token budget collapses the kept tail by size
     assert turn[0]["content"] == "continue"
@@ -144,7 +144,7 @@ def test_prepare_request_persists_current_turn_compaction_without_pending_input(
     assert "original request" in s.history[-1].text
 
 
-def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path):
+async def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
     turn = [
@@ -157,7 +157,7 @@ def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path):
     agent.context.request_token_budget = lambda: 10
     agent.context.request_tokens = lambda messages, tools=None: 100 if any("old step" in str(message.get("content") or "") for message in messages) else 1
 
-    request = agent.prepare_request(turn)
+    request = await agent.prepare_request_async(turn)
 
     assert any("old step" in str(message.get("content") or "") for message in turn)
     assert not any("old step" in str(message.get("content") or "") for message in request.turn_messages)
@@ -166,7 +166,7 @@ def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path):
     assert transcript[-1]["content"].endswith("late follow-up")
     assert s.state.compaction_count == 1
 
-    agent.prepare_request(turn)
+    await agent.prepare_request_async(turn)
 
     assert s.state.compaction_count == 1
 

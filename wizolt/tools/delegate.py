@@ -243,17 +243,39 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         ]
 
     def call(self) -> str:
+        """A send drives a whole worker turn, so Delegate's work is a coroutine; see call_async.
+
+        Reached only if something outside the runner invokes it as an ordinary tool. The two local
+        actions still answer; a send says what it needs rather than starting a worker nobody owns."""
+
         payload = self.single_dict_arg("Delegate requires named fields")
         action = str(payload.get("action") or "").strip()
         if action == "send":
-            return self._send(payload)
+            self._send_args(payload)  # the arguments are still the tool's own to check
+            raise ToolError("Delegate requires a tool runner")
         if action == "reset":
             return self._reset()
         if action == "status":
             return self._status()
         raise ToolError(f"unknown action: {action!r}")
 
-    def _send(self, payload: Json) -> str:
+    async def call_async(self) -> str:
+        payload = self.single_dict_arg("Delegate requires named fields")
+        action = str(payload.get("action") or "").strip()
+        if action == "send":
+            return await self._send(payload)
+        if action == "reset":
+            return self._reset()
+        if action == "status":
+            return self._status()
+        raise ToolError(f"unknown action: {action!r}")
+
+    def _send_args(self, payload: Json) -> tuple[str, int, str]:
+        """Validate one send and return (order, max_steps, title). Pure: no worker is spawned.
+
+        Separate from the send itself so the arguments are checked the same way whichever entry
+        point was used -- validation is the tool's own business and needs no runner."""
+
         raw_order = payload.get("order")
         if not isinstance(raw_order, str) or not (order := raw_order.strip()):
             raise ToolError("Delegate send requires a non-empty string order")
@@ -277,6 +299,10 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         title = raw_title.strip() if isinstance(raw_title, str) else ""
         if raw_title is not None and not title:
             raise ToolError("Delegate title must be a non-empty string")
+        return order, max_steps, title
+
+    async def _send(self, payload: Json) -> str:
+        order, max_steps, title = self._send_args(payload)
         runner = getattr(self, "runner", None)
         if runner is None:
             raise ToolError("Delegate requires a tool runner")
@@ -352,9 +378,12 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         failure: Exception | None = None
         try:
             with runner._active_worker.track(agent):
+                # Awaited directly: the worker's turn is a task of this one, so cancelling the
+                # parent cancels the worker's own model request and tool batch by propagation --
+                # no second cancellation channel, and no bridge back to the parent's loop.
                 # The engine publishes the final answer through the agent's output_fn, so a
                 # worker's report lands in the parent scrollback like its interim messages.
-                answer = agent.run(order)
+                answer = await agent.run_async(order)
         except Exception as error:  # noqa: BLE001 - the worker's failure becomes a ToolError envelope below, after the finally block merged its diffs
             failure = error
         finally:

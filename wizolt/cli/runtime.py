@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import queue
 import signal
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from wizolt.base import MalformedToolCallError, TurnBox, WizoltError
@@ -24,6 +25,13 @@ RESUME_STATUS_LABEL = "resuming session…"
 
 if TYPE_CHECKING:
     from wizolt.cli import CommandLoop
+
+
+class _TurnCancelled(Exception):
+    """A turn that settled after cancellation, carried out past its own `asyncio.run`.
+
+    CancelledError cannot cross that boundary as itself -- `asyncio.run` treats it as the runner
+    being torn down -- and the runtime needs to tell a cancelled turn apart from a failed one."""
 
 
 class TuiRuntime:
@@ -43,17 +51,18 @@ class TuiRuntime:
         assert self.loop.tui is not None
         return self.loop.tui
 
-    def _interrupt_active(self, cancel: Callable[[], None]) -> None:
-        threading.Thread(target=cancel, daemon=True).start()
-        if self.main_busy.is_set():
-            os.kill(os.getpid(), signal.SIGINT)
-
     def interrupt(self) -> None:
+        """Ctrl-C from the TUI: ask the active turn to cancel, and say so on the status line.
+
+        No process signal: the turn is a task, and `Agent.cancel()` schedules its cancellation on
+        the loop that owns it. The status stays on `cancelling` until the turn has quiesced and
+        settled, which is the honest state -- an uncooperative tool may still be unwinding."""
+
         if self.cancel_pending.is_set():
             return
         self.cancel_pending.set()
         self.tui.set_running("cancelling")
-        self._interrupt_active(self.loop.agent.cancel)
+        self.loop.agent.cancel()
 
     def _request_model_retry(self) -> None:
         """`/resend`: ask the model client to drop the exact attempt in flight and send it again.
@@ -169,6 +178,17 @@ class TuiRuntime:
             return True
         return False
 
+    async def _drive_turn(self, user_input: str | UserInput) -> None:
+        """Run one turn as a task, and map its settled cancellation to something this thread can
+        catch. The turn is awaited to completion first: by the time CancelledError surfaces here,
+        Agent has already settled or retracted it and saved the snapshot."""
+
+        turn = asyncio.ensure_future(self.loop.agent.run_async(user_input))
+        try:
+            await turn
+        except asyncio.CancelledError:
+            raise _TurnCancelled from None
+
     def run_agent_turn(self, user_input: str | UserInput) -> None:
         user_input = user_input if isinstance(user_input, UserInput) else UserInput(user_input)
         self.loop.emit("")
@@ -180,9 +200,12 @@ class TuiRuntime:
         malformed_tool_call = False
         answered = False
         try:
-            self.loop.agent.run(user_input)
+            # TODO(async-phase-5): one outer boundary per turn while the TUI still owns its own
+            # thread. It is an entry point, not a bridge: the turn, its model request, its tools,
+            # and any worker all live on this loop. Phase 5 gives the runtime one loop for all of it.
+            asyncio.run(self._drive_turn(user_input))
             answered = True
-        except KeyboardInterrupt:
+        except _TurnCancelled:
             self.submit_next(self.loop.take_pending_inputs())
             cancelled = True
         except MalformedToolCallError as error:

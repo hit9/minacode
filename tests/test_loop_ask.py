@@ -408,7 +408,7 @@ def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.calls += 1
             if self.calls == 1:
                 return {}, [ToolCall("c1", "Bash", ["printf nar1"])], "先看入口。"

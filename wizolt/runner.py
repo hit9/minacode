@@ -290,18 +290,6 @@ class ToolRunner:
             self._vision_client = ModelClient(self.session)
         return self._vision_client
 
-    def cancel(self) -> None:
-        """TODO(async-phase-4): the caller-thread fan-out, while the turn is still synchronous.
-
-        Phase 4 makes cancelling the turn's task the whole mechanism: task propagation reaches each
-        awaited tool path, which requests its own stop and waits for its own quiescence."""
-
-        self._active_bash.apply(lambda tool: tool.request_stop())
-        self._active_job.apply(lambda tool: tool.request_stop())
-        self._active_worker.apply(lambda agent: agent.cancel())
-        if self._vision_client is not None:
-            self._vision_client.cancel_active_request()
-
     def request_tool_stop(self, tool: Tool) -> None:
         """Ask one tool to stop, and note it. Never a claim that anything stopped -- the runner
         still waits for the invocation to finish before it reports cancellation."""
@@ -387,10 +375,10 @@ class ToolRunner:
             tool.runner = self
             return await self._run_script(tool)
         if isinstance(tool, DelegateTool):
-            # TODO(async-phase-4): the worker agent is still synchronous, so a send is managed
-            # thread work with the existing worker cancellation hook.
+            # Awaited directly: the worker's turn is a child of this one, so the parent's
+            # cancellation reaches it by propagation and its diffs still merge on every ending.
             tool.runner = self
-            return await self._run_in_executor(tool.call, tool)
+            return await tool.call_async()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):
                 return await self._run_in_executor(tool.call, tool)

@@ -1,4 +1,5 @@
 """tui runtime output (split from tests/test_tui_runtime.py)."""
+import asyncio
 import threading
 from types import SimpleNamespace
 
@@ -19,6 +20,24 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 
+def _answering(answer):
+    """A stand-in for Agent.run_async that just answers; the runtime awaits it like the real one."""
+
+    async def run_async(_user_input):
+        return answer
+
+    return run_async
+
+
+def _raising(error):
+    """A stand-in for Agent.run_async that fails the way the engine would."""
+
+    async def run_async(_user_input):
+        raise error
+
+    return run_async
+
+
 def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monkeypatch):
     output = []
     scenario_session = session(tmp_path)
@@ -31,7 +50,7 @@ def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monk
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: output.append("set_running:" + label)
     command_loop.command = lambda _text: (False, False)
-    command_loop.agent.run = lambda _text: "done"
+    command_loop.agent.run_async = _answering("done")
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
     assert not runtime.dispatch("answer me")
@@ -52,7 +71,7 @@ def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, monkeypa
     runtime = TuiRuntime(command_loop)
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: None
-    command_loop.agent.run = lambda _text: "the final answer"
+    command_loop.agent.run_async = _answering("the final answer")
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
     emitted: list[tuple] = []
     command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
@@ -74,7 +93,7 @@ def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch
     runtime = TuiRuntime(command_loop)
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: None
-    command_loop.agent.run = lambda _text: "the final answer"
+    command_loop.agent.run_async = _answering("the final answer")
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
     emitted: list[tuple] = []
     command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
@@ -90,7 +109,7 @@ def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_path, mo
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: None
-    command_loop.agent.run = lambda _text: "the final answer"
+    command_loop.agent.run_async = _answering("the final answer")
     command_loop.agent.turn_sources = [{"url": "https://a.example", "title": "A"}]
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
     emitted: list[tuple[str, int]] = []
@@ -152,11 +171,11 @@ def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypat
     runtime = TuiRuntime(command_loop)
     emitted = []
 
-    def interrupt(_user_input):
+    async def interrupt(_user_input):
         command_loop.model_stream_output("reasoning", "private reasoning")
-        raise KeyboardInterrupt
+        raise asyncio.CancelledError
 
-    command_loop.agent.run = interrupt
+    command_loop.agent.run_async = interrupt
     command_loop.emit = lambda text="", indent=0: emitted.append((text, command_loop.view.model_stream_fragments()))
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
@@ -349,13 +368,13 @@ def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback(tmp_p
     command_loop.ui.emit_answer = lambda text, **_kwargs: emitted.append(text)
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
-    def answer(_user_input):
+    async def answer(_user_input):
         with command_loop.model_stream_lock:
             command_loop.model_stream_promoted_text = "Let me look that up."
         command_loop.agent_output("Let me look that up.\n\nThe searched answer.")
         return "Let me look that up.\n\nThe searched answer."
 
-    command_loop.agent.run = answer
+    command_loop.agent.run_async = answer
 
     runtime.run_agent_turn("question")
 
@@ -387,7 +406,7 @@ def test_stream_promotion_waits_for_the_follow_up_it_answers(tmp_path, monkeypat
         def __init__(self):
             self.calls = 0
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.calls += 1
             if self.calls > 1:
                 return {"role": "assistant", "content": "done"}, [], "done"
@@ -427,10 +446,7 @@ def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_
     answers = []
     turns_ended = []
 
-    def fail(_user_input):
-        raise MalformedToolCallError("Model emitted Bash as text 6 times; none of the textual calls were executed.")
-
-    command_loop.agent.run = fail
+    command_loop.agent.run_async = _raising(MalformedToolCallError("Model emitted Bash as text 6 times; none of the textual calls were executed."))
     command_loop.ui.emit_answer = lambda text, **_kwargs: answers.append(text)
     command_loop.ui.emit_turn_end = turns_ended.append
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)

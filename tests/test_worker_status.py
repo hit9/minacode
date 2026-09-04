@@ -63,14 +63,14 @@ def test_working_divider_marks_inflight_worker(tmp_path):
     worker._active_turn_messages.append({"role": "user", "content": "order"})
     assert "[worker]" in label()
 
-def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
+async def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
     calls = []
     runner.model_stream = lambda kind, text: calls.append((kind, text))
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
     on_stream = parent.worker._agent.model.on_stream
     assert on_stream is not runner.model_stream  # wrapped: `output_done` must not promote
     assert callable(on_stream)
@@ -159,7 +159,7 @@ def test_worker_status_command_is_human_readable(tmp_path):
     worker.state.context_percent = 42
     assert "worker context: 42%" in worker_command(loop, "status")
 
-def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch):
+async def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -175,13 +175,13 @@ def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch
     monkeypatch.setattr("wizolt.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
 
     assert outputs, "the worker turn produced no output"
     rendered = [str(block) for block in outputs if isinstance(block, LogBlock)]  # str items raised before the fix
     assert any("thinking out loud" in text for text in rendered)
 
-def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, monkeypatch):
+async def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, monkeypatch):
     from wizolt.base import LogBlock, ToolCall
     from wizolt.context import ContextManager
     from wizolt.runner import ToolRunner
@@ -201,7 +201,7 @@ def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, 
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=log_outputs.append)
     runner.worker_answer = append_answer
 
-    _delegate_call(parent, runner, action="send", order="o")
+    await _delegate_call(parent, runner, action="send", order="o")
 
     # Interim model text and final answer route to worker_answer for markdown rendering.
     assert answer_outputs == ["**thinking out loud**", "done"]

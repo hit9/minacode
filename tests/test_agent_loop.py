@@ -1,4 +1,6 @@
 """agent loop (split from tests/test_agent_turn.py)."""
+import asyncio
+
 import pytest
 from agent_harness import call, session
 
@@ -18,7 +20,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
@@ -45,7 +47,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     limited_agent = Agent(limited, output_fn=lambda text: None)
 
     class LoopingModel:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])], ""
 
     limited_agent.model = LoopingModel()
@@ -66,7 +68,7 @@ def test_file_mentions_land_as_their_own_user_message(tmp_path):
         def __init__(self):
             self.requests = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.requests.append(messages)
             return {"role": "assistant", "content": "done"}, [], "done"
 
@@ -85,7 +87,7 @@ def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
     agent = Agent(s, output_fn=lambda _text: None)
 
     class FakeModel:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             return (
                 {
                     "role": "assistant",
@@ -124,7 +126,7 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     class InterruptingModel:
         calls = 0
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.calls += 1
             if self.calls == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
@@ -160,7 +162,7 @@ def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
     agent = Agent(s, output_fn=lambda text: None)
 
     class InterruptingModel:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             raise KeyboardInterrupt
 
     agent.model = InterruptingModel()
@@ -184,17 +186,17 @@ def test_interrupted_unfinished_tool_call_gets_semantic_transcript_result(tmp_pa
     agent = Agent(s, output_fn=lambda _text: None)
 
     class ToolCallingModel:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
 
     agent.model = ToolCallingModel()
 
-    def interrupt_tools(*_args, **_kwargs):
-        raise KeyboardInterrupt
+    async def interrupt_tools(*_args, **_kwargs):
+        raise asyncio.CancelledError
 
-    agent.tools.run = interrupt_tools
+    agent.tools.run_async = interrupt_tools
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(asyncio.CancelledError):
         agent.run("read file")
 
     assert s.transcript_messages[-1] == {
@@ -226,7 +228,7 @@ def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_path, m
     class Model:
         calls = 0
 
-        def request(self, _messages, _tools=None):
+        async def request_async(self, _messages, _tools=None):
             self.calls += 1
             if self.calls == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], "checking"
@@ -252,14 +254,14 @@ def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
     agent = Agent(s, output_fn=lambda text: None)
 
     class Model:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             return {}, [call("Read", [{"path": "missing", "ranges": [[0, 0]]}])], ""
 
         def cancel_active_request(self):
             pass
 
     class Tools:
-        def run(self, calls, batch_suffix=""):
+        async def run_async(self, calls, batch_suffix=""):
             agent.cancel()
             return []
 
@@ -268,7 +270,7 @@ def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
 
     agent.model = Model()
     agent.tools = Tools()
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(asyncio.CancelledError):
         agent.run("read missing")
 
     # Interrupt: the partial turn stands, the unanswered tool call gets a cancelled result so the
@@ -284,7 +286,7 @@ def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
     class Model:
         calls = 0
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.calls += 1
             return {}, [call("Read", [{"path": "missing", "ranges": [[0, 0]]}])], ""
 
@@ -292,7 +294,7 @@ def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
             pass
 
     class Tools:
-        def run(self, calls, batch_suffix=""):
+        async def run_async(self, calls, batch_suffix=""):
             agent.cancel()
             return []
 
@@ -302,7 +304,7 @@ def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
     agent.model = Model()
     agent.tools = Tools()
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(asyncio.CancelledError):
         agent.run("stop after the tool")
 
     assert agent.model.calls == 1
@@ -319,14 +321,14 @@ def test_interrupted_turn_settles_once_and_matches_every_visible_tool_call(tmp_p
     agent = Agent(s, output_fn=lambda text: None)
 
     class Model:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             return {}, [call("Read", [{"path": "a", "ranges": [[0, 0]]}]), call("Recall", [{"key": "tr.1"}])], ""
 
         def cancel_active_request(self):
             pass
 
     class Tools:
-        def run(self, calls, batch_suffix=""):
+        async def run_async(self, calls, batch_suffix=""):
             agent.cancel()
             return []
 
@@ -335,7 +337,7 @@ def test_interrupted_turn_settles_once_and_matches_every_visible_tool_call(tmp_p
 
     agent.model = Model()
     agent.tools = Tools()
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(asyncio.CancelledError):
         agent.run("two calls")
 
     assert [message["content"] for message in s.messages if message["content"] == INTERRUPT_MARKER] == [INTERRUPT_MARKER]
@@ -353,7 +355,7 @@ def test_accepted_request_acknowledges_its_queued_follow_up(tmp_path):
     s.enqueue_user_input("follow up")
 
     class Model:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
         def cancel_active_request(self):
@@ -374,7 +376,7 @@ def test_interrupt_releases_a_claimed_queued_follow_up(tmp_path):
     s.enqueue_user_input("follow up")
 
     class Model:
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             raise KeyboardInterrupt
 
         def cancel_active_request(self):

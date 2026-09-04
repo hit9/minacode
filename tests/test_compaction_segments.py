@@ -577,7 +577,7 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
 
     class FakeModel:
         last_compaction_model = ""
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()

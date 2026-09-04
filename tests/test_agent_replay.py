@@ -31,7 +31,7 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Bash", [])], ""

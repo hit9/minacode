@@ -18,7 +18,7 @@ def test_terminal_next_hints_recognizes_all_next_hints_batch(tmp_path):
     assert not agent.terminal_next_hints([call("NextHints", [{"inputs": ["x"]}]), call("Read", [{"path": "f"}])])
     assert not agent.terminal_next_hints([])
 
-def test_finish_with_next_hints_runs_tool_and_finishes_without_dup_answer(tmp_path):
+async def test_finish_with_next_hints_runs_tool_and_finishes_without_dup_answer(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda text: None)
     turn_messages = [{"role": "user", "content": "hi"}]
@@ -34,7 +34,7 @@ def test_finish_with_next_hints_runs_tool_and_finishes_without_dup_answer(tmp_pa
     }
     calls = [call("NextHints", [{"inputs": ["run tests", "show diff"]}])]
 
-    assert agent.finish_with_next_hints(turn_messages, assistant, calls, "the answer", 0) == "the answer"
+    assert await agent.finish_with_next_hints(turn_messages, assistant, calls, "the answer", 0) == "the answer"
     assert s.quick_hints == ("run tests", "show diff")
     # user, tool-bearing assistant (no content), tool result, plain final answer
     assert [m["role"] for m in s.messages] == ["user", "assistant", "tool", "assistant"]
@@ -54,7 +54,7 @@ def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_pat
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             return {"role": "assistant", "content": "all done"}, [call("NextHints", [{"inputs": ["run tests"]}])], "all done"
 
@@ -82,7 +82,7 @@ def test_all_next_hints_batch_without_answer_ends_turn_in_single_model_call(tmp_
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": ["run the tests", "show the diff"]}])], ""
 
@@ -108,7 +108,7 @@ def test_tool_only_history_replays_across_all_protocols(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             return (
                 {"role": "assistant", "content": ""},
@@ -170,7 +170,7 @@ def test_failed_tool_only_next_hints_batch_continues_turn(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 # Empty inputs: the NextHints call fails, so no hints are produced.
@@ -201,7 +201,7 @@ def test_failed_next_hints_batch_counts_as_tool_batch(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.calls += 1
             if self.calls == 1:
                 return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": []}])], ""
@@ -210,7 +210,7 @@ def test_failed_next_hints_batch_counts_as_tool_batch(tmp_path):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     class Tools:
-        def run(self, calls, batch_suffix=""):
+        async def run_async(self, calls, batch_suffix=""):
             suffixes.append(batch_suffix)
             return [{"role": "tool", "tool_call_id": calls[0].id, "name": calls[0].name, "content": "ok"}]
 
@@ -234,7 +234,7 @@ def test_all_next_hints_batch_with_whitespace_content_ends_turn(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             return {"role": "assistant", "content": "   \n\t "}, [call("NextHints", [{"inputs": ["run the tests"]}])], "   \n\t "
 
@@ -257,7 +257,7 @@ def test_mixed_next_hints_batch_do_not_leak_into_a_later_answer(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages, tools=None):
+        async def request_async(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 # Mixed batch: hints are only intermediate state, so the turn continues.
