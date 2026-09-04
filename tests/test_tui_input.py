@@ -94,8 +94,8 @@ def ctrl_c_queue_scenario(cwd, results):
 
     command_loop.agent.model = RecordingModel()
     SessionSnapshotStore.clean_expired = lambda _session: 0
-    CodeIndex.refresh_existing_async = lambda _index: False
-    CodeIndex.update_pending_async = lambda _index: None
+    CodeIndex.schedule_existing_refresh = lambda _index: False
+    CodeIndex.schedule_pending_update = lambda _index: None
     UpdateChecker.start = lambda _checker: None
     real_application = Application
 
@@ -412,7 +412,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
         output_fn=output.append,
     )
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
     real_application = Application
     full_screen_modes = []

@@ -496,7 +496,7 @@ class CodeIndex:
             return ""
         return self.update([self.session.resolve_path(path) for path in files])
 
-    def update_pending_async(self) -> None:
+    def schedule_pending_update(self) -> None:
         """Run the working-tree check (and any auto-update) off the UI critical path.
 
         ``update_pending`` does a ``check=True`` scan that walks/hashes the tree — slow on
@@ -515,7 +515,7 @@ class CodeIndex:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def refresh_existing_async(self) -> bool:
+    def schedule_existing_refresh(self) -> bool:
         if self.session.state.code_index_refreshing:
             return False
         status = self.status()[0]

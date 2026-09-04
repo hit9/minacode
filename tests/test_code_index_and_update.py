@@ -97,7 +97,7 @@ def test_code_index_refresh_existing_uses_library_async_refresh(tmp_path, monkey
     monkeypatch.setattr(csi, "refresh_async", lambda root: calls.append(("refresh_async", root)) or Worker())
 
     s = session(tmp_path)
-    assert CodeIndex(s).refresh_existing_async() is True
+    assert CodeIndex(s).schedule_existing_refresh() is True
     for _ in range(50):
         if ("join",) in calls and not s.state.code_index_refreshing:
             break
@@ -184,7 +184,7 @@ def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch)
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
     monkeypatch.setattr(UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "wizolt"])
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
 
     CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=emitted.append).start_session()
 

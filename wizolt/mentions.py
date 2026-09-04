@@ -165,7 +165,7 @@ class FileMentions:
             match = self._last_match
             return match[2] if match is not None and match[:2] == (self._generation, query) else ()
 
-    def complete_async(self, query: str, callback: Callable[[], None]) -> None:
+    def schedule_completion(self, query: str, callback: Callable[[], None]) -> None:
         """Compute the latest literal fallback query on one worker, then notify the TUI."""
 
         def candidates_ready() -> None:
@@ -196,7 +196,7 @@ class FileMentions:
 
             threading.Thread(target=match, name="file-matches", daemon=True).start()
 
-        self.refresh_async(candidates_ready)
+        self.schedule_refresh(candidates_ready)
 
     @staticmethod
     def _literal_matches(paths: tuple[tuple[str, str], ...], query: str) -> tuple[str, ...]:
@@ -212,7 +212,7 @@ class FileMentions:
 
         return tuple(path for _, _, _, path in heapq.nsmallest(50, ranked()))
 
-    def refresh_async(self, callback: Callable[[], None] | None = None) -> None:
+    def schedule_refresh(self, callback: Callable[[], None] | None = None) -> None:
         """Refresh once on a worker and notify all waiters; never block the caller."""
         notify_now = False
         start = False
@@ -511,7 +511,7 @@ class FzfPicker:
                 snapshot = self.mentions.cached_paths()
                 if snapshot is None:
                     ready = threading.Event()
-                    self.mentions.refresh_async(ready.set)
+                    self.mentions.schedule_refresh(ready.set)
                     while not ready.wait(0.05):
                         if process.poll() is not None:
                             return
@@ -522,7 +522,7 @@ class FzfPicker:
                 else:
                     # A stale snapshot is still safe to display: the selected path is revalidated
                     # below. Refresh it for the next picker without delaying this one's first row.
-                    self.mentions.refresh_async()
+                    self.mentions.schedule_refresh()
                 candidates.append(snapshot)
                 for _, path in snapshot:
                     process.stdin.write(os.fsencode(path) + b"\0")

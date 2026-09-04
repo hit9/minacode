@@ -54,7 +54,7 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
     )
     command_loop.ui.color = True
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
     real_application = Application
     emitted_while_running = []
@@ -167,7 +167,7 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(command_loop, "start_session", lambda: None)
     monkeypatch.setattr(command_loop, "take_pending_inputs", list)
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
-    monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: warmed.append(callback))
+    monkeypatch.setattr(command_loop.session.mentions, "schedule_refresh", lambda callback=None: warmed.append(callback))
 
     assert runtime.run_sync() == 0
     assert warmed == [None]
@@ -213,7 +213,7 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     monkeypatch.setattr(command_loop, "start_session", lambda: calls.append(("start_session",)))
     monkeypatch.setattr(command_loop, "take_pending_inputs", list)
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
-    monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: None)
+    monkeypatch.setattr(command_loop.session.mentions, "schedule_refresh", lambda callback=None: None)
 
     assert runtime.run_sync() == 0
     assert calls == [("running", RESUME_STATUS_LABEL), ("start_session",), ("idle",)]

@@ -45,8 +45,8 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
 
     command_loop.agent.model = RecordingModel()
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
-    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
     real_application = Application
 
@@ -92,8 +92,8 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
 
     command_loop.agent.model = RecordingModel()
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
-    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "schedule_pending_update", lambda _index: None)
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
     real_application = Application
 

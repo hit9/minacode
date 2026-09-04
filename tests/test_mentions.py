@@ -396,7 +396,7 @@ def test_fzf_picker_uses_stale_snapshot_while_refreshing(monkeypatch, tmp_path):
     mentions = session(tmp_path).mentions
     mentions._paths_cache = (0, ((selected, selected),))
     refresh_callbacks = []
-    monkeypatch.setattr(mentions, "refresh_async", lambda callback=None: refresh_callbacks.append(callback))
+    monkeypatch.setattr(mentions, "schedule_refresh", lambda callback=None: refresh_callbacks.append(callback))
     executable = fake_fzf(
         tmp_path,
         "items = sys.stdin.buffer.read().split(b'\\0')\n"

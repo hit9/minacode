@@ -514,7 +514,7 @@ Full documentation: https://wizolt.readthedocs.io
                 except WizoltError as error:
                     answer = f"Error: {error}"
             finally:
-                CodeIndex(self.session).update_pending_async()
+                CodeIndex(self.session).schedule_pending_update()
                 self.status_bar.stop()
             # Same rule as TuiRuntime.run_agent_turn: the engine publishes its own final answer
             # through output_fn, so only an error it raised before publishing prints here.
@@ -546,7 +546,7 @@ Full documentation: https://wizolt.readthedocs.io
         UpdateChecker(self.session).start()
         if self.session.update.newer_than(__version__):
             self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `{' '.join(UpdateChecker.upgrade_command())}`.")
-        self.clean_expired_sessions_async()
+        self.schedule_expired_session_cleanup()
         self.render_resumed_session()
         # Publish existing availability without scanning the tree; the freshness check already
         # runs after each completed turn.
@@ -557,7 +557,7 @@ Full documentation: https://wizolt.readthedocs.io
         if catalog is not None:
             catalog.start_background_sync()
 
-    def clean_expired_sessions_async(self) -> None:
+    def schedule_expired_session_cleanup(self) -> None:
         """Run the retention sweep off the startup path: on a network filesystem it can cost
         seconds before the prompt accepts a keystroke, and nothing depends on it having run first.
         Runs on a daemon thread and reports through the background channel."""

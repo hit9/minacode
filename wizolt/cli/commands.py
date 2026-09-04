@@ -220,7 +220,7 @@ def status(loop: CommandLoop, args: str) -> str:
         context_budget = usage.last_prompt_budget
     index = CodeIndex(loop.session)
     index_status, index_message = index.status(check=False)
-    index.update_pending_async()
+    index.schedule_pending_update()
     if loop.session.state.code_index_refreshing:
         index_status, index_message = loop.session.state.code_index_notice or "syncing", ""
     elif loop.session.state.code_index_error:

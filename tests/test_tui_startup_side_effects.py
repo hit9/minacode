@@ -33,14 +33,14 @@ def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch
     command_loop = loop(tmp_path)
     status_checks = []
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
-    monkeypatch.setattr(CommandLoop, "clean_expired_sessions_async", lambda _loop: None)
+    monkeypatch.setattr(CommandLoop, "schedule_expired_session_cleanup", lambda _loop: None)
     monkeypatch.setattr(CommandLoop, "render_resumed_session", lambda _loop: None)
     monkeypatch.setattr(
         CodeIndex,
         "status",
         lambda _index, *, check=False, max_pending_files=20: status_checks.append(check) or ("ready", ""),
     )
-    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: pytest.fail("startup refreshed the code index"))
+    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: pytest.fail("startup refreshed the code index"))
 
     command_loop.start_session()
 
@@ -66,7 +66,7 @@ async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monke
     )
 
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "schedule_existing_refresh", lambda _index: False)
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
 
     started = asyncio.Event()
@@ -143,7 +143,7 @@ def test_expired_session_cleanup_reports_without_blocking_startup(monkeypatch, t
     lines = []
     monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
 
-    command_loop.clean_expired_sessions_async()
+    command_loop.schedule_expired_session_cleanup()
     for _ in range(200):
         if lines:
             break
@@ -161,7 +161,7 @@ def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
     lines = []
     monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
 
-    command_loop.clean_expired_sessions_async()
+    command_loop.schedule_expired_session_cleanup()
     time.sleep(0.1)
 
     assert lines == []
@@ -175,7 +175,7 @@ def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path):
 
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", boom)
 
-    command_loop.clean_expired_sessions_async()
+    command_loop.schedule_expired_session_cleanup()
     time.sleep(0.1)
 
 def test_expired_session_notice_reads_correctly_when_singular(tmp_path):

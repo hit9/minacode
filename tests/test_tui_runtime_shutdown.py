@@ -61,7 +61,7 @@ def runtime_for(tmp_path, monkeypatch, tui=None):
     command_loop.tui = tui
     monkeypatch.setattr(runtime, "build_tui", lambda: tui)
     monkeypatch.setattr(command_loop, "start_session", lambda: None)
-    monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: None)
+    monkeypatch.setattr(command_loop.session.mentions, "schedule_refresh", lambda callback=None: None)
     return runtime, command_loop, tui
 
 

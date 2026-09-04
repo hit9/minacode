@@ -278,7 +278,7 @@ class TuiRuntime:
             quick_hints_fn=lambda: self.loop.session.quick_hints,
             file_picker_available_fn=self.loop.session.mentions.picker.available if self.loop.session.mentions else None,
             file_picker_fn=self.loop.session.mentions.picker.pick if self.loop.session.mentions else None,
-            file_complete_fn=self.loop.session.mentions.complete_async if self.loop.session.mentions else None,
+            file_complete_fn=self.loop.session.mentions.schedule_completion if self.loop.session.mentions else None,
             editor_context_fn=self.loop.editor_context,
             images=self.loop.session.images,
             history=self.loop.input_history,
@@ -365,7 +365,7 @@ class TuiRuntime:
         finally:
             self.reset_turn()
             self.loop.session.state.manual_model_retry_requested = False
-            CodeIndex(self.loop.session).update_pending_async()
+            CodeIndex(self.loop.session).schedule_pending_update()
         if cancelled:
             self.loop.emit_turn("Cancelled")
             return
@@ -489,7 +489,7 @@ class TuiRuntime:
             if self.loop.session.mentions is not None:
                 # Git discovery can cost hundreds of milliseconds in a large worktree. Warm its
                 # runtime-only snapshot after the prompt is live so the first picker need not wait.
-                self.loop.session.mentions.refresh_async()
+                self.loop.session.mentions.schedule_refresh()
             self.submit_next(self.loop.take_pending_inputs())
             await self.run_agent_loop()
         finally:
