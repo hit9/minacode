@@ -578,6 +578,32 @@ class TestMCPCommands:
 
         assert any("MCP server connected: test" in str(text) for text in outputs)
 
+    async def test_mcp_manager_ctrl_c_cancels_connection_before_returning(self, monkeypatch):
+        s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth", auto_connect=False)))
+        bootstrap_features(s)
+        loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def connect(_name, **_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        async def show_modal(_fragments, handle_key):
+            assert handle_key("enter") is TUI_MODAL_PENDING
+            await started.wait()
+            return KeyboardInterrupt()
+
+        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)
+        monkeypatch.setattr(s.mcp, "connect_server", connect)
+
+        await asyncio.wait_for(mcp_manager(loop), 0.1)
+
+        assert cancelled.is_set()
+
     async def test_mcp_manager_aligns_server_labels(self, monkeypatch):
         raw = {
             "mcp": {

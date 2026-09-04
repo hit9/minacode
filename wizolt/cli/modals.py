@@ -195,15 +195,20 @@ async def mcp_manager(loop: CommandLoop) -> None:
         toggles.append(asyncio.ensure_future(toggle(result, connect)))
         return TUI_MODAL_PENDING
 
+    cancel_toggles = True
     try:
-        await tui.show_modal(fragments, handle_key)
+        result = await tui.show_modal(fragments, handle_key)
+        cancel_toggles = isinstance(result, KeyboardInterrupt)
     finally:
         modal_open = False
         outstanding = [task for task in toggles if not task.done()]
         if outstanding:
-            # Awaited, never abandoned: a toggle still opening a FastMCP client when the modal
-            # closes is exactly what must not outlive the command. A cancelled modal cancels them
-            # through `gather` and still waits for those clients to unwind.
+            # Esc/q lets a transition the user deliberately started finish, preserving the result
+            # as background output. Ctrl-C and external task cancellation mean stop: explicitly
+            # cancel first, then await client teardown rather than waiting for its full timeout.
+            if cancel_toggles:
+                for task in outstanding:
+                    task.cancel()
             await asyncio.gather(*outstanding, return_exceptions=True)
 
 
