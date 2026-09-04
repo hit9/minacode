@@ -277,7 +277,7 @@ def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch)
     emitted = []
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     monkeypatch.setattr(UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "wizolt"])
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 0)
     CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=emitted.append).start_session()
 
     assert any("upgrade with `uv tool upgrade wizolt`" in line for line in emitted)

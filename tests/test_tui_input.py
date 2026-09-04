@@ -424,7 +424,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
         input_fn=lambda prompt="": "",
         output_fn=output.append,
     )
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 0)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
     full_screen_modes = []

@@ -26,8 +26,8 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     saved = session(tmp_path)
     saved.enqueue_user_input("queued one")
     saved.enqueue_user_input("queued two")
-    # Setup, before the scenario's own loop exists: this test drives a real application through
-    # `run_tui`, which is itself the one synchronous entry point.
+    # Setup, before the scenario's own loop exists: the test later drives the runtime coroutine
+    # directly on its own process-level loop.
     asyncio.run(saved.save_snapshot())
     restored = Session.load_snapshot(saved.uid, config=saved.config)
     command_loop = CommandLoop(
@@ -46,7 +46,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
             pass
 
     command_loop.agent.model = RecordingModel()
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 0)
     monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
@@ -93,7 +93,7 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
             pass
 
     command_loop.agent.model = RecordingModel()
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 0)
     monkeypatch.setattr(CommandLoop, "schedule_index_freshness", lambda _loop: None)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application

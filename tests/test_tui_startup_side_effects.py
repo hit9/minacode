@@ -65,7 +65,7 @@ async def test_startup_discovers_mcp_without_blocking_the_prompt(tmp_path, monke
         output_fn=lambda text: None,
     )
 
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 0)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
 
     started = asyncio.Event()
@@ -260,7 +260,7 @@ async def test_startup_does_not_wait_for_a_blocked_maintenance_operation(tmp_pat
     command_loop = loop(tmp_path)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: True)
     monkeypatch.setattr(UpdateChecker, "fetch_latest", staticmethod(lambda: asyncio.Event().wait()))
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 0)
     command_loop.open_background()
     try:
         command_loop.start_session()
@@ -284,7 +284,7 @@ async def test_closing_right_after_startup_leaves_no_later_output_or_state_chang
         return "999.0.0"
 
     monkeypatch.setattr(UpdateChecker, "fetch_latest", staticmethod(never_answers))
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 5)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 5)
 
     command_loop.open_background()
     command_loop.start_session()

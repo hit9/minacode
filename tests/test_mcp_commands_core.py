@@ -30,7 +30,7 @@ class TestMCPCommands:
         calls = []
         monkeypatch.setattr(s.mcp, "discover_auto", as_async(lambda: calls.append("auto")))
         monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
-        monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+        monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 0)
         command_loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
         command_loop.start_session()

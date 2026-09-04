@@ -58,7 +58,7 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
         output_fn=lambda _text: None,
     )
     command_loop.ui.color = True
-    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda *_args: 0)
     monkeypatch.setattr(UpdateChecker, "load_cached", lambda _checker: False)
     real_application = Application
     emitted_while_running = []
