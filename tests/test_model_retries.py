@@ -66,7 +66,7 @@ async def test_compaction_does_not_publish_internal_model_output(tmp_path, monke
     assert result["summary"] == "short"
 
 
-def test_request_retries_then_succeeds(tmp_path, monkeypatch):
+async def test_request_retries_then_succeeds(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = ModelClient(s)
     factory = _MockClientFactory(
@@ -88,14 +88,14 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     record_backoff(monkeypatch)
 
-    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
+    _, _, content = await model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(factory.calls) == 2
     assert s.usage.calls == 1
 
 
-def test_request_retry_exhausted(tmp_path, monkeypatch):
+async def test_request_retry_exhausted(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = ModelClient(s)
     factory = _MockClientFactory([(500, {"error": {"message": "server error", "type": "internal_server_error"}})] * 6)
@@ -103,7 +103,7 @@ def test_request_retry_exhausted(tmp_path, monkeypatch):
     record_backoff(monkeypatch)
 
     with pytest.raises(ModelError, match="after 6 attempts"):
-        model.request_sync([{"role": "user", "content": "hi"}], None)
+        await model.request([{"role": "user", "content": "hi"}], None)
 
     assert len(factory.calls) == 6
     assert s.usage.calls == 0
@@ -302,7 +302,7 @@ _OK = {
 }
 
 
-def test_retry_backoff_sequence_within_jitter_bands(tmp_path, monkeypatch):
+async def test_retry_backoff_sequence_within_jitter_bands(tmp_path, monkeypatch):
     """Each retry waits base*2**attempt (jitter pinned to exactly 1.0x), never more than the ceiling."""
     s = _session(tmp_path)
     model = ModelClient(s)
@@ -311,7 +311,7 @@ def test_retry_backoff_sequence_within_jitter_bands(tmp_path, monkeypatch):
     monkeypatch.setattr(resilience.random, "random", lambda: 0.5)  # jitter factor exactly 1.0
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
+    _, _, content = await model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(waits()) == MODEL_REQUEST_RETRIES
@@ -321,7 +321,7 @@ def test_retry_backoff_sequence_within_jitter_bands(tmp_path, monkeypatch):
         assert expected - 0.2 <= wait <= expected + 0.2, f"attempt {attempt}: waited {wait}, expected ~{expected}"
 
 
-def test_retry_after_seconds_preferred_over_backoff(tmp_path, monkeypatch):
+async def test_retry_after_seconds_preferred_over_backoff(tmp_path, monkeypatch):
     """A numeric Retry-After header wins over the algorithm (7s, not the 1-3s first-band)."""
     s = _session(tmp_path)
     model = ModelClient(s)
@@ -329,13 +329,13 @@ def test_retry_after_seconds_preferred_over_backoff(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    model.request_sync([{"role": "user", "content": "hi"}], None)
+    await model.request([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
     assert 6.9 <= waits()[0] <= 7.1
 
 
-def test_retry_after_clamped_to_max_delay(tmp_path, monkeypatch):
+async def test_retry_after_clamped_to_max_delay(tmp_path, monkeypatch):
     """A provider claim beyond the ceiling is truncated, so one aberrant header cannot stall the CLI."""
     s = _session(tmp_path)
     model = ModelClient(s)
@@ -343,13 +343,13 @@ def test_retry_after_clamped_to_max_delay(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    model.request_sync([{"role": "user", "content": "hi"}], None)
+    await model.request([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
     assert RETRY_MAX_DELAY - 0.2 <= waits()[0] <= RETRY_MAX_DELAY + 0.2
 
 
-def test_retry_after_http_date_respected(tmp_path, monkeypatch):
+async def test_retry_after_http_date_respected(tmp_path, monkeypatch):
     """The HTTP-date form is parsed and the remaining delta is waited, not the raw date text."""
     s = _session(tmp_path)
     model = ModelClient(s)
@@ -358,7 +358,7 @@ def test_retry_after_http_date_respected(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    model.request_sync([{"role": "user", "content": "hi"}], None)
+    await model.request([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
     # A date far enough out that the wait is unmistakably the header's rather than the algorithm's
@@ -368,7 +368,7 @@ def test_retry_after_http_date_respected(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("value", ["", "   ", "-5", "garbage"])
-def test_retry_after_invalid_falls_back_to_backoff(tmp_path, monkeypatch, value):
+async def test_retry_after_invalid_falls_back_to_backoff(tmp_path, monkeypatch, value):
     """Empty, negative, and unparseable headers are silently ignored and the algorithm is used."""
     s = _session(tmp_path)
     model = ModelClient(s)
@@ -377,13 +377,13 @@ def test_retry_after_invalid_falls_back_to_backoff(tmp_path, monkeypatch, value)
     monkeypatch.setattr(resilience.random, "random", lambda: 0.5)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    model.request_sync([{"role": "user", "content": "hi"}], None)
+    await model.request([{"role": "user", "content": "hi"}], None)
 
     assert len(waits()) == 1
     assert RETRY_BASE_DELAY - 0.2 <= waits()[0] <= RETRY_BASE_DELAY + 0.2
 
 
-def test_retry_after_absurd_value_does_not_stall(tmp_path, monkeypatch):
+async def test_retry_after_absurd_value_does_not_stall(tmp_path, monkeypatch):
     """A huge header value is clamped rather than waited out; the request still succeeds."""
     s = _session(tmp_path)
     model = ModelClient(s)
@@ -391,7 +391,7 @@ def test_retry_after_absurd_value_does_not_stall(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
+    _, _, content = await model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(waits()) == 1
@@ -418,7 +418,7 @@ async def test_retry_wait_is_cancellable(tmp_path, monkeypatch):
     assert s.state.model_retry_until == 0.0
 
 
-def test_non_retryable_errors_skip_retry_path(tmp_path, monkeypatch):
+async def test_non_retryable_errors_skip_retry_path(tmp_path, monkeypatch):
     """Deterministic failures and validation errors never enter the backoff path: one attempt, no sleep."""
     s = _session(tmp_path)
     model = ModelClient(s)
@@ -431,7 +431,7 @@ def test_non_retryable_errors_skip_retry_path(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "api_request", truncated)
     monkeypatch.setattr(time, "sleep", lambda _seconds: pytest.fail("non-retryable error must not sleep"))
     with pytest.raises(ModelOutputTruncated):
-        model.request_sync([{"role": "user", "content": "hi"}], [])
+        await model.request([{"role": "user", "content": "hi"}], [])
     assert calls["n"] == 1
     assert s.state.model_retry_count == 0
 
@@ -441,13 +441,13 @@ def test_non_retryable_errors_skip_retry_path(tmp_path, monkeypatch):
     factory = _MockClientFactory([(400, {"error": {"message": "bad request", "type": "invalid_request_error"}})])
     monkeypatch.setattr(model2, "client", factory)
     with pytest.raises(ModelError, match=r"400"):
-        model2.request_sync([{"role": "user", "content": "hi"}], None)
+        await model2.request([{"role": "user", "content": "hi"}], None)
     assert len(factory.calls) == 1
     assert len(factory.calls) == 1
     assert s2.state.model_retry_count == 0
 
 
-def test_retry_wait_phase_hook_pairs(tmp_path, monkeypatch):
+async def test_retry_wait_phase_hook_pairs(tmp_path, monkeypatch):
     """The on_retry_wait hook fires True on entering the wait and False when it ends, and the
     deadline fact is reset, so the UI never sticks on the retrying phase."""
     s = _session(tmp_path)
@@ -458,7 +458,7 @@ def test_retry_wait_phase_hook_pairs(tmp_path, monkeypatch):
     model.on_retry_wait = phases.append
     _retry_wait_recorder(monkeypatch, factory)
 
-    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
+    _, _, content = await model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert phases == [True, False]
@@ -543,7 +543,7 @@ def test_streamed_transport_error_is_retryable_for_every_httpx_generation(module
     assert resilience.retryable_error(error) is True
 
 
-def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
+async def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
     """A streaming httpx transport error (raised unwrapped by the SDK's Stream.__stream__ and
     wrapped by call_client as ModelError(cause)) is retried to success, not surfaced on the
     first attempt. Regression for "Error: peer closed connection without sending complete
@@ -563,7 +563,7 @@ def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    _, _, content = model.request_sync([{"role": "user", "content": "hi"}], None)
+    _, _, content = await model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert calls["n"] == 2
@@ -807,6 +807,7 @@ async def test_compaction_failure_names_the_provider_entry(tmp_path, monkeypatch
     this way -- the fallback line has to say which one to go look at."""
     s = _session(tmp_path)
     model = ModelClient(s)
+
     async def api_request(*_a, **_k):
         return None, None, "user:\nnot json at all"
 
@@ -878,7 +879,9 @@ def test_compaction_echo_guard_leaves_real_summaries_alone(tmp_path):
     almost entirely one verbatim run is."""
     source = "user:\n继续 Part B 收尾：检查 `_run_workflow` 的所有调用点，确保新参数没有遗漏，然后跑 lint 与 pyright。"
     assert compaction.Compactor.echoes_source("继续 Part B 收尾：检查 `_run_workflow` 的所有调用点，确保新参数没有遗漏，然后跑 lint 与 pyright。", source)
-    assert not compaction.Compactor.echoes_source("用户要求收尾 Part B。已核对 `_run_workflow` 的调用点，新参数补齐；lint 与 pyright 尚未运行，是下一步。", source)
+    assert not compaction.Compactor.echoes_source(
+        "用户要求收尾 Part B。已核对 `_run_workflow` 的调用点，新参数补齐；lint 与 pyright 尚未运行，是下一步。", source
+    )
     assert not compaction.Compactor.echoes_source("short", source)  # below the length floor
     assert not compaction.Compactor.echoes_source("a" * 200, "")  # nothing to copy from
 
@@ -906,7 +909,6 @@ async def test_whole_turn_cancellation_and_resend_are_distinct_dispositions(tmp_
     request.cancel()
     with pytest.raises(asyncio.CancelledError):
         await request
-
 
     request = asyncio.ensure_future(model.request([{"role": "user", "content": "hi"}], []))
     await _wait_for(lambda: len(attempts) == 2)

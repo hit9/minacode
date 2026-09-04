@@ -1,4 +1,5 @@
 """loop queue ui (split from tests/test_loop_commands.py)."""
+
 import asyncio
 import itertools
 import os
@@ -74,9 +75,11 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     empty = "".join(t for _, t in [*sent, *waiting])
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
 
+
 def divider_glow_steps(fragments):
     """The comet's glow step per dash, None where the dash fell back to the plain rule."""
     return [int(style.removeprefix("class:divider.glow")) if style.startswith("class:divider.glow") else None for style, text in fragments if text == "-"]
+
 
 def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -93,6 +96,7 @@ def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
             heads.append(min(range(len(steps)), key=lambda index: (steps[index] is None, steps[index])))
 
     assert [second - first for first, second in itertools.pairwise(heads)] == [1, 1, 1, 1, 1]
+
 
 def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -117,6 +121,7 @@ def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
     assert steps[3] > 0  # dimmer than a head sitting exactly on a cell
     assert steps[2] == steps[5] > steps[3]
 
+
 def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
     s = session(tmp_path)
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -129,6 +134,7 @@ def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
 
     assert text.index("live output") < text.index("working") < text.index("+ follow up")
     assert "live output\n\n---" in text
+
 
 def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -143,6 +149,7 @@ def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
 
     assert echoed == ["\n• do a thing\n\n• then verify\n\n"]
 
+
 async def test_queue_command_runs_readonly(tmp_path):
     """A read-only slash command in the queue runs immediately and is not queued for the LLM."""
     s = session(tmp_path)
@@ -153,6 +160,7 @@ async def test_queue_command_runs_readonly(tmp_path):
 
     assert s.pending_user_inputs == []
     assert out and not any("unavailable" in t for t in out)
+
 
 async def test_queue_command_runs_yolo_toggle(tmp_path):
     """/yolo flips the runtime flag from the queue while the agent works."""
@@ -165,6 +173,7 @@ async def test_queue_command_runs_yolo_toggle(tmp_path):
 
     assert s.settings.yolo is (not before)
     assert s.pending_user_inputs == []
+
 
 async def test_hints_command_is_removed(tmp_path):
     s = session(tmp_path)
@@ -179,6 +188,7 @@ async def test_hints_command_is_removed(tmp_path):
     assert "/hints" not in loop_module.COMMAND_LOOKUP
     assert "/hints" not in loop_module.CommandLoop.COMMANDS
 
+
 async def test_queue_command_rejects_mutating(tmp_path):
     """A state-mutating slash command is refused while the agent works, not queued or run."""
     s = session(tmp_path)
@@ -190,6 +200,7 @@ async def test_queue_command_rejects_mutating(tmp_path):
     assert s.pending_user_inputs == []
     assert any("unavailable while the agent is working" in t for t in out)
 
+
 async def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
     """Read-only /mcp is allowed; mutating subcommands like connect are refused."""
     s = session(tmp_path)
@@ -199,6 +210,7 @@ async def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
     await loop.run_queued_command("/mcp connect test")
 
     assert any("read-only /mcp" in t for t in out)
+
 
 async def test_tool_input_without_tui_uses_injected_input(tmp_path):
     """Without a TUI there is no prompt on the loop, so the injected blocking reader runs on a
@@ -251,14 +263,15 @@ async def test_cancelling_default_pipe_input_removes_the_reader(tmp_path, monkey
         os.close(write_fd)
         stdin.close()
 
-def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
+
+async def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
     s = session(tmp_path)
     outputs = []
     monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
     content = "".join(f"line {index}\n" for index in range(50))
 
-    runner.run_sync([call("Edit", ["new.txt", "", [{"op": "create", "content": content}]])])
+    await runner.run([call("Edit", ["new.txt", "", [{"op": "create", "content": content}]])])
 
     assert outputs[0].startswith("  Edit  new.txt\n    ├ preview")
     assert "+line 49" in outputs[0]

@@ -224,7 +224,7 @@ def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tm
     assert calls[3] == ToolCall(id="list-payload", name="Recall", args=[["tr.1"]])
 
 
-def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, monkeypatch):
+async def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.provider.url = "https://example.test/v1"
     s.config.provider.key = "key"
@@ -243,7 +243,7 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
     record_backoff(monkeypatch, on_wait=lambda: seen.__setitem__(s.state.current_model_attempt, s.state.model_retry_reason))
 
     with pytest.raises(ModelError, match="after 6 attempts"):
-        client.request_sync([{"role": "user", "content": "hi"}])
+        await client.request([{"role": "user", "content": "hi"}])
 
     assert len(calls) == 6
     assert seen == {2: "500", 3: "500", 4: "500", 5: "500", 6: "500"}

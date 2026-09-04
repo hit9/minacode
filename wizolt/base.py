@@ -59,22 +59,6 @@ def configure_logging() -> None:
         logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
 
 
-def fail_if_running_loop(hint: str) -> None:
-    """Refuse a synchronous facade that was called from inside a running event loop.
-
-    Every synchronous entry point in wizolt is `asyncio.run()` over the async implementation, and
-    `asyncio.run()` cannot nest. The alternative -- a helper thread with a second loop -- would put
-    the work on a loop that does not own the resources it touches, which is the exact ownership
-    error this codebase spends its cancellation and shutdown rules avoiding. So the facade names
-    the async method instead of quietly building a bridge to it."""
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    raise RuntimeError(f"this synchronous entry point cannot be called from a running event loop; {hint}")
-
-
 async def run_blocking(invoke: Callable[[], _BlockingT], *, commit: Callable[[_BlockingT], None] | None = None) -> _BlockingT:
     """Await one synchronous callable on the loop's executor, and never abandon it.
 

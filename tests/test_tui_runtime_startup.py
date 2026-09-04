@@ -87,7 +87,7 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
 
         driver = threading.Thread(target=drive, daemon=True)
         driver.start()
-        assert command_loop.run_tui() == 0
+        assert asyncio.run(TuiRuntime(command_loop).run()) == 0
         driver.join(timeout=1)
 
     assert not driver.is_alive()
@@ -145,7 +145,7 @@ async def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entere
     assert dispatched == [entered.strip()]
 
 
-def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
+async def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     runtime = TuiRuntime(command_loop)
     warmed = []
@@ -175,11 +175,11 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
     monkeypatch.setattr(command_loop.session.mentions, "refresh", lambda: warmed.append(True) or _noop())
 
-    assert runtime.run_sync() == 0
+    assert await runtime.run() == 0
     assert warmed == [True]
 
 
-def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
+async def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     """While a resumed session's transcript is being restored the TUI shows a resuming status, and
     returns to idle the moment the replay is out."""
     scenario_session = session(tmp_path)
@@ -222,7 +222,7 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
     monkeypatch.setattr(command_loop, "refresh_mentions", lambda: None)
 
-    assert runtime.run_sync() == 0
+    assert await runtime.run() == 0
     assert calls == [("running", RESUME_STATUS_LABEL), ("start_session",), ("idle",)]
 
 

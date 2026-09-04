@@ -38,7 +38,6 @@ from wizolt.base import (
     TurnBox,
     WizoltError,
     __version__,
-    fail_if_running_loop,
     run_blocking,
 )
 from wizolt.cli import commands, worker
@@ -232,7 +231,7 @@ Full documentation: https://wizolt.readthedocs.io
         # Bytes already read from the default non-TTY stdin after the first newline. Keeping the
         # remainder here lets the loop use non-blocking os.read() without losing a following line.
         self._stdin_buffer = bytearray()
-        # Set by run_tui() while the full-TUI shell is active; tool_input reroutes through it so
+        # Set by TuiRuntime while the full-TUI shell is active; tool_input reroutes through it so
         # approval prompts land in the same input widget the user is already typing in.
         self.tui: TuiApp | None = None
         if self.interactive_input:
@@ -422,9 +421,8 @@ Full documentation: https://wizolt.readthedocs.io
 
     def take_pending_inputs(self) -> list[UserInput]:
         """Remove and return queued inputs that are not currently being flushed."""
-        with self.session._queue_lock:
-            texts = [item.user_input() for item in self.session.pending_user_inputs if not item.inflight]
-            self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.inflight]
+        texts = [item.user_input() for item in self.session.pending_user_inputs if not item.inflight]
+        self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.inflight]
         return texts
 
     def recall_pending_input(self, on_inflight: Callable[[], None]) -> str | UserInput:
@@ -433,15 +431,14 @@ Full documentation: https://wizolt.readthedocs.io
         The mutation only; persisting it is the caller's, because this runs inside a prompt-toolkit
         key handler that has to answer with the recalled text and cannot await a file write."""
 
-        with self.session._queue_lock:
-            item = next(reversed(self.session.pending_user_inputs), None)
-            if item is None:
-                return ""
-            self.session.pending_user_inputs.remove(item)
-            was_inflight = item.inflight
-            if was_inflight:
-                for pending_item in self.session.pending_user_inputs:
-                    pending_item.inflight = False
+        item = next(reversed(self.session.pending_user_inputs), None)
+        if item is None:
+            return ""
+        self.session.pending_user_inputs.remove(item)
+        was_inflight = item.inflight
+        if was_inflight:
+            for pending_item in self.session.pending_user_inputs:
+                pending_item.inflight = False
         if was_inflight:
             on_inflight()
         self.session.images.retain(item.images)
@@ -450,14 +447,22 @@ Full documentation: https://wizolt.readthedocs.io
     def run(self) -> int:
         """Synchronous entry point for the CLI. Both frontends run on one loop from here."""
 
-        fail_if_running_loop("use await CommandLoop.run_simple(...) or TuiRuntime.run()")
-        # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("CommandLoop.run() cannot be called from a running event loop; await the frontend coroutine")
+        return asyncio.run(self._run_frontend())
+
+    async def _run_frontend(self) -> int:
+        """Select the frontend inside the CLI's single event-loop entry."""
         if self.interactive_input:
-            return self.run_tui()
-        return asyncio.run(self.run_simple())
+            return await TuiRuntime(self).run()
+        return await self.run_simple()
 
     async def run_simple(self) -> int:
-        """The non-TTY frontend, on a loop of its own.
+        """The non-TTY frontend on the CLI-owned loop.
 
         The same loop as the TUI frontend gives the turn: one owner for startup discovery, the
         model client, and MCP, so everything this session opened is closed before it closes."""
@@ -685,9 +690,6 @@ Full documentation: https://wizolt.readthedocs.io
         days = self.session.settings.session_retention_days
         sessions = "session" if removed == 1 else "sessions"
         return f"removed {removed} saved {sessions} inactive for over {days} {'day' if days == 1 else 'days'} (runtime.session_retention_days)"
-
-    def run_tui(self) -> int:
-        return TuiRuntime(self).run_sync()
 
     def render_resumed_session(self) -> None:
         # Transcript reconstruction owns historical call/result matching and ordering invariants.

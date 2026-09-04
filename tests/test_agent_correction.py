@@ -1,4 +1,5 @@
 """agent correction (split from tests/test_agent_turn.py)."""
+
 import pytest
 from agent_harness import call, session
 from test_agent_turn import _correction
@@ -14,7 +15,7 @@ from wizolt.prompts import FAILED_TURN_MARKER, SYSTEM_PROMPT
 from wizolt.session import Session, SessionSnapshotCodec
 
 
-def test_agent_rejects_empty_final_response(tmp_path):
+async def test_agent_rejects_empty_final_response(tmp_path):
     agent = Agent(session(tmp_path), output_fn=lambda text: None)
 
     class EmptyModel:
@@ -23,9 +24,10 @@ def test_agent_rejects_empty_final_response(tmp_path):
 
     agent.model = EmptyModel()
     with pytest.raises(ModelError, match="empty final response"):
-        agent.run_sync("answer me")
+        await agent.run("answer me")
 
-def test_agent_corrects_textual_tool_call_with_a_committed_message(tmp_path):
+
+async def test_agent_corrects_textual_tool_call_with_a_committed_message(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
     pseudo = 'course\n<invoke name="Bash">\n<parameter name="command">secret command</parameter>\n</invoke>'
@@ -43,7 +45,7 @@ def test_agent_corrects_textual_tool_call_with_a_committed_message(tmp_path):
 
     agent.model = Model()
 
-    assert agent.run_sync("continue") == "done"
+    assert await agent.run("continue") == "done"
     assert len(agent.model.requests) == 2
     first_messages = agent.model.requests[0][0]
     correction_messages = agent.model.requests[1][0]
@@ -59,7 +61,8 @@ def test_agent_corrects_textual_tool_call_with_a_committed_message(tmp_path):
     assert all(pseudo not in str(message.get("content") or "") for message in s.messages)  # the markup itself is never replayed
     assert s.tool_records == []
 
-def test_agent_executes_native_call_after_textual_tool_correction_and_replays_the_correction(tmp_path):
+
+async def test_agent_executes_native_call_after_textual_tool_correction_and_replays_the_correction(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
@@ -80,7 +83,7 @@ def test_agent_executes_native_call_after_textual_tool_correction_and_replays_th
 
     agent.model = Model()
 
-    assert agent.run_sync("read it") == "done"
+    assert await agent.run("read it") == "done"
     assert len(agent.model.requests) == 3
     assert agent.model.requests[1][:-1] == agent.model.requests[0]
     assert "[Runtime protocol correction]" in agent.model.requests[1][-1]["content"]
@@ -89,7 +92,8 @@ def test_agent_executes_native_call_after_textual_tool_correction_and_replays_th
     assert [record.name for record in s.tool_records] == ["Read"]
     assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
 
-def test_agent_recovers_after_five_textual_tool_corrections_that_stack_in_history(tmp_path):
+
+async def test_agent_recovers_after_five_textual_tool_corrections_that_stack_in_history(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
     names = ["Edit", "Job", "Bash", "Note", "Read"]
@@ -110,7 +114,7 @@ def test_agent_recovers_after_five_textual_tool_corrections_that_stack_in_histor
 
     agent.model = Model()
 
-    assert agent.run_sync("continue") == "done"
+    assert await agent.run("continue") == "done"
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     base_messages = agent.model.requests[0]
     corrections = [_correction(name) for name in names]
@@ -126,7 +130,8 @@ def test_agent_recovers_after_five_textual_tool_corrections_that_stack_in_histor
     assert s.messages[1 : 1 + len(names)] == corrections
     assert s.messages[-1]["content"] == "done"
 
-def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(tmp_path):
+
+async def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
     pseudo = 'course\n<invoke name="Bash">\n<parameter name="command">never run</parameter>\n</invoke>'
@@ -146,7 +151,7 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
         MalformedToolCallError,
         match=r"Model emitted Bash as text 6 times; none of the textual calls were executed\.",
     ):
-        agent.run_sync("continue")
+        await agent.run("continue")
 
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     assert s.tool_records == []
@@ -167,7 +172,8 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
     ]
     assert restored_messages == s.messages
 
-def test_failed_first_request_leaves_a_marked_legal_history_and_the_next_turn_runs(tmp_path):
+
+async def test_failed_first_request_leaves_a_marked_legal_history_and_the_next_turn_runs(tmp_path):
     """The failure-path settling also covers a turn that died before the model ever answered: the
     user message stays, a bounded marker records where the turn stopped, and the settled history
     (two consecutive user messages) is a shape the protocol codecs merge, so the next turn on the
@@ -188,7 +194,7 @@ def test_failed_first_request_leaves_a_marked_legal_history_and_the_next_turn_ru
     agent.model = Model()
 
     with pytest.raises(ModelError, match="provider exploded"):
-        agent.run_sync("continue")
+        await agent.run("continue")
 
     # Nothing was settled (no tool calls ever issued) and nothing was retracted: the user message
     # and the marker are both permanent history, with nothing live left behind.
@@ -200,9 +206,10 @@ def test_failed_first_request_leaves_a_marked_legal_history_and_the_next_turn_ru
     assert s.state.turn_messages == 0
 
     # The next turn on the same session runs to completion on the marked history.
-    assert agent.run_sync("continue again") == "done"
+    assert await agent.run("continue again") == "done"
     assert [message["role"] for message in s.messages] == ["user", "user", "user", "assistant"]
     assert s.messages[-1]["content"] == "done"
+
 
 @pytest.mark.parametrize(
     "content",
@@ -220,7 +227,8 @@ def test_textual_tool_call_detector_rejects_non_executable_boundaries(content):
 
     assert Agent.textual_tool_call(content, tools) is None
 
-def test_agent_does_not_reclassify_content_when_native_tool_call_exists(tmp_path):
+
+async def test_agent_does_not_reclassify_content_when_native_tool_call_exists(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     output = []
@@ -239,13 +247,14 @@ def test_agent_does_not_reclassify_content_when_native_tool_call_exists(tmp_path
 
     agent.model = Model()
 
-    assert agent.run_sync("read it") == "done"
+    assert await agent.run("read it") == "done"
     assert len(agent.model.requests) == 2
     assert all("[Runtime protocol correction]" not in str(message.get("content") or "") for message in agent.model.requests[1])
     assert [record.name for record in s.tool_records] == ["Read"]
     assert output[0] == pseudo
     assert output[-1] == "done"  # the engine publishes the final answer through output_fn
     assert len(output) == 3
+
 
 def test_system_prompt_requires_native_tool_calls():
     assert "Use native tool calls; never print tool XML or tool-call JSON." in SYSTEM_PROMPT

@@ -62,7 +62,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
 
         driver = threading.Thread(target=drive, daemon=True)
         driver.start()
-        assert command_loop.run_tui() == 0
+        assert asyncio.run(TuiRuntime(command_loop).run()) == 0
         driver.join(timeout=1)
 
     assert len(requests) == 1
@@ -115,7 +115,7 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
 
         driver = threading.Thread(target=drive, daemon=True)
         driver.start()
-        assert command_loop.run_tui() == 0
+        assert asyncio.run(TuiRuntime(command_loop).run()) == 0
         driver.join(timeout=1)
 
     assert not driver.is_alive()

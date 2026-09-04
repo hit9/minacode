@@ -523,19 +523,19 @@ def test_tool_runner_reject_records_error_and_returns_failed_message(tmp_path):
     assert "command not found" in result
 
 
-def test_run_one_rejects_tools_outside_session_whitelist(tmp_path):
+async def test_run_one_rejects_tools_outside_session_whitelist(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y")
 
     s.tool_names = ("Read",)
-    (message,) = runner.run_sync([ToolCall("c1", "Bash", ["echo hi"])])
+    (message,) = await runner.run([ToolCall("c1", "Bash", ["echo hi"])])
     content = str(message["content"])
     assert "failed" in content.lower()
     assert "ToolError: Bash is not available in this session" in content
 
     # Empty tuple = no filtering (parent behavior): the same call executes.
     s.tool_names = ()
-    (message,) = runner.run_sync([ToolCall("c2", "Bash", ["echo hi"])])
+    (message,) = await runner.run([ToolCall("c2", "Bash", ["echo hi"])])
     assert "hi" in str(message["content"])
 
 
@@ -709,7 +709,7 @@ def test_uiprinter_renders_tool_root_without_generic_prefix():
     assert any(style == "fg:default" and "wizolt.py 0:100 → tr.6 [auto]" in value for style, value in segments)
 
 
-def test_mixed_batch_whitelisted_tool_runs_and_excluded_rejected(tmp_path):
+async def test_mixed_batch_whitelisted_tool_runs_and_excluded_rejected(tmp_path):
     """A batch mixing an excluded parallel-safe tool with a whitelisted one: the segment router
     never hands the excluded name to execute_readonly, so each call gets its own verdict."""
     s = session(tmp_path)
@@ -723,7 +723,7 @@ def test_mixed_batch_whitelisted_tool_runs_and_excluded_rejected(tmp_path):
         ToolCall("r1", "Read", [{"path": "a.txt"}]),
         ToolCall("s2", "Search", [{"pattern": "hello"}]),
     ]
-    contents = {message["tool_call_id"]: str(message["content"]) for message in runner.run_sync(calls)}
+    contents = {message["tool_call_id"]: str(message["content"]) for message in await runner.run(calls)}
     assert "hello" in contents["r1"]
     assert "Search is not available in this session" in contents["s1"]
     assert "Search is not available in this session" in contents["s2"]

@@ -142,7 +142,7 @@ def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, a
 
             driver = threading.Thread(target=run_driver, daemon=True)
             driver.start()
-        tui.run_sync()
+        asyncio.run(tui.run())
         if driver is not None:
             driver.join(timeout=1)
             assert not driver.is_alive()

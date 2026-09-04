@@ -72,14 +72,14 @@ def _session(tmp_path, *, api: str = "chat", model: str = "gpt-5.6", reasoning: 
 
 
 @pytest.mark.parametrize("api", ["chat", "responses"])
-def test_append_only_turns_reuse_implicit_cache_for_both_openai_protocols(tmp_path, monkeypatch, api):
+async def test_append_only_turns_reuse_implicit_cache_for_both_openai_protocols(tmp_path, monkeypatch, api):
     session = _session(tmp_path, api=api)
     server = OpenAIMockServer(["first answer", "second answer"])
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
     agent = Agent(session, output_fn=lambda _text: None)
 
-    assert agent.run_sync("first request") == "first answer"
-    assert agent.run_sync("second request") == "second answer"
+    assert await agent.run("first request") == "first answer"
+    assert await agent.run("second request") == "second answer"
 
     assert len(server.requests) == 2
     first_prompt, first_read, first_write = server.cache_events[0]
@@ -96,7 +96,7 @@ def test_append_only_turns_reuse_implicit_cache_for_both_openai_protocols(tmp_pa
 
 
 @pytest.mark.parametrize("api", ["chat", "responses"])
-def test_note_tool_history_advances_the_longest_implicit_breakpoint(tmp_path, monkeypatch, api):
+async def test_note_tool_history_advances_the_longest_implicit_breakpoint(tmp_path, monkeypatch, api):
     session = _session(tmp_path, api=api)
     server = OpenAIMockServer(
         [
@@ -108,8 +108,8 @@ def test_note_tool_history_advances_the_longest_implicit_breakpoint(tmp_path, mo
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
     agent = Agent(session, output_fn=lambda _text: None)
 
-    assert agent.run_sync("remember the cache goal") == "noted"
-    assert agent.run_sync("continue") == "continued"
+    assert await agent.run("remember the cache goal") == "noted"
+    assert await agent.run("continue") == "continued"
 
     assert session.state.goal == "preserve cache"
     assert len(server.cache_events) == 3
@@ -124,7 +124,7 @@ def test_note_tool_history_advances_the_longest_implicit_breakpoint(tmp_path, mo
 
 
 @pytest.mark.parametrize("api", ["chat", "responses"])
-def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, monkeypatch, api):
+async def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, monkeypatch, api):
     session = _session(tmp_path, api=api)
     server = OpenAIMockServer(
         [
@@ -138,8 +138,8 @@ def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, m
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
     agent = Agent(session, output_fn=lambda _text: None)
 
-    assert agent.run_sync("archive request " + "x" * 8_000) == "archived answer"
-    assert agent.run_sync("keep working") == "warm answer"
+    assert await agent.run("archive request " + "x" * 8_000) == "archived answer"
+    assert await agent.run("keep working") == "warm answer"
     baseline = _session(tmp_path / "baseline", api=api)
     baseline_context = ContextManager(baseline)
     baseline_messages = baseline_context.model_messages(SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
@@ -147,9 +147,9 @@ def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, m
     original_limit = session.settings.max_context_tokens
     session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + MIN_CONTEXT_SAFETY_TOKENS
 
-    assert agent.run_sync("continue") == "continued"
+    assert await agent.run("continue") == "continued"
     session.settings.max_context_tokens = original_limit
-    assert agent.run_sync("after compaction") == "after checkpoint"
+    assert await agent.run("after compaction") == "after checkpoint"
 
     assert session.state.compaction_count == 1
     assert len(server.cache_events) == 5
@@ -192,16 +192,16 @@ async def test_resume_event_keeps_old_breakpoint_and_becomes_part_of_the_next_on
 
 
 @pytest.mark.parametrize("api", ["chat", "responses"])
-def test_model_cache_scope_change_misses_once_then_warms(tmp_path, monkeypatch, api):
+async def test_model_cache_scope_change_misses_once_then_warms(tmp_path, monkeypatch, api):
     session = _session(tmp_path, api=api)
     server = OpenAIMockServer(["first", "after switch", "warm again"])
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
     agent = Agent(session, output_fn=lambda _text: None)
 
-    assert agent.run_sync("first request") == "first"
+    assert await agent.run("first request") == "first"
     session.config.provider.model = "gpt-5.6-new-scope"
-    assert agent.run_sync("after model switch") == "after switch"
-    assert agent.run_sync("same model again") == "warm again"
+    assert await agent.run("after model switch") == "after switch"
+    assert await agent.run("same model again") == "warm again"
 
     assert server.cache_events[0][1] == 0
     assert server.cache_events[1][1] == 0
@@ -210,7 +210,7 @@ def test_model_cache_scope_change_misses_once_then_warms(tmp_path, monkeypatch, 
     assert server.requests[2]["prompt_cache_key"] == server.requests[1]["prompt_cache_key"]
 
 
-def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
+async def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
     """The model emits an Edit tool call, the runner applies it to disk, and the tool result rides
     back to the model on the next request before the final answer — the whole loop over the wire."""
     session = _session(tmp_path)
@@ -218,7 +218,7 @@ def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
     factory = _MockClientFactory([_tool_call_response("call_1", "Edit", edit_args), _answer_response("Created hello.txt.")])
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: factory())
 
-    answer = Agent(session, output_fn=lambda text: None).run_sync("create hello.txt containing hi")
+    answer = await Agent(session, output_fn=lambda text: None).run("create hello.txt containing hi")
 
     # The tool really ran: the file exists on disk and the run returned the model's final answer.
     assert answer == "Created hello.txt."
@@ -240,7 +240,7 @@ def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
     assert "<Edit" in tool_messages[0]["content"]
 
 
-def test_full_flow_anthropic_tool_then_answer(tmp_path, monkeypatch):
+async def test_full_flow_anthropic_tool_then_answer(tmp_path, monkeypatch):
     """Anthropic tool_use crosses the SDK boundary, runs, and returns as tool_result."""
 
     session = _session(tmp_path, api="anthropic", model="claude-3", reasoning="off")
@@ -275,7 +275,7 @@ def test_full_flow_anthropic_tool_then_answer(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(ModelClient, "anthropic_client", lambda self, **kwargs: factory())
 
-    answer = Agent(session, output_fn=lambda _text: None).run_sync("create claude.txt")
+    answer = await Agent(session, output_fn=lambda _text: None).run("create claude.txt")
 
     assert answer == "Created claude.txt."
     assert (tmp_path / "claude.txt").read_text(encoding="utf-8") == "done\n"
@@ -292,7 +292,7 @@ def test_full_flow_anthropic_tool_then_answer(tmp_path, monkeypatch):
     assert tool_results and tool_results[0]["tool_use_id"] == "call_1"
 
 
-def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
+async def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     """An over-budget request crosses the compactor wire, then resumes from one full checkpoint."""
     session = _session(tmp_path)
     old_request = "archive request " + "x" * 200 + " OLD_BODY_SENTINEL " + "x" * 8000
@@ -314,12 +314,18 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     session.state.known = ["durable fact"]
     session.state.check = "tests"
     compacted_state = json.dumps(
-        {"summary": "Archived work was completed.", "goal": "invented", "plan": [{"status": "todo", "text": "invented"}], "known": ["invented"], "check": "invented"}
+        {
+            "summary": "Archived work was completed.",
+            "goal": "invented",
+            "plan": [{"status": "todo", "text": "invented"}],
+            "known": ["invented"],
+            "check": "invented",
+        }
     )
     factory = _MockClientFactory([_answer_response(compacted_state), _answer_response("Continued successfully.")])
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: factory())
 
-    answer = Agent(session, output_fn=lambda text: None).run_sync("continue")
+    answer = await Agent(session, output_fn=lambda text: None).run("continue")
 
     assert answer == "Continued successfully."
     requests = [json.loads(call.content) for call in factory.calls]
@@ -362,7 +368,7 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("api", ["chat", "responses"])
-def test_a_note_update_after_compaction_never_rewrites_the_checkpoint(tmp_path, monkeypatch, api):
+async def test_a_note_update_after_compaction_never_rewrites_the_checkpoint(tmp_path, monkeypatch, api):
     """The checkpoint is a snapshot, and keeping it a snapshot is what keeps the prefix cached.
 
     It bakes `state.format()` into message text at compaction time and holds no reference to the
@@ -387,15 +393,15 @@ def test_a_note_update_after_compaction_never_rewrites_the_checkpoint(tmp_path, 
     agent = Agent(session, output_fn=lambda _text: None)
     session.state.goal = "set before compaction"
 
-    assert agent.run_sync("archive request " + "x" * 8_000) == "archived answer"
-    assert agent.run_sync("keep working") == "warm answer"
+    assert await agent.run("archive request " + "x" * 8_000) == "archived answer"
+    assert await agent.run("keep working") == "warm answer"
     baseline = _session(tmp_path / "baseline", api=api)
     baseline_context = ContextManager(baseline)
     baseline_messages = baseline_context.model_messages(SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
     baseline_tokens = baseline_context.request_tokens(baseline_messages, Tool.resolved_schemas(baseline))
     original_limit = session.settings.max_context_tokens
     session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + MIN_CONTEXT_SAFETY_TOKENS
-    assert agent.run_sync("continue") == "continued"
+    assert await agent.run("continue") == "continued"
     session.settings.max_context_tokens = original_limit
 
     assert session.state.compaction_count == 1
@@ -405,7 +411,7 @@ def test_a_note_update_after_compaction_never_rewrites_the_checkpoint(tmp_path, 
     key = "input" if api == "responses" else "messages"
     before_items = server.requests[-1][key]
 
-    assert agent.run_sync("update the goal") == "noted"
+    assert await agent.run("update the goal") == "noted"
 
     # The Note landed, and the checkpoint did not move with it.
     assert session.state.goal == "changed after the checkpoint was written"

@@ -20,28 +20,28 @@ CHAT_BODY = {
 ANTHROPIC_BODY = {"id": "m", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [{"type": "text", "text": "hi"}]}
 
 
-def sent_body(model: ModelClient, factory, monkeypatch, attribute: str = "client") -> dict:
+async def sent_body(model: ModelClient, factory, monkeypatch, attribute: str = "client") -> dict:
     monkeypatch.setattr(model, attribute, factory)
-    model.request_sync([{"role": "user", "content": "hi"}], None)
+    await model.request([{"role": "user", "content": "hi"}], None)
     return json.loads(factory.calls[0].content)
 
 
-def test_a_named_field_never_reaches_the_chat_request(tmp_path, monkeypatch):
+async def test_a_named_field_never_reaches_the_chat_request(tmp_path, monkeypatch):
     """The reason the setting exists: a gateway answers 400 for a field wizolt sends, and
     `extra_body` can only add fields."""
     s = _session(tmp_path, url="https://api.openai.com/v1", model="gpt-5.5", stream=False, reasoning="high")
-    body = sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
+    body = await sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
     assert body["reasoning_effort"] == "high"
 
     s = _session(tmp_path, url="https://api.openai.com/v1", model="gpt-5.5", stream=False, reasoning="high", omit_body=("reasoning_effort",))
-    body = sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
+    body = await sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
     assert "reasoning_effort" not in body
     assert body["messages"] and body["model"] == "gpt-5.5"
 
 
-def test_a_named_field_never_reaches_the_anthropic_request(tmp_path, monkeypatch):
+async def test_a_named_field_never_reaches_the_anthropic_request(tmp_path, monkeypatch):
     s = _session(tmp_path, url="https://api.anthropic.com", api="anthropic", model="claude-sonnet-4-6", stream=False, reasoning="off", temperature=0.2)
-    body = sent_body(ModelClient(s), _AnthropicMockClientFactory([(200, ANTHROPIC_BODY)]), monkeypatch, attribute="anthropic_client")
+    body = await sent_body(ModelClient(s), _AnthropicMockClientFactory([(200, ANTHROPIC_BODY)]), monkeypatch, attribute="anthropic_client")
     assert body["temperature"] == 0.2
 
     s = _session(
@@ -54,15 +54,15 @@ def test_a_named_field_never_reaches_the_anthropic_request(tmp_path, monkeypatch
         temperature=0.2,
         omit_body=("temperature",),
     )
-    body = sent_body(ModelClient(s), _AnthropicMockClientFactory([(200, ANTHROPIC_BODY)]), monkeypatch, attribute="anthropic_client")
+    body = await sent_body(ModelClient(s), _AnthropicMockClientFactory([(200, ANTHROPIC_BODY)]), monkeypatch, attribute="anthropic_client")
     assert "temperature" not in body
 
 
-def test_a_field_is_dropped_wherever_the_request_puts_it(tmp_path, monkeypatch):
+async def test_a_field_is_dropped_wherever_the_request_puts_it(tmp_path, monkeypatch):
     """A provider's 400 names the field, not the place wizolt happened to put it, so a name
     configured here is matched in `extra_body` as well as at the top level."""
     s = _session(tmp_path, url="https://gw.example/v1", model="m", stream=False, extra_body={"enable_search": True}, omit_body=("enable_search",))
-    body = sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
+    body = await sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
 
     assert "enable_search" not in body
     assert "extra_body" not in body

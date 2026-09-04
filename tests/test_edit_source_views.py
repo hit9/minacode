@@ -458,7 +458,7 @@ def test_preview_reports_a_no_op_without_writing(tmp_path):
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
-def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, monkeypatch):
+async def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, monkeypatch):
     """Regression: the no-op recovery view was built only from targets whose content already
     matched, so a pair of edits that cancelled out produced a view with no spans over a file that
     has content -- and rendering that raised ValueError out of the batch planner, past every
@@ -471,7 +471,7 @@ def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, mon
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    messages = runner.run_sync(
+    messages = await runner.run(
         [
             ToolCall(
                 "wash",
@@ -487,7 +487,7 @@ def test_a_cancelling_batch_edit_fails_cleanly_instead_of_crashing(tmp_path, mon
     assert "2 | b" in s.tool_errors[0].error  # and a view of what the target actually holds
 
 
-def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
+async def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
     """A batch of edits after an external shift relocates every operation under the same rules as a
     single edit, and reports each relocation separately in the one result. The batch planner maps
     each op's view line to where it now sits after earlier ops, so each replace still finds its
@@ -501,7 +501,7 @@ def test_batch_relocates_each_edit_and_reports_it(tmp_path, monkeypatch):
     path.write_text("HEAD\nx\na\ntarget\nc\nd\n", encoding="utf-8")  # every line shifts down one
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run_sync(
+    await runner.run(
         [
             ToolCall(
                 "batch",

@@ -346,7 +346,7 @@ async def test_view_image_tool_rejects_invalid_input(tmp_path):
         await ViewImageTool(s, ["not-image.png"]).call()
 
 
-def test_view_image_tool_requires_confirmation_outside_workspace(tmp_path):
+async def test_view_image_tool_requires_confirmation_outside_workspace(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     outside = image_file(tmp_path / "outside.png")
@@ -355,13 +355,13 @@ def test_view_image_tool_requires_confirmation_outside_workspace(tmp_path):
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "no", output_fn=lambda _text: None)
 
     assert tool.needs_confirmation() is True
-    messages = runner.run_sync([ToolCall("outside", "ViewImage", [str(outside)])])
+    messages = await runner.run([ToolCall("outside", "ViewImage", [str(outside)])])
     assert [message["role"] for message in messages] == ["tool"]
     assert "refused" in messages[0]["content"]
     assert s.tool_records == []
 
 
-def test_view_image_batch_returns_all_tool_results_before_observation(tmp_path):
+async def test_view_image_batch_returns_all_tool_results_before_observation(tmp_path):
     s = session(tmp_path)
     image_file(tmp_path / "screen.png")
     (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
@@ -371,7 +371,7 @@ def test_view_image_batch_returns_all_tool_results_before_observation(tmp_path):
         ToolCall("read", "Read", [{"path": "notes.txt", "ranges": [[0, 1]]}]),
     ]
 
-    messages = runner.run_sync(calls)
+    messages = await runner.run(calls)
 
     assert [message["role"] for message in messages] == ["tool", "tool", "user"]
     assert [message["tool_call_id"] for message in messages[:2]] == ["image", "read"]
@@ -379,13 +379,13 @@ def test_view_image_batch_returns_all_tool_results_before_observation(tmp_path):
     assert runner.parallel_safe(calls[0]) is False
 
 
-def test_view_image_observation_round_trips_all_provider_protocols(tmp_path):
+async def test_view_image_observation_round_trips_all_provider_protocols(tmp_path):
     s = session(tmp_path)
     image_file(tmp_path / "screen.png", size=(8, 6))
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda _text: None)
     call = ToolCall("image", "ViewImage", ["screen.png"])
     assistant = Agent.assistant_turn_message({}, [call], "")
-    active = [assistant, *runner.run_sync([call])]
+    active = [assistant, *await runner.run([call])]
     model = ModelClient(s)
 
     chat = model.wire(model.session.config.provider).messages(active)
@@ -468,7 +468,7 @@ def test_anthropic_merges_text_mention_after_image_user_message(tmp_path):
     assert converted[0]["content"][-1] == {"type": "text", "text": "mention context"}
 
 
-def test_chat_request_does_not_leak_internal_image_metadata(tmp_path, monkeypatch):
+async def test_chat_request_does_not_leak_internal_image_metadata(tmp_path, monkeypatch):
     s = session(tmp_path)
     image_file(tmp_path / "pixel.png", size=(1, 1))
     message = s.images.message(s.images.recognize("pixel.png"))
@@ -483,7 +483,7 @@ def test_chat_request_does_not_leak_internal_image_metadata(tmp_path, monkeypatc
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=async_create(create))), close=_no_close)
     monkeypatch.setattr(ModelClient, "client", lambda _self, **kwargs: client)
 
-    ModelClient(s).request_sync([message], None)
+    await ModelClient(s).request([message], None)
 
     assert IMAGE_REFS_KEY not in json.dumps(captured)
     assert captured["messages"][0]["content"] == s.images.chat_content(message)

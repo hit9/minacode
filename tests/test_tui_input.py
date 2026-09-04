@@ -133,7 +133,7 @@ def ctrl_c_queue_scenario(cwd, results):
 
             driver = threading.Thread(target=drive, daemon=True)
             driver.start()
-            return_code = command_loop.run_tui()
+            return_code = asyncio.run(TuiRuntime(command_loop).run())
             driver.join(timeout=1)
             if driver.is_alive():
                 driver_errors.append("driver did not exit")
@@ -445,7 +445,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
 
         driver = threading.Thread(target=drive, daemon=True)
         driver.start()
-        assert command_loop.run_tui() == 0
+        assert asyncio.run(TuiRuntime(command_loop).run()) == 0
         driver.join(timeout=1)
 
     assert any(f"wizolt --resume {scenario_session.uid}" in line for line in output)

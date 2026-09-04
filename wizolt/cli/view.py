@@ -388,8 +388,7 @@ class View:
         return self.sweep_divider_fragments(label, prefix=prefix)
 
     def followup_fragments(self) -> tuple[StyleAndTextTuples, StyleAndTextTuples]:
-        with self.loop.session._queue_lock:
-            pending = list(self.loop.session.pending_user_inputs)
+        pending = list(self.loop.session.pending_user_inputs)
 
         def render(items: list[QueuedInput], marker: str, marker_style: str) -> StyleAndTextTuples:
             fragments: StyleAndTextTuples = []
@@ -494,8 +493,7 @@ class View:
         if tui is None:
             return ""
         if tui.input_mode == "running":
-            with self.loop.session._queue_lock:
-                has_pending = any(not item.inflight for item in self.loop.session.pending_user_inputs)
+            has_pending = any(not item.inflight for item in self.loop.session.pending_user_inputs)
             return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
         if tui.input_mode == "chat":
             return self._hint_picker.pick(self._hint_context(), self.loop.session.state.round_count)

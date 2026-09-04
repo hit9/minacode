@@ -105,9 +105,7 @@ async def test_cancelling_code_index_update_waits_then_clears_refreshing(tmp_pat
     monkeypatch.setattr(
         csi,
         "status",
-        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(
-            status="ready", message="", reason="", pending_changes=0, pending_files=()
-        ),
+        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
     )
 
     def update(_paths, *, root):
@@ -141,9 +139,7 @@ async def test_cancelling_code_index_sync_waits_then_clears_refreshing(tmp_path,
     monkeypatch.setattr(
         csi,
         "status",
-        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(
-            status="ready", message="", reason="", pending_changes=0, pending_files=()
-        ),
+        lambda root, *, check=False, max_pending_files=20: SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
     )
     index = CodeIndex(session(tmp_path))
     task = asyncio.create_task(index.sync())
@@ -287,20 +283,20 @@ def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch)
     assert any("upgrade with `uv tool upgrade wizolt`" in line for line in emitted)
 
 
-def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
+async def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
     s = session(tmp_path)
-    ToolRunner(s, ContextManager(s), output_fn=lambda text: None).run_sync([ToolCall("x", "MissingTool", [])])
+    await ToolRunner(s, ContextManager(s), output_fn=lambda text: None).run([ToolCall("x", "MissingTool", [])])
     assert s.tool_records == []
     assert s.tool_results == {}
     assert len(s.tool_errors) == 1
 
 
-def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
+async def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     s = session(tmp_path)
     s.settings.yolo = True
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run_sync([ToolCall("bad", "Bash", []), ToolCall("create", "Edit", ["ok.txt", "", [{"op": "create", "content": "ok\n"}]])])
+    await runner.run([ToolCall("bad", "Bash", []), ToolCall("create", "Edit", ["ok.txt", "", [{"op": "create", "content": "ok\n"}]])])
 
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1

@@ -33,7 +33,7 @@ def test_approval_segments_highlight_inline_edit_preview():
     assert "\n\n" not in rendered
 
 
-def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
+async def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     # Edit's "auto …" pre-line carries the approval preview; the result line is tagged [auto].
     s = session(tmp_path)
     s.settings.yolo = True
@@ -42,7 +42,7 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     key = view(s, "a.txt")
     out = []
     runner = ToolRunner(s, ContextManager(s), output_fn=out.append)
-    runner.run_sync([ToolCall("e0", "Edit", ["a.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "hello\nNEW\n"}]])])
+    await runner.run([ToolCall("e0", "Edit", ["a.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "hello\nNEW\n"}]])])
     assert len(out) == 2
     assert isinstance(out[0], LogBlock)
     root, _ = next(out[0].walk())
@@ -51,7 +51,7 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     assert str(out[1]).rstrip().endswith("[auto]")
 
 
-def test_batch_edit_no_change_reports_no_change(tmp_path, monkeypatch):
+async def test_batch_edit_no_change_reports_no_change(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
@@ -60,14 +60,14 @@ def test_batch_edit_no_change_reports_no_change(tmp_path, monkeypatch):
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run_sync([ToolCall("noop", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "b\n"}]])])
+    await runner.run([ToolCall("noop", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "b\n"}]])])
 
     assert s.tool_errors
     assert "edit produced no changes; requested content already matches target range" in s.tool_errors[0].error
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
-def test_batch_edit_stale_reports_source_target_changed(tmp_path, monkeypatch):
+async def test_batch_edit_stale_reports_source_target_changed(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
@@ -76,15 +76,15 @@ def test_batch_edit_stale_reports_source_target_changed(tmp_path, monkeypatch):
     key = view(s, "code.txt")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run_sync([ToolCall("first", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])])
-    runner.run_sync([ToolCall("bad", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\n"}]])])
+    await runner.run([ToolCall("first", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])])
+    await runner.run([ToolCall("bad", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "x\n"}]])])
 
     assert s.tool_errors
     assert "source target changed" in s.tool_errors[0].error
     assert path.read_text(encoding="utf-8") == "a\nB\n"
 
 
-def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
+async def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
     updated = []
@@ -101,10 +101,10 @@ def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
         output_fn=lambda text: None,
     )
 
-    runner.run_sync([ToolCall("empty", "Edit", ["empty.py", "", [{"op": "create", "content": ""}]])])
-    runner.run_sync([ToolCall("create", "Edit", ["made.py", "", [{"op": "create", "content": "print(1)\n"}]])])
+    await runner.run([ToolCall("empty", "Edit", ["empty.py", "", [{"op": "create", "content": ""}]])])
+    await runner.run([ToolCall("create", "Edit", ["made.py", "", [{"op": "create", "content": "print(1)\n"}]])])
     key = view(s, "made.py")
-    runner.run_sync([ToolCall("edit", "Edit", ["made.py", key, [{"op": "replace", "start": 1, "end": 1, "content": "print(2)\n"}]])])
+    await runner.run([ToolCall("edit", "Edit", ["made.py", key, [{"op": "replace", "start": 1, "end": 1, "content": "print(2)\n"}]])])
 
     assert (tmp_path / "made.py").read_text(encoding="utf-8") == "print(2)\n"
     assert updated == ["empty.py", "made.py", "made.py"]

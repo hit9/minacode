@@ -25,7 +25,6 @@ from wizolt.base import (
     ToolCall,
     ToolError,
     builtin_tool_label,
-    fail_if_running_loop,
     oneline,
 )
 from wizolt.context import ContextManager
@@ -421,12 +420,6 @@ class ToolRunner:
         current = asyncio.current_task()
         if current is not None and current.cancelling():
             raise asyncio.CancelledError
-
-    def run_sync(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
-        """Synchronous entry point for direct tests and embedding; the agent awaits run."""
-
-        fail_if_running_loop("use await ToolRunner.run(...)")
-        return asyncio.run(self.run(calls, batch_suffix))
 
     async def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         loop = asyncio.get_running_loop()

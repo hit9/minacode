@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 from typing import Any, ClassVar, cast
 
-from wizolt.base import Json, ToolArgs, ToolError, fail_if_running_loop, run_blocking
+from wizolt.base import Json, ToolArgs, ToolError, run_blocking
 from wizolt.session import BackgroundJob, Session
 from wizolt.tools.base import Tool
 
@@ -227,11 +227,6 @@ class BashTool(Tool):
             if self.live_output is not None:
                 self.live_output("", "")
 
-    def call_sync(self) -> str:
-        """Synchronous facade for callers that do not already own an event loop."""
-        fail_if_running_loop("use await BashTool.call()")
-        return asyncio.run(self.call())
-
     async def stream_process(self, proc: subprocess.Popen[bytes]) -> str:
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
@@ -382,7 +377,7 @@ class BashTool(Tool):
             finally:
                 selector.close()
 
-        # A promoted process intentionally outlives the turn and, for call_sync(), the event loop.
+        # A promoted process intentionally outlives the turn and its event loop.
         # One daemon owns both pipes; ordinary foreground Bash execution creates no worker thread.
         threading.Thread(target=drain_pipes, daemon=True).start()
         # Leads with status, not wait: this note is read right after backgrounding handed control
@@ -495,11 +490,6 @@ class JobTool(Tool):
         if action == "kill":
             return await self._kill(payload)
         raise ToolError(f"unhandled action: {action!r}")
-
-    def call_sync(self) -> str:
-        """Synchronous facade for callers that do not already own an event loop."""
-        fail_if_running_loop("use await JobTool.call()")
-        return asyncio.run(self.call())
 
     def _start(self, payload: Json) -> str:
         command = str(payload.get("command") or "").strip()

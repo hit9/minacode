@@ -1,4 +1,5 @@
 """tui runtime output (split from tests/test_tui_runtime.py)."""
+
 import asyncio
 import threading
 from types import SimpleNamespace
@@ -63,6 +64,7 @@ async def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path
 
     assert output[:3] == ["\n• answer me", "", "set_running:working"]
 
+
 async def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, monkeypatch):
     # A terminal NextHints batch promotes its answer into scrollback the way any tool batch does,
     # but unlike an ordinary batch nothing re-publishes it through agent_output. The post-turn emit
@@ -86,6 +88,7 @@ async def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, mo
 
     assert emitted == []
 
+
 async def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch):
     # A plain final answer is published by the engine through output_fn now, never by the
     # post-turn emit; the post-turn emit only prints errors the engine raised first.
@@ -107,6 +110,7 @@ async def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monke
 
     assert emitted == []  # the engine printed the answer; the runtime does not repeat it
 
+
 async def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_path, monkeypatch):
     """The footer belongs to the answer, and the engine publishes that answer through
     emit_agent_output at CONTENT_LEVEL. At column 0 the sources would hang off the left of the
@@ -127,6 +131,7 @@ async def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_pa
     text, indent = emitted[0]
     assert "a.example" in text
     assert indent == TurnBox.CONTENT_LEVEL
+
 
 async def test_automatic_compaction_replaces_working_divider_status(tmp_path):
     command_loop = loop(tmp_path)
@@ -152,6 +157,7 @@ async def test_automatic_compaction_replaces_working_divider_status(tmp_path):
     assert "compacting context (" in divider_during_compaction[0]
     assert command_loop.tui.status_label == "working"
 
+
 def test_compaction_retry_returns_to_compacting_and_reports_fallback(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
@@ -169,6 +175,7 @@ def test_compaction_retry_returns_to_compacting_and_reports_fallback(tmp_path):
     assert command_loop.tui.status_label == "working"
     assert output[0].items[0].label == "compaction fallback"
     assert output[0].items[0].text == "provider timed out"
+
 
 async def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -188,7 +195,8 @@ async def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, mon
 
     assert emitted[-1] == ("Cancelled", [])
 
-def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, monkeypatch):
+
+async def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.session.config.provider.api = "responses"
     command_loop.session.config.provider.model = "gpt-5"
@@ -197,11 +205,8 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
     command_loop.ui.color = True
     app = TuiApp(activity_fragments_fn=command_loop.view.tui_activity_fragments)
     command_loop.tui = app
-    output = TextRecordingOutput()
-    arguments_blocked = threading.Event()
-    release_arguments = threading.Event()
-    request_finished = threading.Event()
-    worker_errors = []
+    arguments_blocked = asyncio.Event()
+    release_arguments = asyncio.Event()
     timeline = []
     response = "I am editing the files."
     terminal = {
@@ -221,59 +226,40 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
         ],
     }
 
-    def events():
+    async def events():
         yield {"type": "response.output_text.delta", "delta": response}
         yield {"type": "response.output_text.done"}
         yield {"type": "response.output_item.added", "item": {"type": "function_call"}}
         timeline.append("tool arguments")
         arguments_blocked.set()
-        assert release_arguments.wait(timeout=2)
+        await release_arguments.wait()
         yield {"type": "response.function_call_arguments.delta", "delta": '{"args"'}
         yield {"type": "response.completed", "response": terminal}
 
     responses = SimpleNamespace(create=async_create(lambda **_params: events()))
     monkeypatch.setattr(command_loop.agent.model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
-    real_emit = command_loop.emit_agent_output
 
     def emit_promoted(text):
-        real_emit(text)
-        timeline.append("white response")
+        timeline.append(("white response", text))
 
     monkeypatch.setattr(command_loop, "emit_agent_output", emit_promoted)
 
-    def request():
-        try:
-            _, _, content = command_loop.agent.model.request_sync([{"role": "user", "content": "make the change"}], [])
-            command_loop.agent_output(content)
-        except Exception as error:  # noqa: BLE001 - harness collects every worker-thread failure
-            worker_errors.append(error)
-        finally:
-            request_finished.set()
+    async def request():
+        _, _, content = await command_loop.agent.model.request([{"role": "user", "content": "make the change"}], [])
+        command_loop.agent_output(content)
 
-    def drive(_pipe_input):
-        wait_until(lambda: app.app is not None and app.app.is_running)
-        worker = threading.Thread(target=request, daemon=True)
-        worker.start()
-        try:
-            wait_until(lambda: arguments_blocked.is_set() or request_finished.is_set(), timeout=2)
-            assert arguments_blocked.is_set(), worker_errors
-            assert timeline[:2] == ["white response", "tool arguments"]
-            assert command_loop.view.model_stream_fragments() == []
-            assert response in output.text()
-            assert not request_finished.is_set()
-        finally:
-            release_arguments.set()
-        assert request_finished.wait(timeout=2)
-        worker.join(timeout=1)
-        assert not worker.is_alive()
-        app.app.loop.call_soon_threadsafe(app.app.exit)
+    task = asyncio.create_task(request())
+    await asyncio.wait_for(arguments_blocked.wait(), timeout=2)
+    assert timeline[:2] == [("white response", response), "tool arguments"]
+    assert command_loop.view.model_stream_fragments() == []
+    assert not task.done()
+    release_arguments.set()
+    await asyncio.wait_for(task, timeout=2)
 
-    run_interactive_tui(monkeypatch, app, drive=drive, output=output)
+    assert timeline.count(("white response", response)) == 1
 
-    assert worker_errors == []
-    assert timeline.count("white response") == 1
 
-def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path, monkeypatch):
+async def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
     provider.api = "responses"
@@ -314,14 +300,15 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
 
-    _, _, content = command_loop.agent.model.request_sync([{"role": "user", "content": "search"}], None)
+    _, _, content = await command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
     command_loop.agent_output(content)
 
     assert emitted == [answer]
     assert command_loop.model_stream_promoted_text == ""
     assert command_loop.view.model_stream_fragments() == []
 
-def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(tmp_path, monkeypatch):
+
+async def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(tmp_path, monkeypatch):
     """A provider-side tool sits inside one response, so the promotion is a prefix of the answer."""
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
@@ -354,11 +341,12 @@ def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(t
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
 
-    _, _, content = command_loop.agent.model.request_sync([{"role": "user", "content": "search"}], None)
+    _, _, content = await command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
     command_loop.agent_output(content)
 
     assert emitted == [lead, rest]
     assert command_loop.model_stream_promoted_text == ""
+
 
 async def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback(tmp_path, monkeypatch):
     """The final answer is published once even when a mid-response promotion wrote its opening.
@@ -385,6 +373,7 @@ async def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback
 
     assert emitted == ["The searched answer."]
 
+
 def test_non_tui_stream_completion_keeps_normal_agent_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     emitted = []
@@ -395,7 +384,8 @@ def test_non_tui_stream_completion_keeps_normal_agent_output(tmp_path, monkeypat
 
     assert emitted == ["completed response"]
 
-def test_stream_promotion_waits_for_the_follow_up_it_answers(tmp_path, monkeypatch):
+
+async def test_stream_promotion_waits_for_the_follow_up_it_answers(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()  # no running application: scrollback writes run inline
     timeline = []
@@ -426,13 +416,14 @@ def test_stream_promotion_waits_for_the_follow_up_it_answers(tmp_path, monkeypat
     command_loop.agent.model = FakeModel()
     command_loop.agent.context.model = None
 
-    assert command_loop.agent.run_sync("update the code") == "done"
+    assert await command_loop.agent.run("update the code") == "done"
 
     assert timeline == [
         ("user", ["also update the README"]),
         ("assistant", "Sure, editing both files."),
         ("assistant", "done"),  # the engine publishes the final answer through output_fn
     ]
+
 
 def test_tui_turn_reset_clears_unconsumed_stream_promotion(tmp_path):
     command_loop = loop(tmp_path)
@@ -443,6 +434,7 @@ def test_tui_turn_reset_clears_unconsumed_stream_promotion(tmp_path):
     runtime.reset_turn()
 
     assert command_loop.model_stream_promoted_text == ""
+
 
 async def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)

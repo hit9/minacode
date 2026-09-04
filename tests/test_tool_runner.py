@@ -13,10 +13,10 @@ from wizolt.runner import ToolRunner
 from wizolt.tools import ReadTool, Tool, toolblocks, tooloutput
 
 
-def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
+async def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
-    runner.run_sync([call("Bash", [":"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
+    await runner.run([call("Bash", [":"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
@@ -25,7 +25,7 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
 
     outputs = []
     bad = session(tmp_path)
-    ToolRunner(bad, ContextManager(bad), output_fn=lambda text: outputs.append(str(text))).run_sync([call("Bash", [])])
+    await ToolRunner(bad, ContextManager(bad), output_fn=lambda text: outputs.append(str(text))).run([call("Bash", [])])
     assert bad.tool_records == []
     assert len(bad.tool_errors) == 1
     assert outputs and "· rejected:" in outputs[0]  # argument errors collapse to a quiet line
@@ -57,32 +57,32 @@ def test_rejected_and_failed_calls_collapse_a_multiline_display_to_one_line(tmp_
     assert len(toolblocks.finish_display(s, note, "", "ok", failed=False, d=display).splitlines()) > 1
 
 
-def test_tool_runner_refuses_without_reason_on_n(tmp_path):
+async def test_tool_runner_refuses_without_reason_on_n(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "n", output_fn=lambda text: None)
 
-    runner.run_sync([call("Bash", [":"])])
+    await runner.run([call("Bash", [":"])])
 
     assert s.tool_errors[0].error == "Cancelled: user refused tool call"
 
 
-def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
+async def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "not now", output_fn=lambda text: None)
 
-    runner.run_sync([call("Bash", [":"])])
+    await runner.run([call("Bash", [":"])])
 
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
     assert "not now" in s.tool_errors[0].error
 
 
-def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
+async def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
     s = session(tmp_path)
     key = s.store_tool_result("Read", ["a.txt"], "result")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    runner.run_sync([call("Recall", [key])])
+    await runner.run([call("Recall", [key])])
     assert [record.key for record in s.tool_records] == [key]
 
 
@@ -105,7 +105,7 @@ def test_replayed_delegate_keeps_its_call_line(tmp_path):
     assert "[worker]" not in live
 
 
-def test_read_only_batch_keeps_model_order_and_honors_the_concurrency_cap(tmp_path, monkeypatch):
+async def test_read_only_batch_keeps_model_order_and_honors_the_concurrency_cap(tmp_path, monkeypatch):
     """Independent read-only calls overlap, but never more than max_parallel_tools at once, and
     their results are published in the order the model emitted them rather than completion order."""
     for name in ("a", "b", "c", "d"):
@@ -134,13 +134,13 @@ def test_read_only_batch_keeps_model_order_and_honors_the_concurrency_cap(tmp_pa
 
     monkeypatch.setattr(ReadTool, "call", traced)
     calls = [ToolCall(f"r{index}", "Read", [{"path": f"{name}.txt"}]) for index, name in enumerate("abcd")]
-    messages = runner.run_sync(calls)
+    messages = await runner.run(calls)
 
     assert [message["tool_call_id"] for message in messages] == ["r0", "r1", "r2", "r3"]
     assert peak == 2
 
 
-def test_one_failing_read_only_call_leaves_its_siblings_alone(tmp_path):
+async def test_one_failing_read_only_call_leaves_its_siblings_alone(tmp_path):
     """A failure is converted at that call's own result boundary: the batch still returns one
     matched result per call, and the healthy siblings keep their output."""
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
@@ -154,7 +154,7 @@ def test_one_failing_read_only_call_leaves_its_siblings_alone(tmp_path):
         ToolCall("bad", "Read", [{"path": "missing.txt"}]),
         ToolCall("ok2", "Read", [{"path": "b.txt"}]),
     ]
-    contents = {message["tool_call_id"]: str(message["content"]) for message in runner.run_sync(calls)}
+    contents = {message["tool_call_id"]: str(message["content"]) for message in await runner.run(calls)}
 
     assert list(contents) == ["ok1", "bad", "ok2"]
     assert "alpha" in contents["ok1"]
@@ -162,7 +162,7 @@ def test_one_failing_read_only_call_leaves_its_siblings_alone(tmp_path):
     assert "status: failed" in contents["bad"]
 
 
-def test_edit_barrier_splits_a_batch_and_serializes_its_mutations(tmp_path):
+async def test_edit_barrier_splits_a_batch_and_serializes_its_mutations(tmp_path):
     """Edits plan together and run serially; a mutating non-Edit call is a barrier that ends the
     edit segment, so the file the later edit resolves against is the one the earlier edit left."""
     (tmp_path / "a.txt").write_text("one\n", encoding="utf-8")
@@ -178,7 +178,7 @@ def test_edit_barrier_splits_a_batch_and_serializes_its_mutations(tmp_path):
     assert runner.edit_segment_end(calls, 0) == 2  # edits plan and run as one segment
     assert runner.parallel_segment_end(calls, 0) == 0  # Edit never joins a parallel segment
 
-    messages = runner.run_sync(calls)
+    messages = await runner.run(calls)
     assert [message["tool_call_id"] for message in messages] == ["e1", "e2"]
     assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "two\n"
     assert (tmp_path / "c.txt").read_text(encoding="utf-8") == "three\n"
@@ -253,26 +253,15 @@ async def test_a_stop_hook_is_requested_once_per_cancellation_and_awaited(tmp_pa
     assert released.is_set()  # ... and the worker really unwound before cancellation surfaced
 
 
-def test_repeated_synchronous_runs_retain_no_loop_bound_state(tmp_path):
-    """`run()` is `asyncio.run` over `run`, so anything it left behind would belong to a
-    closed loop. Two calls on the same runner must therefore both work."""
+async def test_repeated_runs_retain_no_invocation_bound_state(tmp_path):
+    """Two calls on the same runner must not retain a semaphore or gateway between them."""
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    first = runner.run_sync([ToolCall("r1", "Read", [{"path": "a.txt"}])])
-    second = runner.run_sync([ToolCall("r2", "Read", [{"path": "a.txt"}])])
+    first = await runner.run([ToolCall("r1", "Read", [{"path": "a.txt"}])])
+    second = await runner.run([ToolCall("r2", "Read", [{"path": "a.txt"}])])
 
     assert "alpha" in str(first[0]["content"])
     assert "alpha" in str(second[0]["content"])
     assert runner._capacity is None and runner._gateway is None
-
-
-async def test_the_synchronous_facade_refuses_to_run_inside_a_loop(tmp_path):
-    """asyncio.run cannot nest, and the alternative -- a second loop on a helper thread -- would
-    own none of the resources it touched. So the facade names the async method instead."""
-    s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-
-    with pytest.raises(RuntimeError, match="ToolRunner.run"):
-        runner.run_sync([])

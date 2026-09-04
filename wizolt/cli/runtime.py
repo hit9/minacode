@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from wizolt.base import MalformedToolCallError, TurnBox, WizoltError, fail_if_running_loop
+from wizolt.base import MalformedToolCallError, TurnBox, WizoltError
 from wizolt.cli.modals import tool_output_viewer
 from wizolt.image import UserInput
 from wizolt.render import search_sources_footer
@@ -565,12 +565,6 @@ class TuiRuntime:
             raise
         finally:
             self.request_shutdown()
-
-    def run_sync(self) -> int:
-        """Synchronous entry point for the interactive CLI: one loop for the whole runtime."""
-
-        fail_if_running_loop("use await TuiRuntime.run(...)")
-        return asyncio.run(self.run())
 
     async def run(self) -> int:
         """Own the interactive session: the application, the active turn, and the output queue.

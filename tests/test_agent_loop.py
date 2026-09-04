@@ -1,4 +1,5 @@
 """agent loop (split from tests/test_agent_turn.py)."""
+
 import asyncio
 
 import pytest
@@ -10,7 +11,7 @@ from wizolt.session import Session, SessionSnapshotCodec
 from wizolt.skill import SkillLibrary
 
 
-def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
+async def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     s.skills = SkillLibrary({})  # no skills: assert the base frame layout
@@ -27,7 +28,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run_sync("read file") == "done"
+    assert await agent.run("read file") == "done"
     assert len(agent.model.messages) == 2
     assert [len(messages) for messages in agent.model.messages] == [3, 5]
     assert agent.model.messages[1][3]["role"] == "assistant"
@@ -51,12 +52,13 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
             return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])], ""
 
     limited_agent.model = LoopingModel()
-    answer = limited_agent.run_sync("keep going")
+    answer = await limited_agent.run("keep going")
     assert limited.state.turn_step == 2
     assert len(limited.tool_records) == 2
     assert limited.messages[-1]["content"] == answer
 
-def test_file_mentions_land_as_their_own_user_message(tmp_path):
+
+async def test_file_mentions_land_as_their_own_user_message(tmp_path):
     """The FILE MENTIONS block is appended as its own user message after the user's text, which
     is never rewritten."""
     (tmp_path / "small.py").write_text("print(1)\n", encoding="utf-8")
@@ -73,13 +75,14 @@ def test_file_mentions_land_as_their_own_user_message(tmp_path):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run_sync("fix @file:small.py") == "done"
+    assert await agent.run("fix @file:small.py") == "done"
     user_messages = [message for message in agent.model.requests[0] if message["role"] == "user"]
     contents = [str(message.get("content") or "") for message in user_messages]
     assert "fix @file:small.py" in contents  # the user's text is present and never rewritten
     mentions = [content for content in contents if "--- FILE MENTIONS ---" in content]
     assert len(mentions) == 1
     assert "[small.py] 1 lines" in mentions[0]
+
 
 async def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
     s = session(tmp_path)
@@ -117,7 +120,8 @@ async def test_agent_persists_responses_output_on_final_assistant_message(tmp_pa
     restored_assistant = next(message for message in reversed(restored.messages) if message.get("role") == "assistant")
     assert restored_assistant["_responses_output"] == s.messages[-1]["_responses_output"]
 
-def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
+
+async def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     s.skills = SkillLibrary({})
@@ -134,7 +138,7 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
 
     agent.model = InterruptingModel()
     with pytest.raises(KeyboardInterrupt):
-        agent.run_sync("read file")
+        await agent.run("read file")
 
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user"]
     assert [message["role"] for message in s.transcript_messages] == ["user", "assistant", "tool"]
@@ -156,7 +160,8 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
         "status": "ok",
     }
 
-def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
+
+async def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
     s = session(tmp_path)
     s.skills = SkillLibrary({})
     agent = Agent(s, output_fn=lambda text: None)
@@ -167,7 +172,7 @@ def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
 
     agent.model = InterruptingModel()
     with pytest.raises(KeyboardInterrupt):
-        agent.run_sync("never sent")
+        await agent.run("never sent")
 
     # Retract: the agent produced nothing, so the turn leaves no trace in the context or on disk,
     # while the input history (a separate FileHistory) still recalls it for Ctrl-P.
@@ -180,7 +185,8 @@ def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
     assert messages == []
     assert restored.transcript_messages == []
 
-def test_interrupted_unfinished_tool_call_gets_semantic_transcript_result(tmp_path):
+
+async def test_interrupted_unfinished_tool_call_gets_semantic_transcript_result(tmp_path):
     s = session(tmp_path)
     s.skills = SkillLibrary({})
     agent = Agent(s, output_fn=lambda _text: None)
@@ -197,7 +203,7 @@ def test_interrupted_unfinished_tool_call_gets_semantic_transcript_result(tmp_pa
     agent.tools.run = interrupt_tools
 
     with pytest.raises(asyncio.CancelledError):
-        agent.run_sync("read file")
+        await agent.run("read file")
 
     assert s.transcript_messages[-1] == {
         "role": "tool",
@@ -207,6 +213,7 @@ def test_interrupted_unfinished_tool_call_gets_semantic_transcript_result(tmp_pa
     }
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     assert restored.transcript_messages[-1] == s.transcript_messages[-1]
+
 
 async def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_path, monkeypatch):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
@@ -248,7 +255,8 @@ async def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_p
     assert [message["role"] for message in restored.transcript_messages] == ["user", "assistant", "tool", "assistant"]
     assert restored.transcript_messages[0]["content"] == "read the file"
 
-def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
+
+async def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
     s = session(tmp_path)
     s.skills = SkillLibrary({})
     agent = Agent(s, output_fn=lambda text: None)
@@ -271,7 +279,7 @@ def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
     agent.model = Model()
     agent.tools = Tools()
     with pytest.raises(asyncio.CancelledError):
-        agent.run_sync("read missing")
+        await agent.run("read missing")
 
     # Interrupt: the partial turn stands, the unanswered tool call gets a cancelled result so the
     # next request stays valid, and the marker records where the turn ended.
@@ -280,7 +288,8 @@ def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
     assert "Cancelled" in s.messages[2]["content"]
     assert s.messages[3]["content"] == INTERRUPT_MARKER
 
-def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
+
+async def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
     agent = Agent(session(tmp_path), output_fn=lambda text: None)
 
     class Model:
@@ -305,12 +314,12 @@ def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
     agent.tools = Tools()
 
     with pytest.raises(asyncio.CancelledError):
-        agent.run_sync("stop after the tool")
+        await agent.run("stop after the tool")
 
     assert agent.model.calls == 1
 
 
-def test_interrupted_turn_settles_once_and_matches_every_visible_tool_call(tmp_path):
+async def test_interrupted_turn_settles_once_and_matches_every_visible_tool_call(tmp_path):
     """One settlement per interrupted turn: one marker, and exactly one result per emitted call.
 
     Two calls in the batch make the count observable -- a settlement that ran twice would append a
@@ -338,7 +347,7 @@ def test_interrupted_turn_settles_once_and_matches_every_visible_tool_call(tmp_p
     agent.model = Model()
     agent.tools = Tools()
     with pytest.raises(asyncio.CancelledError):
-        agent.run_sync("two calls")
+        await agent.run("two calls")
 
     assert [message["content"] for message in s.messages if message["content"] == INTERRUPT_MARKER] == [INTERRUPT_MARKER]
     answered = [message["tool_call_id"] for message in s.messages if message.get("role") == "tool"]
@@ -346,7 +355,7 @@ def test_interrupted_turn_settles_once_and_matches_every_visible_tool_call(tmp_p
     assert len(answered) == len(set(answered))
 
 
-def test_accepted_request_acknowledges_its_queued_follow_up(tmp_path):
+async def test_accepted_request_acknowledges_its_queued_follow_up(tmp_path):
     """A request the provider accepted carries its claimed follow-up into history and drops it
     from the queue; nothing re-sends it on the next turn."""
     s = session(tmp_path)
@@ -362,12 +371,12 @@ def test_accepted_request_acknowledges_its_queued_follow_up(tmp_path):
             pass
 
     agent.model = Model()
-    assert agent.run_sync("first") == "done"
+    assert await agent.run("first") == "done"
     assert s.pending_user_inputs == []
     assert any("follow up" in str(message.get("content") or "") for message in s.messages)
 
 
-def test_interrupt_releases_a_claimed_queued_follow_up(tmp_path):
+async def test_interrupt_releases_a_claimed_queued_follow_up(tmp_path):
     """A turn interrupted before its request was accepted returns the claim: the follow-up stays
     queued and no longer counts as in flight, so the next turn may claim it again."""
     s = session(tmp_path)
@@ -384,7 +393,7 @@ def test_interrupt_releases_a_claimed_queued_follow_up(tmp_path):
 
     agent.model = Model()
     with pytest.raises(KeyboardInterrupt):
-        agent.run_sync("first")
+        await agent.run("first")
 
     assert [item.text for item in s.pending_user_inputs] == ["follow up"]
     assert not s.has_inflight_user_inputs()

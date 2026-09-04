@@ -36,7 +36,6 @@ from wizolt.base import (
     ToolCall,
     ToolError,
     builtin_tool_label,
-    fail_if_running_loop,
 )
 from wizolt.config import ProviderConfig
 from wizolt.image import IMAGE_REFS_KEY, ImageInputs
@@ -338,12 +337,6 @@ class ModelClient:
         with lease.lock:
             if lease.active:
                 callback()
-
-    def request_sync(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
-        """Synchronous entry point for direct Python callers; production code awaits request."""
-
-        fail_if_running_loop("use await ModelClient.request(...)")
-        return asyncio.run(self.request(messages, tools))
 
     async def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         if missing := self.session.missing_config():

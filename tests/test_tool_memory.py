@@ -25,7 +25,7 @@ from wizolt.tools import (
 )
 
 
-def test_note_tool_replace_known(tmp_path):
+async def test_note_tool_replace_known(tmp_path):
     s = session(tmp_path)
     s.state.known = ["old fact"]
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
@@ -35,15 +35,15 @@ def test_note_tool_replace_known(tmp_path):
 
     output = []
     runner.output_fn = output.append
-    runner.run_sync([ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}])])
+    await runner.run([ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}])])
     assert s.state.known == ["new fact a", "new fact b"]
     assert output == ["known:\n  new fact a\n  new fact b"]
 
-    runner.run_sync([ToolCall("n", "Note", [{"replace_known": []}])])
+    await runner.run([ToolCall("n", "Note", [{"replace_known": []}])])
     assert s.state.known == []
 
 
-def test_note_tool_set_check(tmp_path):
+async def test_note_tool_set_check(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
@@ -52,19 +52,19 @@ def test_note_tool_set_check(tmp_path):
 
     output = []
     runner.output_fn = output.append
-    runner.run_sync([ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
+    await runner.run([ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
     assert s.state.check == "pytest -q passed"
     assert output == ["check: pytest -q passed"]
 
 
-def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
+async def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
     s = session(tmp_path)
     s.state.known = ["existing"]
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     output = []
     runner.output_fn = output.append
-    runner.run_sync(
+    await runner.run(
         [
             ToolCall(
                 "note",
@@ -260,12 +260,12 @@ def test_suggest_tool_does_not_store_result():
     assert NextHintsTool.STORES_RESULT is False
 
 
-def test_suggest_tool_merges_multiple_calls_in_one_batch(tmp_path):
+async def test_suggest_tool_merges_multiple_calls_in_one_batch(tmp_path):
     """Several legal NextHints calls in one batch accumulate their inputs in call order,
     deduplicated and capped at MAX_HINTS, instead of the last call replacing the rest."""
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: None)
-    messages = runner.run_sync(
+    messages = await runner.run(
         [
             ToolCall("n1", "NextHints", [{"inputs": ["run the tests", "show the diff"]}]),
             ToolCall("n2", "NextHints", [{"inputs": ["commit the work", "run the tests"]}]),
@@ -278,7 +278,7 @@ def test_suggest_tool_merges_multiple_calls_in_one_batch(tmp_path):
     s.clear_quick_hints()
     first = [f"a{index}" for index in range(4)]
     second = [f"b{index}" for index in range(4)]
-    runner.run_sync([ToolCall("n3", "NextHints", [{"inputs": first}]), ToolCall("n4", "NextHints", [{"inputs": second}])])
+    await runner.run([ToolCall("n3", "NextHints", [{"inputs": first}]), ToolCall("n4", "NextHints", [{"inputs": second}])])
     assert s.quick_hints == (*first, *second)[: NextHintsTool.MAX_HINTS]
 
 

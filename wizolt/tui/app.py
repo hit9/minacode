@@ -40,7 +40,6 @@ from wizolt.base import (
     LogBlock,
     LogEdge,
     WizoltError,
-    fail_if_running_loop,
     run_blocking,
 )
 from wizolt.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
@@ -1571,15 +1570,6 @@ class TuiApp:
             app._redraw()
 
         app._on_resize = on_resize
-
-    def run_sync(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
-        """Standalone entry point: own a loop for this application alone.
-
-        The interactive runtime does not use this. It owns one loop for the application, the active
-        turn, and its own background work, and awaits `run` on it."""
-
-        fail_if_running_loop("use await TuiApp.run(...)")
-        return asyncio.run(self.run(style))
 
     async def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         app = self._build_application(style)

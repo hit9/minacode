@@ -89,7 +89,7 @@ def drive():
 
 
 threading.Thread(target=drive, daemon=True).start()
-app.run_sync()
+asyncio.run(app.run())
 """
     )
     try:
@@ -159,6 +159,7 @@ async def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_pat
     lp = loop(s)
     lp.interactive_input = True
     lp.ui.color = True
+
     async def unavailable():
         return False
 

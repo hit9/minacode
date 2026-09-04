@@ -1,8 +1,7 @@
 """User input queued while a turn is working: the text, its image refs, and the draft.
 
-`Session.pending_user_inputs` holds these; the queue is lock-guarded because input arrives on
-one thread while the agent runs on another, and a snapshot round-trips them through `to_json` /
-`from_json`.
+`Session.pending_user_inputs` holds these. The runtime loop owns queue mutation, and a snapshot
+round-trips entries through `to_json` / `from_json`.
 """
 
 from __future__ import annotations

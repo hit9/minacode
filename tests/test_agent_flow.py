@@ -1,4 +1,5 @@
 """agent flow (split from tests/test_agent_turn.py)."""
+
 import asyncio
 from types import SimpleNamespace
 
@@ -73,7 +74,7 @@ async def test_a_late_cancel_cannot_reach_the_next_turn(tmp_path):
     assert await agent.run("second") == "done"
 
 
-def test_agent_injects_pending_user_input_once(tmp_path):
+async def test_agent_injects_pending_user_input_once(tmp_path):
     s = session(tmp_path)
     queue(s, "extra instruction")
     output = []
@@ -91,7 +92,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run_sync("initial request") == "done"
+    assert await agent.run("initial request") == "done"
 
     first = "\n\n".join(message.get("content") or "" for message in agent.model.messages[0])
     second = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
@@ -119,7 +120,8 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
 
-def test_agent_expands_file_mentions_in_queued_input_before_sending(tmp_path):
+
+async def test_agent_expands_file_mentions_in_queued_input_before_sending(tmp_path):
     (tmp_path / "queued.txt").write_text("queued context\n", encoding="utf-8")
     s = session(tmp_path)
     queue(s, "inspect @file:queued.txt")
@@ -135,7 +137,7 @@ def test_agent_expands_file_mentions_in_queued_input_before_sending(tmp_path):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run_sync("initial request") == "done"
+    assert await agent.run("initial request") == "done"
 
     sent = agent.model.messages[0]
     assert any(message.get("content") == LIVE_FOLLOWUP_PREFIX + "inspect @file:queued.txt" for message in sent)
@@ -143,7 +145,8 @@ def test_agent_expands_file_mentions_in_queued_input_before_sending(tmp_path):
     assert sum("--- FILE MENTIONS ---" in str(message.get("content") or "") for message in s.messages) == 1
     assert not any("--- FILE MENTIONS ---" in str(message.get("content") or "") for message in s.transcript_messages)
 
-def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
+
+async def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
     """A live follow-up may not change the shape of a request. The tool list is part of the cached
     prefix, so a tools-only response is accepted as-is: the batch runs, the turn continues, and no
     extra request is made to extract an acknowledgement first."""
@@ -164,7 +167,7 @@ def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run_sync("initial request") == "done"
+    assert await agent.run("initial request") == "done"
     assert len(agent.model.requests) == 2  # one request per step, none inserted for the follow-ups
     assert all(tools for _, tools in agent.model.requests)
     assert agent.model.requests[0][1] == agent.model.requests[1][1]
@@ -176,7 +179,8 @@ def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
     assert all(isinstance(item, LogBlock) for item in output[:-1])  # tool logs only
     assert output[-1] == "done"  # the engine publishes the final answer through output_fn
 
-def test_agent_never_rewrites_a_sent_followup_message(tmp_path):
+
+async def test_agent_never_rewrites_a_sent_followup_message(tmp_path):
     """The follow-up marker travels with the message it marked. Committing the bare text instead
     would change bytes the provider already cached, ending the shared prefix at that message."""
     s = session(tmp_path)
@@ -197,14 +201,15 @@ def test_agent_never_rewrites_a_sent_followup_message(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run_sync("initial request") == "done"
+    assert await agent.run("initial request") == "done"
     sent = next(message for message in agent.model.requests[0] if "an early follow-up" in str(message.get("content") or ""))
     assert sent["content"] == LIVE_FOLLOWUP_PREFIX + "an early follow-up"
     replayed = [message for message in agent.model.requests[1] if "an early follow-up" in str(message.get("content") or "")]
     assert replayed == [sent]  # same bytes, once
     assert [message for message in s.messages if "an early follow-up" in str(message.get("content") or "")] == [sent]
 
-def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
+
+async def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
     """The cached prefix must survive a turn that mixes tool batches, live follow-ups, and a
     protocol correction: every request carries the same non-empty tool block."""
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
@@ -232,7 +237,7 @@ def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run_sync("initial request") == "done"
+    assert await agent.run("initial request") == "done"
     assert len(agent.model.requests) == 4
     tool_blocks = [tools for _, tools in agent.model.requests]
     assert all(tools and tools == tool_blocks[0] for tools in tool_blocks)
@@ -248,7 +253,8 @@ def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
         assert normalized(later[0])[: len(earlier[0])] == normalized(earlier[0])
     assert s.pending_user_inputs == []
 
-def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
+
+async def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
     """The correction is a real message, not a request-local one: what reached the provider must
     reach durable history, and the retry keeps the same tool list."""
     s = session(tmp_path)
@@ -272,7 +278,7 @@ def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
 
     agent.model = FakeModel()
 
-    assert agent.run_sync("initial request") == "done"
+    assert await agent.run("initial request") == "done"
     assert len(agent.model.requests) == 3
     assert all(tools == agent.model.requests[0][1] for _, tools in agent.model.requests)
     retry_messages = agent.model.requests[1][0]
@@ -287,7 +293,8 @@ def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
     assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
     assert s.pending_user_inputs == []
 
-def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
+
+async def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
     s = session(tmp_path)
     output = []
     agent = Agent(s, output_fn=output.append)
@@ -308,7 +315,7 @@ def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
         MalformedToolCallError,
         match=r"Model emitted Bash as text 6 times; none of the textual calls were executed\.",
     ):
-        agent.run_sync("initial request")
+        await agent.run("initial request")
 
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     assert all(tools == agent.model.requests[0][1] and tools for _, tools in agent.model.requests)
@@ -319,7 +326,8 @@ def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
     assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
     assert s.tool_records == []
 
-def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
+
+async def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda text: None)
     tools = [{"type": "function", "function": {"name": "Test", "parameters": {}}}]
@@ -339,11 +347,12 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     monkeypatch.setattr(Tool, "resolved_schemas", staticmethod(resolve))
     agent.model = FakeModel()
 
-    assert agent.run_sync("hello") == "done"
+    assert await agent.run("hello") == "done"
     assert resolved == [s]
     assert agent.model.received_tools is tools
 
-def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
+
+async def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     output = []
@@ -360,7 +369,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = TalkingModel()
-    assert agent.run_sync("read file") == "done"
+    assert await agent.run("read file") == "done"
     assert output[0] == "I'll inspect that first."
     assert any(isinstance(line, LogBlock) and str(line).startswith("  Read  ") for line in output)
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "assistant"]

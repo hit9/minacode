@@ -169,6 +169,7 @@ async def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(t
 
     class FakeModel:
         last_compaction_model = ""
+
         def __init__(self, session):
             self.session = session
             self.calls = 0
@@ -231,6 +232,7 @@ async def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
 
     class FailingModel:
         last_compaction_model = ""
+
         def compact(self, text, *_args, **_kwargs):
             raise ModelError("failed")
 
@@ -265,6 +267,7 @@ async def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
 
     class FakeModel:
         last_compaction_model = ""
+
         def __init__(self, session):
             self.session = session
             self.cancel_requested = threading.Event()
@@ -370,6 +373,7 @@ async def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path)
 
     class FakeModel:
         last_compaction_model = ""
+
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
@@ -403,6 +407,7 @@ async def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_pat
 
     class FakeModel:
         last_compaction_model = ""
+
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
@@ -500,6 +505,7 @@ async def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_p
 
     class FakeModel:
         last_compaction_model = ""
+
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
@@ -546,6 +552,7 @@ async def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_p
 
     class FakeModel:
         last_compaction_model = ""
+
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
@@ -563,7 +570,7 @@ async def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_p
     assert after[shared].get("content", "").startswith(COMPACTION_SUMMARY_TITLE)
 
 
-def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
+async def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     """The engine half of the same rule: what run() appends around the request is not a request."""
     folder = os.path.join(tmp_path, ".wizolt", "skills", "triage")
     os.makedirs(folder, exist_ok=True)
@@ -572,6 +579,7 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     with open(os.path.join(tmp_path, "issue.py"), "w", encoding="utf-8") as handle:
         handle.write("raise RuntimeError\n")
     s = session(tmp_path)  # discovers the skill written above
+
     async def mcp_mentions(_text):
         return "--- MCP MENTIONS ---"
 
@@ -580,11 +588,12 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
 
     class FakeModel:
         last_compaction_model = ""
+
         async def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run_sync("please $triage @file:issue.py") == "done"
+    assert await agent.run("please $triage @file:issue.py") == "done"
 
     assert [message.get(SESSION_EVENT_KEY) for message in s.messages] == [None, "mcp_mentions", "skill_mentions", "file_mentions", None]
     assert ContextManager(s).latest_user_index(s.messages) == 0
@@ -613,6 +622,7 @@ async def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path
 
     class FakeModel:
         last_compaction_model = ""
+
         def __init__(self, session):
             self.session = session
             self.calls = 0

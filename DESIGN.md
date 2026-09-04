@@ -204,27 +204,28 @@ provider-specific machinery without a demonstrated use case.
 
 ## One loop owns the session
 
-`TuiRuntime.run_sync()` calls `asyncio.run()` once, and that loop owns everything the interactive
-session does: the prompt-toolkit application, the active turn, the model requests, MCP, compaction,
-vision, the ordered scrollback writer, and every background task the runtime starts. The non-TTY
-frontend gets the same shape from `CommandLoop.run_simple()`. A model request, a tool batch,
-an MCP call, and a keystroke are tasks that take turns, which is what lets the prompt keep drawing
-while a request is in flight and lets one cancellation reach all of it.
+`CommandLoop.run()` calls `asyncio.run()` once, selects the interactive or non-TTY frontend inside
+that loop, and owns everything the session does: the prompt-toolkit application, the active turn,
+the model requests, MCP, compaction, vision, the ordered scrollback writer, and every background
+task the runtime starts. A model request, a tool batch, an MCP call, and a keystroke are tasks that
+take turns, which is what lets the prompt keep drawing while a request is in flight and lets one
+cancellation reach all of it.
 
-- No private or nested loop, and no generic sync-to-async bridge. `Agent.run_sync()`,
-  `ToolRunner.run_sync()`, `TuiApp.run_sync()`, `CommandLoop.run()`, `TuiRuntime.run_sync()`, and
-  `ModelClient.request_sync()` are the only
-  synchronous entry points; each is `fail_if_running_loop(...)` then `asyncio.run()` over its async
-  implementation, for direct and headless callers. Production code awaits the async method.
+- No private or nested loop, no generic sync-to-async bridge, and no lower-level synchronous
+  facades. `CommandLoop.run()` is the sole production runtime boundary; code that already owns a
+  loop awaits `Agent.run()`, `ToolRunner.run()`, `ModelClient.request()`, `TuiRuntime.run()`, or
+  `TuiApp.run()` directly.
 - Loop-bound primitives (queues, locks, events, futures) belong to one invocation or to the runtime.
   A long-lived object must not hold one across separate synchronous entry points: the lock created
   on a loop that has closed is not a lock.
-- Threads remain only at genuinely synchronous boundaries — local file reads, a ToolScript body,
-  and the bounded termination of a persistent background `Popen` handle — reached through the
-  managed executor or `base.run_blocking`. Search, mention discovery, fzf, the external editor,
-  and `Job` waits are native async operations; foreground Bash pipes are event-loop readers. A
-  promoted Bash process moves both pipes to one daemon drainer because it can outlive the loop that
-  launched it. A thread never gets an exception injected into it and never owns an async client.
+- Threads remain only at genuinely synchronous boundaries — potentially material local file work,
+  a ToolScript body, and the bounded termination of a persistent background `Popen` handle —
+  reached through the managed executor or `base.run_blocking`. Search, mention discovery, fzf, the
+  external editor, and `Job` waits are native async operations; foreground Bash pipes are
+  event-loop readers. Edit prepares immutable snapshots, performs its checked batch transaction
+  through `run_blocking`, then installs receipts on the loop. A promoted Bash process moves both
+  pipes to one daemon drainer because it can outlive the loop that launched it. A thread never gets
+  an exception injected into it and never owns an async client.
 - `base.run_blocking(invoke)` is the one blocking bridge for state-mutating maintenance work, and
   it is not `asyncio.to_thread`: cancelling it remembers the cancellation, keeps waiting for the
   worker, observes its outcome, and only then reports cancellation upward. `asyncio.to_thread`

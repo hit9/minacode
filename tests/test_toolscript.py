@@ -40,9 +40,9 @@ def _describe(s, tools):
     return ToolScript(s, [{"action": "describe", "tools": tools}]).call()
 
 
-def _run_script(s, code, input_fn=None):
+async def _run_script(s, code, input_fn=None):
     runner = _runner(s, input_fn=input_fn)
-    (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+    (message,) = await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
     return str(message["content"])
 
 
@@ -177,7 +177,7 @@ class TestRegistration:
 
 
 class TestNestedCalls:
-    def test_message_conservation(self, tmp_path, monkeypatch):
+    async def test_message_conservation(self, tmp_path, monkeypatch):
         """N nested calls produce no extra tool messages; results land in session.tool_results."""
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
@@ -188,7 +188,7 @@ class TestNestedCalls:
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         code = 'for i in range(3):\n    call("MCP", {"server": "test", "tool": "echo", "arguments": {"text": str(i)}})\nprint("done")\n'
         runner = _runner(s)
-        messages = runner.run_sync(
+        messages = await runner.run(
             [
                 ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
                 ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
@@ -204,7 +204,7 @@ class TestNestedCalls:
         for key in ("tr.1", "tr.2", "tr.3"):
             assert "<MCPCall" in s.tool_results[key]
 
-    def test_dotted_name_calls_the_mcp_tool(self, tmp_path, monkeypatch):
+    async def test_dotted_name_calls_the_mcp_tool(self, tmp_path, monkeypatch):
         """call("server.tool", {...}) is the call("MCP", {...}) form -- same name the listing shows."""
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
@@ -213,33 +213,33 @@ class TestNestedCalls:
             return SimpleNamespace(content=[SimpleNamespace(type="text", text="ok " + str(arguments))])
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
-        content = _run_script(s, 'call("test.echo", {"text": "hi"})\nprint("done")\n')
+        content = await _run_script(s, 'call("test.echo", {"text": "hi"})\nprint("done")\n')
         assert "ToolScript ok" in content
         assert "calls: 1 [tr.1]" in content
         assert "<MCPCall" in s.tool_results["tr.1"]
         assert "'text': 'hi'" in s.tool_results["tr.1"]
 
-    def test_dotted_name_on_unknown_server_says_so(self, tmp_path):
-        content = _run_script(_mcp_session(tmp_path), 'call("ghost.echo", {})\n')
+    async def test_dotted_name_on_unknown_server_says_so(self, tmp_path):
+        content = await _run_script(_mcp_session(tmp_path), 'call("ghost.echo", {})\n')
         assert "ToolScript failed" in content
         assert 'unknown tool "ghost.echo": no MCP server named "ghost" is configured' in content
 
-    def test_stdout_and_stderr_captured(self, tmp_path):
+    async def test_stdout_and_stderr_captured(self, tmp_path):
         s = _mcp_session(tmp_path)
         code = 'print("out-line")\nimport sys\nprint("err-line", file=sys.stderr)\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert "calls: 0" in content
         assert "stdout:" in content and "out-line" in content
         assert "stderr:" in content and "err-line" in content
 
-    def test_refused_nested_call_aborts_script_but_batch_continues(self, tmp_path):
+    async def test_refused_nested_call_aborts_script_but_batch_continues(self, tmp_path):
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         code = 'call("MCP", {"server": "test", "tool": "echo", "arguments": {}})\nprint("after")\n'
         answers = iter(["y", "n"])
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
-        messages = runner.run_sync(
+        messages = await runner.run(
             [
                 ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
                 ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
@@ -261,14 +261,14 @@ class TestNestedCalls:
             ('call("Reed", {})\n', 'unknown tool "Reed"'),
         ],
     )
-    def test_forbidden_call_names(self, tmp_path, code, expected):
+    async def test_forbidden_call_names(self, tmp_path, code, expected):
         s = _mcp_session(tmp_path)
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert expected in content
 
 
 class TestJsonFormat:
-    def test_declared_schema_with_structured_content_returns_dict(self, tmp_path, monkeypatch):
+    async def test_declared_schema_with_structured_content_returns_dict(self, tmp_path, monkeypatch):
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "lookup", output_schema={"type": "object"})]
 
@@ -277,11 +277,11 @@ class TestJsonFormat:
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         code = 'd = call("MCP", {"server": "test", "tool": "lookup", "arguments": {}}, format="json")\nprint(d)\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert "'answer': 42" in content
 
-    def test_undeclared_schema_with_json_text_returns_dict(self, tmp_path, monkeypatch):
+    async def test_undeclared_schema_with_json_text_returns_dict(self, tmp_path, monkeypatch):
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
 
@@ -290,11 +290,11 @@ class TestJsonFormat:
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         code = 'd = call("MCP", {"server": "test", "tool": "echo", "arguments": {}}, format="json")\nprint(d)\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert "'a': 1" in content
 
-    def test_undeclared_schema_with_non_json_text_errors(self, tmp_path, monkeypatch):
+    async def test_undeclared_schema_with_non_json_text_errors(self, tmp_path, monkeypatch):
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
 
@@ -303,11 +303,11 @@ class TestJsonFormat:
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         code = 'call("MCP", {"server": "test", "tool": "echo", "arguments": {}}, format="json")\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript failed" in content
         assert 'MCP returned text that is not JSON for tool "echo"' in content
 
-    def test_declared_schema_with_an_empty_payload_returns_it(self, tmp_path, monkeypatch):
+    async def test_declared_schema_with_an_empty_payload_returns_it(self, tmp_path, monkeypatch):
         """`{}` and `[]` are payloads a search that matched nothing legitimately returns. Reported
         as a missing payload, every such call raised instead of handing the script its answer."""
         s = _mcp_session(tmp_path)
@@ -325,11 +325,11 @@ class TestJsonFormat:
             'b = call("MCP", {"server": "test", "tool": "empty_list", "arguments": {}}, format="json")\n'
             "print(repr(a), repr(b))\n"
         )
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert "{} []" in content
 
-    def test_declared_schema_without_structured_content_errors(self, tmp_path, monkeypatch):
+    async def test_declared_schema_without_structured_content_errors(self, tmp_path, monkeypatch):
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "lookup", output_schema={"type": "object"})]
 
@@ -338,34 +338,34 @@ class TestJsonFormat:
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         code = 'call("MCP", {"server": "test", "tool": "lookup", "arguments": {}}, format="json")\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript failed" in content
         assert 'server declared outputSchema but no structuredContent for tool "lookup"' in content
 
 
 class TestScriptFailures:
-    def test_script_exception_shows_source_line(self, tmp_path):
+    async def test_script_exception_shows_source_line(self, tmp_path):
         s = _mcp_session(tmp_path)
         code = 'x = 1\nraise ValueError("boom")\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript failed" in content
         assert "ValueError: boom" in content
         assert 'raise ValueError("boom")' in content  # source line via linecache
         # The call line names the script's size, not its first line: the body is in the viewer.
         assert "ToolScript call 2 lines (31 chars)" in content
 
-    def test_infinite_loop_hits_time_budget(self, tmp_path, monkeypatch):
+    async def test_infinite_loop_hits_time_budget(self, tmp_path, monkeypatch):
         import wizolt.tools.toolscript as toolscript_module
 
         monkeypatch.setattr(toolscript_module, "SCRIPT_TIME_LIMIT", 0.1)
         s = _mcp_session(tmp_path)
-        content = _run_script(s, "while True:\n    pass\n")
+        content = await _run_script(s, "while True:\n    pass\n")
         assert "ToolScript failed" in content
         assert "exceeded" in content
 
-    def test_huge_stdout_is_bounded(self, tmp_path):
+    async def test_huge_stdout_is_bounded(self, tmp_path):
         s = _mcp_session(tmp_path)
-        content = _run_script(s, 'print("x" * 100_000)\n')
+        content = await _run_script(s, 'print("x" * 100_000)\n')
         assert len(content) < 50_000
         assert "<bounded_output" in content
 
@@ -382,7 +382,7 @@ class TestGate:
     def test_mcp_params_schema_has_no_format_key(self):
         assert "format" not in MCPTool.params_schema()["properties"]
 
-    def test_yolo_skips_nested_confirmation(self, tmp_path, monkeypatch):
+    async def test_yolo_skips_nested_confirmation(self, tmp_path, monkeypatch):
         s = _mcp_session(tmp_path)
         s.settings.yolo = True
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
@@ -397,7 +397,7 @@ class TestGate:
             raise AssertionError("input_fn must not be called under yolo")
 
         runner = ToolRunner(s, ContextManager(s), input_fn=no_prompt, output_fn=lambda text: None)
-        (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
         content = str(message["content"])
         assert "ToolScript ok" in content
         assert "ok" in content
@@ -463,13 +463,13 @@ class TestConfirmationBlockShowsScript:
 
 
 class TestNestedBuiltinCalls:
-    def test_nested_read_returns_text_and_stores_result(self, tmp_path):
+    async def test_nested_read_returns_text_and_stores_result(self, tmp_path):
         (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         code = 't = call("Read", {"path": "f.txt"})\nprint(t)\n'
         runner = _runner(s)
-        messages = runner.run_sync(
+        messages = await runner.run(
             [
                 ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
                 ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
@@ -484,52 +484,52 @@ class TestNestedBuiltinCalls:
         assert '<Read path="f.txt"' in s.tool_results["tr.1"]
         assert "<MCPDescribe" in str(messages[1]["content"])
 
-    def test_nested_read_rejects_json_format(self, tmp_path):
+    async def test_nested_read_rejects_json_format(self, tmp_path):
         (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
         code = 'call("Read", {"path": "f.txt"}, format="json")\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript failed" in content
         assert 'Read does not support format="json"; use format="text"' in content
 
-    def test_nested_read_without_mcp(self, tmp_path):
+    async def test_nested_read_without_mcp(self, tmp_path):
         (tmp_path / "f.txt").write_text("hi\n", encoding="utf-8")
         s = Session(cwd=str(tmp_path))
         bootstrap_features(s)
         code = 'print(call("Read", {"path": "f.txt"}))\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert "hi" in content
 
-    def test_nested_mcp_without_config_fails(self, tmp_path):
+    async def test_nested_mcp_without_config_fails(self, tmp_path):
         s = Session(cwd=str(tmp_path))
         bootstrap_features(s)
         s.mcp = None
         code = 'call("MCP", {"server": "test", "tool": "echo", "arguments": {}})\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript failed" in content
         assert "MCP not configured" in content
 
-    def test_nested_bash_readonly_runs_without_prompt(self, tmp_path):
+    async def test_nested_bash_readonly_runs_without_prompt(self, tmp_path):
         s = _mcp_session(tmp_path)
         code = 'out = call("Bash", {"command": "echo hi"})\nprint(out)\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert "hi" in content
 
-    def test_nested_bash_refused_aborts_script(self, tmp_path):
+    async def test_nested_bash_refused_aborts_script(self, tmp_path):
         s = _mcp_session(tmp_path)
         code = 'call("Bash", {"command": "mkdir sub"})\nprint("after")\n'
         answers = iter(["y", "n"])
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
-        (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
         content = str(message["content"])
         assert "ToolScript failed" in content
         assert "nested call refused by user" in content
         assert "after" not in content
         assert not (tmp_path / "sub").exists()
 
-    def test_yolo_skips_nested_bash_confirmation(self, tmp_path):
+    async def test_yolo_skips_nested_bash_confirmation(self, tmp_path):
         s = _mcp_session(tmp_path)
         s.settings.yolo = True
         code = 'call("Bash", {"command": "mkdir made"})\nprint("done")\n'
@@ -538,18 +538,18 @@ class TestNestedBuiltinCalls:
             raise AssertionError("input_fn must not be called under yolo")
 
         runner = ToolRunner(s, ContextManager(s), input_fn=no_prompt, output_fn=lambda text: None)
-        (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
         content = str(message["content"])
         assert "ToolScript ok" in content
         assert (tmp_path / "made").is_dir()
 
-    def test_nested_builtin_message_conservation(self, tmp_path):
+    async def test_nested_builtin_message_conservation(self, tmp_path):
         (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         code = 'for i in range(3):\n    call("Read", {"path": "f.txt"})\nprint("done")\n'
         runner = _runner(s)
-        messages = runner.run_sync(
+        messages = await runner.run(
             [
                 ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
                 ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
@@ -562,16 +562,16 @@ class TestNestedBuiltinCalls:
         for key in ("tr.1", "tr.2", "tr.3"):
             assert '<Read path="f.txt"' in s.tool_results[key]
 
-    def test_nested_args_conversion_error_names_tool(self, tmp_path):
+    async def test_nested_args_conversion_error_names_tool(self, tmp_path):
         s = _mcp_session(tmp_path)
         code = 'call("Bash", {"comand": "echo hi"})\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript failed" in content
         assert "Bash: Bash command must be non-empty" in content
 
 
 class TestNestedEdit:
-    def test_nested_edit_applies(self, tmp_path):
+    async def test_nested_edit_applies(self, tmp_path):
         path = tmp_path / "code.txt"
         path.write_text("a\nb\nc\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
@@ -580,11 +580,11 @@ class TestNestedEdit:
             'call("Edit", {"path": "code.txt", "source": "view.1", "edits": [{"op": "replace", "start": 2, "end": 2, "content": "B\\n"}]})\n'
             'print("edited")\n'
         )
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
 
-    def test_nested_edit_stale_anchor_reports_error(self, tmp_path):
+    async def test_nested_edit_stale_anchor_reports_error(self, tmp_path):
         path = tmp_path / "code.txt"
         path.write_text("a\nb\nc\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
@@ -596,7 +596,7 @@ class TestNestedEdit:
             'call("Edit", {"path": "code.txt", "source": "view.1", "edits": [{"op": "replace", "start": 2, "end": 2, "content": "C\\n"}]})\n'
             'print("after")\n'
         )
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript failed" in content
         assert "Read again" in content
         assert "after" not in content
@@ -609,42 +609,42 @@ class TestNestedEdit:
 
 
 class TestScriptLogShape:
-    def _blocks(self, s, code, **kwargs):
+    async def _blocks(self, s, code, **kwargs):
         blocks = []
         runner = _runner(s)
         runner.output_fn = blocks.append
-        runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])], **kwargs)
+        await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])], **kwargs)
         return blocks
 
-    def test_nested_calls_are_indented_under_the_script(self, tmp_path):
+    async def test_nested_calls_are_indented_under_the_script(self, tmp_path):
         """A nested call is logged as what it is -- a call this script made -- not as a top-level
         one the model asked for. The indent is the whole signal, so it has to be there."""
         (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
-        blocks = self._blocks(s, 'print(call("Read", {"path": "f.txt"}))\n')
+        blocks = await self._blocks(s, 'print(call("Read", {"path": "f.txt"}))\n')
         levels = {line.text: level for block in blocks for line, level in block.walk()}
         nested = next(level for text, level in levels.items() if text.startswith("f.txt"))
         top = next(level for text, level in levels.items() if text.startswith("call 1 line"))
         assert nested > top
 
-    def test_nested_calls_carry_the_tree_gutter(self, tmp_path):
+    async def test_nested_calls_carry_the_tree_gutter(self, tmp_path):
         """Indent alone reads as an ordinary call sitting further right. The nested roots continue
         the enclosing call's `|`, so the script, its calls, and its result are one bracket -- and
         the excerpt above them must not close the tree with an END edge first."""
         (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
-        blocks = self._blocks(s, 'print(call("Read", {"path": "f.txt"}))\n')
+        blocks = await self._blocks(s, 'print(call("Read", {"path": "f.txt"}))\n')
         roots = [line for block in blocks for line, _ in block.walk() if line.label == "Read"]
         assert roots and all(line.edge is LogEdge.CONTINUE for line in roots)
         excerpt = [line for block in blocks for line, _ in block.walk() if line.role in (LogRole.CODE, LogRole.META)]
         assert not any(line.edge is LogEdge.END for line in excerpt[: len(excerpt) - 1])
 
-    def test_the_rail_survives_a_nested_call_that_logs_children(self, tmp_path):
+    async def test_the_rail_survives_a_nested_call_that_logs_children(self, tmp_path):
         """The rail used to stop at the nested root, so a call with a block under it (a Bash
         preview, an Edit diff, an error) punched a hole in the bracket exactly where it was
         tallest. Every rendered row of the nested region carries it now, in one column."""
         s = _mcp_session(tmp_path)
-        blocks = self._blocks(s, 'print(call("Bash", {"command": "printf one; printf two"}))\n')
+        blocks = await self._blocks(s, 'print(call("Bash", {"command": "printf one; printf two"}))\n')
         rows = [row for block in blocks for row in "".join(text for _, text in UiPrinter(output_fn=lambda _text: None).log_segments(block)).splitlines()]
         start = next(index for index, row in enumerate(rows) if row.endswith("Bash printf one; printf two"))
         end = next(index for index, row in enumerate(rows) if "calls 1" in row)  # the script's own result line closes the region
@@ -652,19 +652,19 @@ class TestScriptLogShape:
         assert len(nested) > 1, nested  # the call plus the block it logged under itself
         assert all(row.startswith("    │ ") for row in nested), nested
 
-    def test_nesting_depth_is_restored_after_a_failed_script(self, tmp_path):
+    async def test_nesting_depth_is_restored_after_a_failed_script(self, tmp_path):
         """A script that raises must not leave the rest of the session permanently indented."""
         s = _mcp_session(tmp_path)
         runner = _runner(s)
-        runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'raise ValueError("boom")\n'}])])
+        await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'raise ValueError("boom")\n'}])])
         assert runner.nesting == 0
 
-    def test_finish_line_summarizes_the_script_run(self, tmp_path):
+    async def test_finish_line_summarizes_the_script_run(self, tmp_path):
         """The block closes with what the script did: how many calls, and what it printed --
         the printed output being all that reaches the model."""
         (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
-        blocks = self._blocks(s, 'call("Read", {"path": "f.txt"})\nprint("counted 1")\n')
+        blocks = await self._blocks(s, 'call("Read", {"path": "f.txt"})\nprint("counted 1")\n')
         lines = [line for block in blocks for line, _ in block.walk()]
         assert any(line.label.startswith("calls 1") and line.text == "Ctrl-O for more" for line in lines)
         assert any(line.text == "counted 1" for line in lines)
@@ -672,7 +672,9 @@ class TestScriptLogShape:
     def test_describe_has_no_script_summary(self, tmp_path):
         """A describe returns tool shapes, not a script envelope, so there is nothing to count."""
         s = _mcp_session(tmp_path)
-        block = toolblocks.finish_display(s, ToolCall("ts1", "ToolScript", [{"action": "describe", "tools": ["Read"]}]), "tr.1", "Read\njson:    no", failed=False)
+        block = toolblocks.finish_display(
+            s, ToolCall("ts1", "ToolScript", [{"action": "describe", "tools": ["Read"]}]), "tr.1", "Read\njson:    no", failed=False
+        )
         assert not any(line.label.startswith("calls") for line, _ in block.walk())
 
     def test_result_fields_parse_the_envelope(self, tmp_path):
@@ -688,27 +690,27 @@ class TestScriptLogShape:
 
 
 class TestScriptCannotEndTheSession:
-    def test_sys_exit_becomes_a_failed_envelope(self, tmp_path):
+    async def test_sys_exit_becomes_a_failed_envelope(self, tmp_path):
         """`sys.exit()` is ordinary in standalone Python and a model writes it without thinking.
         As a SystemExit it flew past this tool, past run_one, and out of the agent loop: one line
         of a script ended the session. It is a script failure like any other."""
         s = _mcp_session(tmp_path)
-        content = _run_script(s, 'print("before")\nimport sys\nsys.exit(1)\nprint("after")\n')
+        content = await _run_script(s, 'print("before")\nimport sys\nsys.exit(1)\nprint("after")\n')
         assert "ToolScript failed" in content
         assert "SystemExit" in content
         assert "before" in content and "after" not in content
 
-    def test_keyboard_interrupt_still_travels(self, tmp_path):
+    async def test_keyboard_interrupt_still_travels(self, tmp_path):
         """Ctrl-C is the user cancelling the turn, not the script failing; swallowing it would
         report a failed script and carry on."""
         s = _mcp_session(tmp_path)
         runner = _runner(s)
         with pytest.raises(KeyboardInterrupt):
-            runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": "raise KeyboardInterrupt\n"}])])
+            await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": "raise KeyboardInterrupt\n"}])])
 
 
 class TestFailedScriptLooksFailed:
-    def test_the_result_line_reports_the_failure_and_the_error(self, tmp_path):
+    async def test_the_result_line_reports_the_failure_and_the_error(self, tmp_path):
         """A script that raised returns its envelope normally, so the call itself did not fail and
         nothing else in the block says otherwise. Without this, a script that died on call 2 of 40
         read exactly like one that finished."""
@@ -716,7 +718,7 @@ class TestFailedScriptLooksFailed:
         runner = _runner(s)
         blocks = []
         runner.output_fn = blocks.append
-        runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'print("partial")\nraise ValueError("boom")\n'}])])
+        await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'print("partial")\nraise ValueError("boom")\n'}])])
         lines = [line for block in blocks for line, _ in block.walk()]
         head = next(line for line in lines if line.label.startswith(("calls", "failed")))
         assert head.label.startswith("failed · calls 0")
@@ -725,7 +727,7 @@ class TestFailedScriptLooksFailed:
 
 
 class TestNestedCallsDoNotStealTheScriptStdout:
-    def test_nested_logging_reaches_the_terminal_not_the_model(self, tmp_path):
+    async def test_nested_logging_reaches_the_terminal_not_the_model(self, tmp_path):
         """The capture is for what the script prints. A nested call's log is not that: swallowed,
         it was posted back as the script's own output, and on the headless path the confirmation
         prompt -- input() writes to sys.stdout -- went the same way, stopping the run at a prompt
@@ -738,7 +740,7 @@ class TestNestedCallsDoNotStealTheScriptStdout:
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=print)  # the headless default
         terminal = io.StringIO()
         with contextlib.redirect_stdout(terminal):
-            (message,) = runner.run_sync(
+            (message,) = await runner.run(
                 [ToolCall("ts1", "ToolScript", [{"action": "call", "code": 't = call("Read", {"path": "f.txt"})\nprint("script says hi")\n'}])]
             )
 
@@ -746,7 +748,7 @@ class TestNestedCallsDoNotStealTheScriptStdout:
         assert "Read f.txt" in terminal.getvalue()  # the nested call was logged where the user is
         assert content.split("stdout:")[1].strip() == "script says hi"  # and nowhere near the result
 
-    def test_the_outer_stream_owner_gets_it_back(self, tmp_path):
+    async def test_the_outer_stream_owner_gets_it_back(self, tmp_path):
         """Stepping aside restores whatever was current when capture began, not the process's
         original stdout: an outer redirect owns those streams and must keep owning them."""
         import contextlib
@@ -757,15 +759,15 @@ class TestNestedCallsDoNotStealTheScriptStdout:
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=print)
         outer = io.StringIO()
         with contextlib.redirect_stdout(outer):
-            runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'call("Read", {"path": "f.txt"})\n'}])])
+            await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'call("Read", {"path": "f.txt"})\n'}])])
 
         assert "Read f.txt" in outer.getvalue()
 
 
-def test_non_string_tool_name_stays_a_plain_tool_error(tmp_path):
+async def test_non_string_tool_name_stays_a_plain_tool_error(tmp_path):
     """`name` is whatever the script passed. The dotted-name checks read it as text, so a number
     has to be turned away before them or it surfaces as a TypeError traceback."""
-    content = _run_script(_mcp_session(tmp_path), "call(123, {})\n")
+    content = await _run_script(_mcp_session(tmp_path), "call(123, {})\n")
     assert "ToolScript failed" in content
     assert 'unknown tool "123"' in content
     assert "TypeError" not in content
@@ -774,18 +776,18 @@ def test_non_string_tool_name_stays_a_plain_tool_error(tmp_path):
 class TestWhitelistGating:
     """A session tool whitelist gates nested calls and describe entries, not just schemas."""
 
-    def test_nested_call_rejects_tool_outside_whitelist(self, tmp_path):
+    async def test_nested_call_rejects_tool_outside_whitelist(self, tmp_path):
         s = _mcp_session(tmp_path)
         s.tool_names = ("Read", "Search", "ToolScript")
-        content = _run_script(s, 'call("Bash", {"command": "echo hi"})\n')
+        content = await _run_script(s, 'call("Bash", {"command": "echo hi"})\n')
         assert "ToolScript failed" in content
         assert "Bash is not available in this session" in content
 
-    def test_nested_call_inside_whitelist_still_runs(self, tmp_path):
+    async def test_nested_call_inside_whitelist_still_runs(self, tmp_path):
         (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
         s.tool_names = ("Read", "ToolScript")
-        content = _run_script(s, 'print(call("Read", {"path": "a.txt"}))\n')
+        content = await _run_script(s, 'print(call("Read", {"path": "a.txt"}))\n')
         assert "ToolScript ok" in content
         assert "hello" in content
 
@@ -804,21 +806,18 @@ class TestWhitelistGating:
 
 
 class TestCallMany:
-    def test_returns_one_value_per_entry_in_the_order_given(self, tmp_path):
+    async def test_returns_one_value_per_entry_in_the_order_given(self, tmp_path):
         for index in range(4):
             (tmp_path / f"f{index}.txt").write_text(f"body {index}\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
-        code = (
-            'rows = call_many([("Read", {"path": "f%d.txt" % i}) for i in range(4)])\n'
-            'print([r.count("body %d" % i) for i, r in enumerate(rows)])\n'
-        )
-        content = _run_script(s, code)
+        code = 'rows = call_many([("Read", {"path": "f%d.txt" % i}) for i in range(4)])\nprint([r.count("body %d" % i) for i, r in enumerate(rows)])\n'
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         # One result per entry, each the answer to its own entry: the pool must not reorder them.
         assert "[1, 1, 1, 1]" in content
         assert "calls: 4 [tr.1-tr.4]" in content
 
-    def test_read_only_entries_run_concurrently(self, tmp_path, monkeypatch):
+    async def test_read_only_entries_run_concurrently(self, tmp_path, monkeypatch):
         import threading
 
         from wizolt.tools.files import ReadTool
@@ -838,12 +837,12 @@ class TestCallMany:
         monkeypatch.setattr(ReadTool, "call", blocking_read)
         s = _mcp_session(tmp_path)
         code = 'print(len(call_many([("Read", {"path": "f%d.txt" % i}) for i in range(3)])))\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert "3" in content
         assert len(set(threads)) == 3
 
-    def test_a_failed_entry_comes_back_as_the_error_and_the_rest_survive(self, tmp_path):
+    async def test_a_failed_entry_comes_back_as_the_error_and_the_rest_survive(self, tmp_path):
         (tmp_path / "there.txt").write_text("here\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
         code = (
@@ -851,24 +850,24 @@ class TestCallMany:
             '("Read", {"path": "there.txt"})])\n'
             'print([type(r).__name__ if isinstance(r, Exception) else "ok" for r in rows])\n'
         )
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         # The script runs to the end: a bad entry costs its own result and nothing else.
         assert "ToolScript ok" in content
         assert "['ok', 'ToolError', 'ok']" in content
 
-    def test_a_refused_entry_ends_the_script(self, tmp_path):
+    async def test_a_refused_entry_ends_the_script(self, tmp_path):
         s = _mcp_session(tmp_path)
         code = 'call_many([("Bash", {"command": "mkdir sub"})])\nprint("after")\n'
         answers = iter(["y", "n"])
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
-        (message,) = runner.run_sync([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        (message,) = await runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
         content = str(message["content"])
         assert "ToolScript failed" in content
         assert "nested call refused by user" in content
         assert "after" not in content
         assert not (tmp_path / "sub").exists()
 
-    def test_a_call_needing_confirmation_still_asks_and_runs_in_place(self, tmp_path):
+    async def test_a_call_needing_confirmation_still_asks_and_runs_in_place(self, tmp_path):
         (tmp_path / "a.txt").write_text("hi\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
         code = (
@@ -882,36 +881,36 @@ class TestCallMany:
             prompts.append(str(prompt))
             return "y"
 
-        content = _run_script(s, code, input_fn=input_fn)
+        content = await _run_script(s, code, input_fn=input_fn)
         assert "ToolScript ok" in content
         assert "3 True" in content
         # The write ran serially between the two reads, and it still stopped to ask.
         assert (tmp_path / "sub").exists()
         assert prompts
 
-    def test_a_malformed_entry_is_refused_before_anything_runs(self, tmp_path):
+    async def test_a_malformed_entry_is_refused_before_anything_runs(self, tmp_path):
         s = _mcp_session(tmp_path)
         code = 'call_many([("Bash", {"command": "mkdir sub"}), "Read"])\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript failed" in content
         assert "call_many(...) entry 1 is not a (name, args) pair" in content
         # Validation happens up front, so the well-formed first entry never ran.
         assert not (tmp_path / "sub").exists()
 
-    def test_a_non_list_argument_is_a_script_error(self, tmp_path):
+    async def test_a_non_list_argument_is_a_script_error(self, tmp_path):
         s = _mcp_session(tmp_path)
-        content = _run_script(s, 'call_many("Read")\n')
+        content = await _run_script(s, 'call_many("Read")\n')
         assert "ToolScript failed" in content
         assert "call_many(...) requires a list of (name, args) pairs" in content
 
-    def test_an_empty_batch_returns_nothing_and_runs_nothing(self, tmp_path):
+    async def test_an_empty_batch_returns_nothing_and_runs_nothing(self, tmp_path):
         s = _mcp_session(tmp_path)
-        content = _run_script(s, "print(call_many([]))\n")
+        content = await _run_script(s, "print(call_many([]))\n")
         assert "ToolScript ok" in content
         assert "[]" in content
         assert "calls: 0" in content
 
-    def test_json_format_applies_to_every_entry(self, tmp_path, monkeypatch):
+    async def test_json_format_applies_to_every_entry(self, tmp_path, monkeypatch):
         s = _mcp_session(tmp_path)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={"readOnlyHint": True})]
 
@@ -920,13 +919,13 @@ class TestCallMany:
 
         monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
         code = 'rows = call_many([("test.echo", {"n": i}) for i in range(3)], format="json")\nprint([r["a"] for r in rows])\n'
-        content = _run_script(s, code)
+        content = await _run_script(s, code)
         assert "ToolScript ok" in content
         assert "[0, 1, 2]" in content
 
-    def test_forbidden_names_are_refused_in_a_batch_too(self, tmp_path):
+    async def test_forbidden_names_are_refused_in_a_batch_too(self, tmp_path):
         s = _mcp_session(tmp_path)
-        content = _run_script(s, 'call_many([("Delegate", {})])\n')
+        content = await _run_script(s, 'call_many([("Delegate", {})])\n')
         assert "ToolScript failed" in content
         assert "Delegate is not scriptable" in content
 

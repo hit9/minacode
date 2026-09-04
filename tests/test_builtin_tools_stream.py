@@ -1,4 +1,5 @@
 """builtin tools stream (split from tests/test_builtin_tools.py)."""
+
 from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _MockClientFactory, _session, _StreamClientFactory
 from test_builtin_tools import FUNCTION_TOOL, WEB_SEARCH, _responses_body
 
@@ -12,7 +13,7 @@ from wizolt.model import ModelClient
 from wizolt.render import search_sources_footer
 
 
-def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
+async def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     """A provider-side search has no tool line of its own; the status label is the only signal."""
     s = _session(tmp_path, api="responses", model="gpt-5")
     model = ModelClient(s)
@@ -30,11 +31,12 @@ def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert ("Web Search", "") in streamed
 
-def test_responses_stream_reports_a_search_the_terminal_output_drops(tmp_path, monkeypatch):
+
+async def test_responses_stream_reports_a_search_the_terminal_output_drops(tmp_path, monkeypatch):
     """Qwen streams the call but leaves it out of response.completed.output.
 
     The transcript line must come from the live stream event, since the parsed result has
@@ -61,7 +63,7 @@ def test_responses_stream_reports_a_search_the_terminal_output_drops(tmp_path, m
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "qwen release date")]
     # Qwen omits response.output_text.done, so response.completed is the terminal fallback that
@@ -70,7 +72,8 @@ def test_responses_stream_reports_a_search_the_terminal_output_drops(tmp_path, m
     assert streamed.count(promoted) == 1
     assert streamed.index(promoted) < streamed.index(("", ""))
 
-def test_responses_stream_reports_a_search_once_when_the_terminal_output_keeps_it(tmp_path, monkeypatch):
+
+async def test_responses_stream_reports_a_search_once_when_the_terminal_output_keeps_it(tmp_path, monkeypatch):
     """OpenAI retains the call in the terminal output; the live report and the scan must not double it."""
     s = _session(tmp_path, api="responses", model="gpt-5", builtin_tools=(WEB_SEARCH,))
     model = ModelClient(s)
@@ -90,11 +93,12 @@ def test_responses_stream_reports_a_search_once_when_the_terminal_output_keeps_i
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "httpx timeout")]
 
-def test_responses_stream_does_not_double_an_id_less_call_the_terminal_output_keeps(tmp_path, monkeypatch):
+
+async def test_responses_stream_does_not_double_an_id_less_call_the_terminal_output_keeps(tmp_path, monkeypatch):
     """An id-less call cannot be matched by id, so the scan must stay silent on a streamed request.
 
     Otherwise the live report and the parsed-result scan each emit the same id-less call."""
@@ -116,11 +120,12 @@ def test_responses_stream_does_not_double_an_id_less_call_the_terminal_output_ke
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "missing id")]
 
-def test_anthropic_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
+
+async def test_anthropic_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic")
     model = ModelClient(s)
     streamed = []
@@ -149,11 +154,12 @@ def test_anthropic_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(model, "anthropic_client", _AnthropicStreamClientFactory(events))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert ("Web Search", "") in streamed
 
-def test_anthropic_stream_reports_a_search_live_before_the_stream_ends(tmp_path, monkeypatch):
+
+async def test_anthropic_stream_reports_a_search_live_before_the_stream_ends(tmp_path, monkeypatch):
     """The transcript line must fire while the stream is still running, not after it returns.
 
     Anthropic's assembled final message retains the server_tool_use block, so the parsed-result
@@ -192,7 +198,7 @@ def test_anthropic_stream_reports_a_search_live_before_the_stream_ends(tmp_path,
     ]
     monkeypatch.setattr(model, "anthropic_client", _AnthropicStreamClientFactory(events))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     report = ("builtin", "Web Search", "shannon birth date")
     assert report in timeline
@@ -201,7 +207,8 @@ def test_anthropic_stream_reports_a_search_live_before_the_stream_ends(tmp_path,
     # De-duplicated: the parsed-result scan must not add a second line for the same call.
     assert sum(1 for entry in timeline if entry[0] == "builtin") == 1
 
-def test_anthropic_stream_reads_the_query_carried_on_the_start_block(tmp_path, monkeypatch):
+
+async def test_anthropic_stream_reads_the_query_carried_on_the_start_block(tmp_path, monkeypatch):
     """Some hosts put the whole input on content_block_start with no input_json_delta.
 
     The live report must use that query, not an empty string."""
@@ -238,11 +245,12 @@ def test_anthropic_stream_reads_the_query_carried_on_the_start_block(tmp_path, m
     ]
     monkeypatch.setattr(model, "anthropic_client", _AnthropicStreamClientFactory(events))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "already present")]
 
-def test_responses_result_reports_each_search_for_the_transcript(tmp_path, monkeypatch):
+
+async def test_responses_result_reports_each_search_for_the_transcript(tmp_path, monkeypatch):
     """The log line is the only lasting record: the status label vanishes when the turn ends."""
     s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
     model = ModelClient(s)
@@ -255,12 +263,13 @@ def test_responses_result_reports_each_search_for_the_transcript(tmp_path, monke
     ]
     monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    await model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     # The local function call has its own tool line already; only the provider-side call is reported.
     assert reported == [("Web Search", "httpx timeout configuration")]
 
-def test_anthropic_result_reports_each_search_for_the_transcript(tmp_path, monkeypatch):
+
+async def test_anthropic_result_reports_each_search_for_the_transcript(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
     model = ModelClient(s)
     reported = []
@@ -288,11 +297,12 @@ def test_anthropic_result_reports_each_search_for_the_transcript(tmp_path, monke
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "shannon birth date")]
 
-def test_searches_are_reported_with_streaming_disabled(tmp_path, monkeypatch):
+
+async def test_searches_are_reported_with_streaming_disabled(tmp_path, monkeypatch):
     """Reporting comes from the parsed result, so it does not depend on stream events."""
     s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
     model = ModelClient(s)
@@ -302,11 +312,12 @@ def test_searches_are_reported_with_streaming_disabled(tmp_path, monkeypatch):
     output = [{"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "q"}}]
     monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "q")]
 
-def test_a_search_without_a_query_still_reports(tmp_path, monkeypatch):
+
+async def test_a_search_without_a_query_still_reports(tmp_path, monkeypatch):
     """Qwen omits the action query; the call is still worth a line."""
     s = _session(tmp_path, api="responses", model="qwen3-max", stream=False, builtin_tools=(WEB_SEARCH,))
     model = ModelClient(s)
@@ -315,9 +326,10 @@ def test_a_search_without_a_query_still_reports(tmp_path, monkeypatch):
     output = [{"id": "ws_1", "type": "web_search_call", "status": "completed"}]
     monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
 
-    model.request_sync([{"role": "user", "content": "hi"}], [])
+    await model.request([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "")]
+
 
 def test_builtin_labels_read_as_one_phase_across_protocols():
     """The same tool is named differently by each protocol and must still read alike."""
@@ -326,6 +338,7 @@ def test_builtin_labels_read_as_one_phase_across_protocols():
     assert builtin_tool_label("$web_search") == "Web Search"  # Kimi builtin function
     assert builtin_tool_label("code_interpreter_call") == "Code Interpreter"
     assert builtin_tool_label("") == "Provider Tool"
+
 
 def test_sources_footer_dedupes_by_url_in_first_mention_order():
     sources = [
@@ -338,15 +351,18 @@ def test_sources_footer_dedupes_by_url_in_first_mention_order():
 
     assert footer.splitlines() == ["", "**Sources**", "", "1. a.example", "2. b.example"]
 
+
 def test_sources_footer_caps_a_long_list():
     footer = search_sources_footer([{"url": f"https://e.example/{index}", "title": f"T{index}"} for index in range(14)])
 
     assert footer.splitlines()[-1] == "…and 4 more"
     assert footer.count("e.example") == 10
 
+
 def test_no_sources_render_nothing():
     assert search_sources_footer([]) == ""
     assert search_sources_footer([{"title": "no url"}]) == ""
+
 
 def test_default_config_template_documents_builtin_tools():
     assert "builtin_tools" in ConfigFile.DEFAULT_TEXT

@@ -22,7 +22,6 @@ from wizolt.base import (
     ModelRequestRetry,
     Text,
     ToolCall,
-    fail_if_running_loop,
     oneline,
 )
 from wizolt.context import ContextManager
@@ -139,12 +138,6 @@ class Agent:
         current = asyncio.current_task()
         if current is not None and current.cancelling():
             raise asyncio.CancelledError
-
-    def run_sync(self, user_input: str | UserInput) -> str:
-        """Synchronous entry point for direct and headless Python callers."""
-
-        fail_if_running_loop("use await Agent.run(...)")
-        return asyncio.run(self.run(user_input))
 
     async def run(self, user_input: str | UserInput) -> str:
         self._active_task = asyncio.current_task()

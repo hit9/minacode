@@ -327,7 +327,6 @@ class Session:
     # Retained because one queue mutator is genuinely cross-thread: `NextHints` (tools/memory.py)
     # calls `add_quick_hints` from a synchronous tool body on the runner's executor while the loop
     # reads the same fields. Everything else that touches the queue now runs on the owning loop.
-    _queue_lock: threading.RLock = field(default_factory=threading.RLock)
     _gitignore_lock: threading.RLock = field(default_factory=threading.RLock)
     # The save gate and the loop it belongs to. Rebound lazily by `_save_gate`, never serialized:
     # an asyncio primitive is meaningful only to the loop that created it.
@@ -541,40 +540,33 @@ class Session:
             draft = text
         if not text:
             return
-        with self._queue_lock:
-            self.pending_user_inputs.append(QueuedInput(text, images, draft))
+        self.pending_user_inputs.append(QueuedInput(text, images, draft))
 
     def claim_user_inputs(self) -> list[QueuedInput]:
         # claim/ack/release is a transaction across model retries; keep this boundary even though each step is small.
-        with self._queue_lock:
-            for item in self.pending_user_inputs:
-                item.inflight = True
-            return list(self.pending_user_inputs)
+        for item in self.pending_user_inputs:
+            item.inflight = True
+        return list(self.pending_user_inputs)
 
     def acknowledge_user_inputs(self, inputs: list[QueuedInput]) -> None:
-        with self._queue_lock:
-            self.pending_user_inputs = [item for item in self.pending_user_inputs if item not in inputs]
+        self.pending_user_inputs = [item for item in self.pending_user_inputs if item not in inputs]
 
     def has_inflight_user_inputs(self) -> bool:
-        with self._queue_lock:
-            return any(item.inflight for item in self.pending_user_inputs)
+        return any(item.inflight for item in self.pending_user_inputs)
 
     def release_user_inputs(self) -> None:
-        with self._queue_lock:
-            for item in self.pending_user_inputs:
-                item.inflight = False
+        for item in self.pending_user_inputs:
+            item.inflight = False
 
     def add_quick_hints(self, hints: list[str], *, limit: int = 4) -> None:
         """Merge more offered inputs into the current set: appended in call order, deduplicated,
         and capped at `limit`. Several `NextHints` calls in one batch must not overwrite each
         other, so the batch's suggestions accumulate instead of the last call winning."""
-        with self._queue_lock:
-            merged = [*self.quick_hints, *(hint for hint in hints if hint not in self.quick_hints)]
-            self.quick_hints = tuple(merged[:limit])
+        merged = [*self.quick_hints, *(hint for hint in hints if hint not in self.quick_hints)]
+        self.quick_hints = tuple(merged[:limit])
 
     def clear_quick_hints(self) -> None:
-        with self._queue_lock:
-            self.quick_hints = ()
+        self.quick_hints = ()
 
     # The session owns the edit records; `diffs` owns what they mean. Both entry points pass the
     # records and the working directory and read nothing else off the session, which is what let

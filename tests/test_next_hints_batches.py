@@ -1,4 +1,5 @@
 """next hints batches (split from tests/test_agent_turn.py)."""
+
 from agent_harness import call, session
 
 from wizolt.base import (
@@ -17,6 +18,7 @@ def test_terminal_next_hints_recognizes_all_next_hints_batch(tmp_path):
     assert agent.terminal_next_hints([call("NextHints", [{"inputs": ["x"]}]), call("NextHints", [{"inputs": ["y"]}])])
     assert not agent.terminal_next_hints([call("NextHints", [{"inputs": ["x"]}]), call("Read", [{"path": "f"}])])
     assert not agent.terminal_next_hints([])
+
 
 async def test_finish_with_next_hints_runs_tool_and_finishes_without_dup_answer(tmp_path):
     s = session(tmp_path)
@@ -45,7 +47,8 @@ async def test_finish_with_next_hints_runs_tool_and_finishes_without_dup_answer(
     replayed = ModelClient(s).wire(ProviderConfig(api="responses", model="gpt-5")).messages(s.messages)
     assert [item.get("id") for item in replayed if item.get("id")] == ["rs_1", "fc_1"]
 
-def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_path):
+
+async def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_path):
     s = session(tmp_path)
     s.skills = SkillLibrary({})
     agent = Agent(s, output_fn=lambda text: None)
@@ -61,7 +64,7 @@ def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_pat
     agent.model = FakeModel()
     silences = []
     agent.on_tool_batch = lambda silent: silences.append(silent)
-    assert agent.run_sync("do it") == "all done"
+    assert await agent.run("do it") == "all done"
     assert len(agent.model.messages) == 1  # finished on the first call, no extra round trip
     assert silences == [False]  # the batch carried the answer, so it is not a silent batch
     assert s.quick_hints == ("run tests",)
@@ -69,7 +72,8 @@ def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_pat
     assert s.messages[-1]["content"] == "all done"
     assert "tool_calls" not in s.messages[-1]
 
-def test_all_next_hints_batch_without_answer_ends_turn_in_single_model_call(tmp_path):
+
+async def test_all_next_hints_batch_without_answer_ends_turn_in_single_model_call(tmp_path):
     """An all-NextHints batch is terminal even with no answer text: exactly one model request,
     no invented answer, no empty visible output callback, and every hint survives to the idle
     prompt instead of being superseded by a follow-up step."""
@@ -87,7 +91,7 @@ def test_all_next_hints_batch_without_answer_ends_turn_in_single_model_call(tmp_
             return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": ["run the tests", "show the diff"]}])], ""
 
     agent.model = FakeModel()
-    assert agent.run_sync("do it") == ""  # nothing was invented as an answer
+    assert await agent.run("do it") == ""  # nothing was invented as an answer
     assert len(agent.model.messages) == 1  # finished on the first call, no extra round trip
     assert s.quick_hints == ("run the tests", "show the diff")  # all hints survived
     assert outputs == []  # no empty visible output callback was emitted
@@ -96,7 +100,8 @@ def test_all_next_hints_batch_without_answer_ends_turn_in_single_model_call(tmp_
     assert s.messages[1]["tool_calls"][0]["function"]["name"] == "NextHints"
     assert s.messages[2]["tool_call_id"] == s.messages[1]["tool_calls"][0]["id"]
 
-def test_tool_only_history_replays_across_all_protocols(tmp_path):
+
+async def test_tool_only_history_replays_across_all_protocols(tmp_path):
     """A tool-only terminal turn stays replayable on the next user turn through every adapter:
     each NextHints call is matched by exactly one tool result, and the next user message lands
     after them."""
@@ -117,7 +122,7 @@ def test_tool_only_history_replays_across_all_protocols(tmp_path):
             )
 
     agent.model = FakeModel()
-    assert agent.run_sync("do it") == ""
+    assert await agent.run("do it") == ""
     assert [m["role"] for m in s.messages] == ["user", "assistant", "tool", "tool"]
 
     # The next user turn appends its opening user message to the tool-only history.
@@ -157,7 +162,8 @@ def test_tool_only_history_replays_across_all_protocols(tmp_path):
     # call overwriting the rest.
     assert s.quick_hints == ("run the tests", "show the diff")
 
-def test_failed_tool_only_next_hints_batch_continues_turn(tmp_path):
+
+async def test_failed_tool_only_next_hints_batch_continues_turn(tmp_path):
     """An all-NextHints batch whose calls all fail (no answer text, no suggestions) must not end
     the turn as a blank reply: the error results stay in history and the next step gets to
     correct them."""
@@ -178,7 +184,7 @@ def test_failed_tool_only_next_hints_batch_continues_turn(tmp_path):
             return {"role": "assistant", "content": "here is the answer"}, [], "here is the answer"
 
     agent.model = FakeModel()
-    assert agent.run_sync("do it") == "here is the answer"
+    assert await agent.run("do it") == "here is the answer"
     assert len(agent.model.messages) == 2  # the turn continued past the failed batch
     # The failed batch surfaced its own rejection line; nothing blank was published.
     assert outputs[-1] == "here is the answer"
@@ -189,7 +195,8 @@ def test_failed_tool_only_next_hints_batch_continues_turn(tmp_path):
     assert "status: failed" in second_context
     assert "at least one non-empty" in second_context
 
-def test_failed_next_hints_batch_counts_as_tool_batch(tmp_path):
+
+async def test_failed_next_hints_batch_counts_as_tool_batch(tmp_path):
     """A failed all-NextHints batch still counts as a tool batch: the next ordinary tool batch
     shows the ·2 suffix instead of presenting as the first batch."""
     s = session(tmp_path)
@@ -217,12 +224,13 @@ def test_failed_next_hints_batch_counts_as_tool_batch(tmp_path):
     agent.model = FakeModel()
     agent.tools = Tools()
 
-    assert agent.run_sync("do it") == "done"
+    assert await agent.run("do it") == "done"
     # The failed NextHints batch was the first batch (no suffix); the ordinary batch that
     # follows it is the second tool batch and carries ·2.
     assert suffixes == ["", "·2"]
 
-def test_all_next_hints_batch_with_whitespace_content_ends_turn(tmp_path):
+
+async def test_all_next_hints_batch_with_whitespace_content_ends_turn(tmp_path):
     """Whitespace-only content counts as no answer text: the all-NextHints batch still ends the
     turn in one model call, storing no empty closing message and publishing nothing."""
     s = session(tmp_path)
@@ -239,13 +247,14 @@ def test_all_next_hints_batch_with_whitespace_content_ends_turn(tmp_path):
             return {"role": "assistant", "content": "   \n\t "}, [call("NextHints", [{"inputs": ["run the tests"]}])], "   \n\t "
 
     agent.model = FakeModel()
-    assert agent.run_sync("do it") == ""
+    assert await agent.run("do it") == ""
     assert len(agent.model.messages) == 1
     assert s.quick_hints == ("run the tests",)
     assert outputs == []
     assert [m["role"] for m in s.messages] == ["user", "assistant", "tool"]
 
-def test_mixed_next_hints_batch_do_not_leak_into_a_later_answer(tmp_path):
+
+async def test_mixed_next_hints_batch_do_not_leak_into_a_later_answer(tmp_path):
     """A batch mixing NextHints with another tool is not terminal; its hints are transient
     intermediate state and are superseded, so a later final answer never displays them."""
     s = session(tmp_path)
@@ -269,6 +278,6 @@ def test_mixed_next_hints_batch_do_not_leak_into_a_later_answer(tmp_path):
             return {"role": "assistant", "content": "different final answer"}, [], "different final answer"
 
     agent.model = FakeModel()
-    assert agent.run_sync("do it") == "different final answer"
+    assert await agent.run("do it") == "different final answer"
     assert len(agent.model.messages) == 2  # the turn continued past the non-terminal batch
     assert s.quick_hints == ()  # the stale hints were cleared, not shown next to the answer
