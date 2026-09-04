@@ -38,7 +38,12 @@ def _raising(error):
     return run_async
 
 
-def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monkeypatch):
+async def _not_a_command(_text):
+    """`CommandLoop.command` for plain text: nothing handled, dispatch falls through to the turn."""
+    return False, False
+
+
+async def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monkeypatch):
     output = []
     scenario_session = session(tmp_path)
     command_loop = CommandLoop(
@@ -49,16 +54,16 @@ def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monk
     runtime = TuiRuntime(command_loop)
     command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: output.append("set_running:" + label)
-    command_loop.command = lambda _text: (False, False)
+    command_loop.command = _not_a_command
     command_loop.agent.run_async = _answering("done")
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
-    assert not runtime.dispatch("answer me")
-    runtime.run_agent_turn("answer me")
+    assert not await runtime.dispatch("answer me")
+    await runtime.run_agent_turn("answer me")
 
     assert output[:3] == ["\n• answer me", "", "set_running:working"]
 
-def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, monkeypatch):
+async def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, monkeypatch):
     # A terminal NextHints batch promotes its answer into scrollback the way any tool batch does,
     # but unlike an ordinary batch nothing re-publishes it through agent_output. The post-turn emit
     # must therefore skip an answer that was already promoted, or it shows up twice.
@@ -77,11 +82,11 @@ def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, monkeypa
     command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
 
     command_loop.model_stream_promoted_text = "the final answer"  # already permanent scrollback
-    runtime.run_agent_turn("do it")
+    await runtime.run_agent_turn("do it")
 
     assert emitted == []
 
-def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch):
+async def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch):
     # A plain final answer is published by the engine through output_fn now, never by the
     # post-turn emit; the post-turn emit only prints errors the engine raised first.
     scenario_session = session(tmp_path)
@@ -98,11 +103,11 @@ def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch
     emitted: list[tuple] = []
     command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
 
-    runtime.run_agent_turn("do it")
+    await runtime.run_agent_turn("do it")
 
     assert emitted == []  # the engine printed the answer; the runtime does not repeat it
 
-def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_path, monkeypatch):
+async def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_path, monkeypatch):
     """The footer belongs to the answer, and the engine publishes that answer through
     emit_agent_output at CONTENT_LEVEL. At column 0 the sources would hang off the left of the
     text they cite."""
@@ -116,7 +121,7 @@ def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_path, mo
     command_loop.ui.emit_answer = lambda text, **kwargs: emitted.append((text, kwargs.get("indent", 0)))
 
     runtime = TuiRuntime(command_loop)
-    runtime.run_agent_turn("do it")
+    await runtime.run_agent_turn("do it")
 
     assert len(emitted) == 1  # the footer alone; the engine published the answer itself
     text, indent = emitted[0]
@@ -165,7 +170,7 @@ def test_compaction_retry_returns_to_compacting_and_reports_fallback(tmp_path):
     assert output[0].items[0].label == "compaction fallback"
     assert output[0].items[0].text == "provider timed out"
 
-def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypatch):
+async def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
@@ -179,7 +184,7 @@ def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypat
     command_loop.emit = lambda text="", indent=0: emitted.append((text, command_loop.view.model_stream_fragments()))
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
-    runtime.run_agent_turn("question")
+    await runtime.run_agent_turn("question")
 
     assert emitted[-1] == ("Cancelled", [])
 
@@ -355,7 +360,7 @@ def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(t
     assert emitted == [lead, rest]
     assert command_loop.model_stream_promoted_text == ""
 
-def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback(tmp_path, monkeypatch):
+async def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback(tmp_path, monkeypatch):
     """The final answer is published once even when a mid-response promotion wrote its opening.
 
     The engine publishes through agent_output, which consumes the one-shot promotion marker
@@ -376,7 +381,7 @@ def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback(tmp_p
 
     command_loop.agent.run_async = answer
 
-    runtime.run_agent_turn("question")
+    await runtime.run_agent_turn("question")
 
     assert emitted == ["The searched answer."]
 
@@ -439,7 +444,7 @@ def test_tui_turn_reset_clears_unconsumed_stream_promotion(tmp_path):
 
     assert command_loop.model_stream_promoted_text == ""
 
-def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_path, monkeypatch):
+async def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
@@ -451,7 +456,7 @@ def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_
     command_loop.ui.emit_turn_end = turns_ended.append
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
-    runtime.run_agent_turn("continue")
+    await runtime.run_agent_turn("continue")
 
     assert answers == ["Model emitted Bash as text 6 times; none of the textual calls were executed."]
     assert turns_ended == []

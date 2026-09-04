@@ -145,9 +145,9 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 code = command_loop.run()
             finally:
+                # The runtime closes what the session opened, on the loop that opened it; all that
+                # is left here is the terminal-output gate, in case the runtime never got that far.
                 command_loop.close_background_output()
-                if session.mcp is not None:
-                    session.mcp.close()
             resume = command_loop.resume_request
             if not resume:
                 return code

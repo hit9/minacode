@@ -5,7 +5,7 @@ import threading
 import pytest
 from prompt_toolkit.data_structures import Size
 from test_tui_input import ctrl_c_queue_scenario
-from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, wait_until
+from tui_harness import ResizableOutput, loop, rendered_screen_text, request_input_from_driver, run_interactive_tui, wait_until
 
 from wizolt.cli.commands import select_choice
 from wizolt.prompts import LIVE_FOLLOWUP_PREFIX
@@ -90,12 +90,11 @@ def test_interactive_tui_renders_a_multi_line_question_as_rows_not_control_chara
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
-        asking = threading.Thread(target=lambda: app.request_input("\nWhich one?\nA) foo\nB) bar"), daemon=True)
-        asking.start()
+        asking = request_input_from_driver(app, "\nWhich one?\nA) foo\nB) bar")
         wait_until(lambda: app.input_mode == "approval")
         assert rendered.wait(timeout=1)
         pipe_input.send_text("x\r")
-        asking.join(timeout=1)
+        asking.result(timeout=2)
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive, output=output, after_render=after_render)
@@ -220,12 +219,10 @@ def test_interactive_tui_resolved_modal_allows_followup_approval(monkeypatch):
         assert not selector.is_alive()
         wait_until(lambda: app.modal is None and app.app.layout.current_window is app.input_window)
 
-        approval = threading.Thread(target=lambda: approved.append(app.request_input("Approve? ")), daemon=True)
-        approval.start()
+        approval = request_input_from_driver(app)
         wait_until(lambda: app.input_mode == "approval")
         pipe_input.send_text("y\r")
-        approval.join(timeout=1)
-        assert not approval.is_alive()
+        approved.append(approval.result(timeout=2))
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)

@@ -1,6 +1,5 @@
 """agent flow (split from tests/test_agent_turn.py)."""
 import asyncio
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +12,6 @@ from wizolt.base import (
     MalformedToolCallError,
 )
 from wizolt.engine import Agent
-from wizolt.model import ModelClient
 from wizolt.prompts import LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from wizolt.tools import Tool
 

@@ -1,6 +1,6 @@
 """TuiApp behavior: layout, input modes, key bindings, modals, and approval prompts."""
 
-import threading
+import asyncio
 
 from wizolt.tui import TuiApp
 
@@ -28,11 +28,24 @@ ACTIONS = [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refus
 
 
 def _approval_app():
+    """A TuiApp parked on an approval prompt, with the pending input future installed.
+
+    The future belongs to the loop the test runs on, which is why the callers are async: that is
+    also how the real prompt works -- the request is awaited on the loop that runs the app."""
     app = TuiApp()
-    app._input_pending = threading.Event()
+    app._input_loop = asyncio.get_running_loop()
+    app._input_pending = app._input_loop.create_future()
     app.input_mode = "approval"
     assert app.set_approval_form(ACTIONS) is True
     return app
+
+
+def _answered(app):
+    """(answer, resolved) for the app's pending input request."""
+    pending = app._input_pending
+    if pending is None or not pending.done():
+        return None, False
+    return pending.result(), True
 
 
 def _active(app, key):

@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from wizolt.base import (
     IMAGE_ROUTE_TEXT_ONLY_STATIC,
@@ -93,6 +93,10 @@ class Agent:
         # voiced ones. A fact, not a decision: whether that boundary is worth drawing anything is
         # the view's to judge. Wired by the CLI; never enters model context.
         self.on_tool_batch: Callable[[bool], None] | None = None
+        # Awaited between a promoted response and the tool batch that follows it, so the answer is
+        # already permanent scrollback when the batch starts writing under it. Wired by the CLI to
+        # its ordered output queue; without one there is no queue to be ahead of.
+        self.output_barrier: Callable[[], Awaitable[None]] | None = None
         # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
         self.turn_sources: list[Json] = []
@@ -284,6 +288,7 @@ class Agent:
                 if content.strip():
                     self.output_fn(content.strip())
                 tool_batches += 1
+                await self.await_output_barrier()
                 tool_messages = await self.tools.run_async(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
                 if self.on_tool_batch is not None:
                     self.on_tool_batch(not content.strip())
@@ -381,6 +386,15 @@ class Agent:
             self.raise_if_cancelled()
         return assistant, tool_calls, content
 
+    async def await_output_barrier(self) -> None:
+        """Wait for everything published so far to reach the terminal, before this batch writes.
+
+        A promoted response and the output of the batch that follows it are two producers of the
+        same scrollback; without this the batch's first line can land above the answer it follows."""
+
+        if self.output_barrier is not None:
+            await self.output_barrier()
+
     def record_sources(self, assistant: Json) -> None:
         """Accumulate provider-side search sources across every request the turn makes.
 
@@ -441,6 +455,7 @@ class Agent:
         turn_messages.append(assistant_message)
         transcript_messages.append(self.transcript_message(assistant_message))
         batches = tool_batches + 1
+        await self.await_output_barrier()
         result_messages = await self.tools.run_async(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else "")
         if self.on_tool_batch is not None:
             self.on_tool_batch(not answer)

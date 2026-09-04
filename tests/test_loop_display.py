@@ -19,7 +19,7 @@ from wizolt.session import Session
 from wizolt.tui import TuiApp
 
 
-def test_ps_command_uses_markdown_renderer(tmp_path):
+async def test_ps_command_uses_markdown_renderer(tmp_path):
     s = session(tmp_path)
     s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7, update_status=lambda: None)
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -28,7 +28,7 @@ def test_ps_command_uses_markdown_renderer(tmp_path):
     loop.ui.emit_answer = lambda text, **kwargs: rendered.append(text)
     loop.emit = lambda text="", indent=0: plain.append(text)
 
-    assert loop.command("/ps") == (True, False)
+    assert await loop.command("/ps") == (True, False)
 
     assert plain == []
     assert len(rendered) == 1

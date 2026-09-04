@@ -21,6 +21,24 @@ from wizolt.tools import AskSpec
 from wizolt.tui import ASK_DONE, ASK_FREE_TEXT
 
 
+def _answers(answer):
+    """A stand-in for TuiApp.request_input_async: the question is put on the loop and awaited."""
+
+    async def request_input_async(prompt):
+        return answer(prompt) if callable(answer) else answer
+
+    return request_input_async
+
+
+def _modals(results):
+    """A stand-in for TuiApp.show_modal_async, handing back one scripted result per call."""
+
+    async def show_modal_async(fragments_fn, key_fn, **_kwargs):
+        return next(results) if hasattr(results, "__next__") else results(fragments_fn, key_fn)
+
+    return show_modal_async
+
+
 def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     output = []
     loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
@@ -49,7 +67,7 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     assert previews == ["  │ one\n", "  │ two\n"]
     assert all("\\n" not in text for _, text in rendered)
 
-def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
+async def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     """A free-text page drops out of the modal to the shared input row; the answer flows into
     the batch and the modal reopens (ASK_DONE ends it)."""
     output = []
@@ -58,14 +76,14 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     prompts = []
     results = iter([(ASK_FREE_TEXT, 0), ASK_DONE])
     loop.tui = SimpleNamespace(
-        request_input=lambda prompt: prompts.append(prompt) or "typed answer",
-        show_modal=lambda fragments_fn, key_fn: next(results),
+        request_input_async=_answers(lambda prompt: prompts.append(prompt) or "typed answer"),
+        show_modal_async=_modals(results),
     )
 
-    assert question_interaction(loop, [AskSpec("Pick?", choices=["A"], previews=["preview"])]) == ["typed answer"]
+    assert await question_interaction(loop, [AskSpec("Pick?", choices=["A"], previews=["preview"])]) == ["typed answer"]
     assert prompts == ["\nPick?"]  # one shared-input prompt, the question spelled out again
 
-def test_ask_free_text_empty_answer_is_kept(tmp_path):
+async def test_ask_free_text_empty_answer_is_kept(tmp_path):
     """An explicitly empty free-text answer is a legal answer: the batch must return [""] and
     never fall back to the question text (which is only the placeholder for unanswered pages)."""
     output = []
@@ -73,13 +91,13 @@ def test_ask_free_text_empty_answer_is_kept(tmp_path):
     loop.interactive_input = True
     results = iter([(ASK_FREE_TEXT, 0), ASK_DONE])
     loop.tui = SimpleNamespace(
-        request_input=lambda prompt: "",
-        show_modal=lambda fragments_fn, key_fn: next(results),
+        request_input_async=_answers(""),
+        show_modal_async=_modals(results),
     )
 
-    assert question_interaction(loop, [AskSpec("Pick?")]) == [""]
+    assert await question_interaction(loop, [AskSpec("Pick?")]) == [""]
 
-def test_ask_free_text_on_last_question_submits_without_reentering_modal(tmp_path):
+async def test_ask_free_text_on_last_question_submits_without_reentering_modal(tmp_path):
     """A free-text answer to the final question completes the batch right after the shared input
     row; the modal must not reopen for it (a second show_modal would fail the call-count assert)."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -92,44 +110,47 @@ def test_ask_free_text_on_last_question_submits_without_reentering_modal(tmp_pat
         key_fn("2")  # page 2: move onto "Type freely..." (digits only move the cursor)
         return key_fn("enter")  # ...and select it -> drops to the shared input row
 
-    loop.tui = SimpleNamespace(request_input=lambda prompt: "typed", show_modal=show_modal)
+    loop.tui = SimpleNamespace(request_input_async=_answers("typed"), show_modal_async=_modals(show_modal))
 
-    assert question_interaction(loop, [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"])]) == ["A", "typed"]
+    assert await question_interaction(loop, [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"])]) == ["A", "typed"]
     assert len(calls) == 1
 
-def test_ask_without_choices_uses_shared_tui_input(tmp_path):
+async def test_ask_without_choices_uses_shared_tui_input(tmp_path):
     """A question without choices is a single Type-freely page; Enter drops to the shared row."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
     loop.interactive_input = True
     prompts = []
     results = iter([(ASK_FREE_TEXT, 0), ASK_DONE])
     loop.tui = SimpleNamespace(
-        request_input=lambda prompt: prompts.append(prompt) or "typed answer",
-        show_modal=lambda fragments_fn, key_fn: next(results),
+        request_input_async=_answers(lambda prompt: prompts.append(prompt) or "typed answer"),
+        show_modal_async=_modals(results),
     )
 
-    assert question_interaction(loop, [AskSpec("Explain the issue")]) == ["typed answer"]
+    assert await question_interaction(loop, [AskSpec("Explain the issue")]) == ["typed answer"]
     assert prompts == ["\nExplain the issue"]
 
-def test_ask_headless_keeps_plain_per_question_prompts(tmp_path):
+async def test_ask_headless_keeps_plain_per_question_prompts(tmp_path):
     """Without a TUI the batch falls back to one read_input per question, in order."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
     prompts = []
     loop.read_input = lambda prompt: prompts.append(prompt) or "answer"
 
-    assert question_interaction(loop, [AskSpec("One?"), AskSpec("Two?", choices=["A"])]) == ["answer", "answer"]
+    assert await question_interaction(loop, [AskSpec("One?"), AskSpec("Two?", choices=["A"])]) == ["answer", "answer"]
     assert prompts == ["\nOne?", "\nTwo?"]
 
-def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path, monkeypatch):
+async def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path, monkeypatch):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     emitted = []
     loop.emit = lambda text="", indent=0: emitted.append(text)
-    monkeypatch.setattr(modals_mod, "question_interaction", lambda _loop, specs: ["B"])
+    async def answered(_loop, _specs):
+        return ["B"]
 
-    assert modals_mod.question_interaction(loop, [AskSpec("Which?", choices=["A", "B"])]) == ["B"]
+    monkeypatch.setattr(modals_mod, "question_interaction", answered)
+
+    assert await modals_mod.question_interaction(loop, [AskSpec("Which?", choices=["A", "B"])]) == ["B"]
     assert emitted == []
 
-def test_ask_notes_flow_into_the_answer(tmp_path):
+async def test_ask_notes_flow_into_the_answer(tmp_path):
     """A note entered on a page (`n`, text, Enter) is appended to that question's answer."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
     loop.interactive_input = True
@@ -141,17 +162,17 @@ def test_ask_notes_flow_into_the_answer(tmp_path):
         key_fn("enter")  # save the note
         return key_fn("enter")  # pick the recommended "A" and submit the batch
 
-    loop.tui = SimpleNamespace(show_modal=show_modal)
+    loop.tui = SimpleNamespace(show_modal_async=_modals(show_modal))
 
-    assert question_interaction(loop, [AskSpec("Q?", choices=["A"], recommended=0)]) == ["A\n\nUser notes: keep the header"]
+    assert await question_interaction(loop, [AskSpec("Q?", choices=["A"], recommended=0)]) == ["A\n\nUser notes: keep the header"]
 
-def test_ask_escape_cancels_the_whole_batch(tmp_path):
+async def test_ask_escape_cancels_the_whole_batch(tmp_path):
     """Esc on any page cancels every question with the DISMISSED marker."""
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
     loop.interactive_input = True
-    loop.tui = SimpleNamespace(show_modal=lambda fragments_fn, key_fn: SELECTION_BACK)
+    loop.tui = SimpleNamespace(show_modal_async=_modals(lambda fragments_fn, key_fn: SELECTION_BACK))
 
-    result = question_interaction(loop, [AskSpec("One?"), AskSpec("Two?")])
+    result = await question_interaction(loop, [AskSpec("One?"), AskSpec("Two?")])
     assert result == [DISMISSED, DISMISSED]
 
 def test_elapsed_since_uses_whole_seconds(monkeypatch):

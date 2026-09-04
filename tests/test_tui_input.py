@@ -416,7 +416,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
     monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
     real_application = Application
     full_screen_modes = []
-    tui_daemon = []
+    threads_while_live = []
 
     with create_pipe_input() as pipe_input:
 
@@ -428,7 +428,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
-            tui_daemon.append(next(thread for thread in threading.enumerate() if thread.name == "tui").daemon)
+            threads_while_live.extend(thread.name for thread in threading.enumerate())
             pipe_input.send_text("\x04")
 
         driver = threading.Thread(target=drive, daemon=True)
@@ -438,7 +438,9 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
 
     assert any(f"wizolt --resume {scenario_session.uid}" in line for line in output)
     assert full_screen_modes == [False]
-    assert tui_daemon == [False]
+    # The application is a task on the runtime's own loop, not a thread of its own: there is no
+    # second thread whose lifetime the exit path has to join, and none that could outlive it.
+    assert "tui" not in threads_while_live
 
 def test_interactive_tui_control_backslash_forces_exit(monkeypatch):
     forced = []

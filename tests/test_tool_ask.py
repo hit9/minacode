@@ -16,101 +16,101 @@ from wizolt.tools import (
 )
 
 
-def test_ask_tool_call_basic(tmp_path):
+async def test_ask_tool_call_basic(tmp_path):
     """call() returns question text when question_fn is None."""
     s = session(tmp_path)
-    assert AskTool(s, _q({"question": "Which approach?"})).call() == "Which approach?"
+    assert await AskTool(s, _q({"question": "Which approach?"})).call_async() == "Which approach?"
 
-def test_ask_tool_call_callback_passthrough_choices_none(tmp_path):
+async def test_ask_tool_call_callback_passthrough_choices_none(tmp_path):
     """call() passes choices/previews/recommended as None when not provided."""
     s = session(tmp_path)
     calls = []
 
-    def fake_fn(specs):
+    async def fake_fn(specs):
         calls.append(specs)
         return ["free text answer"]
 
     tool = AskTool(s, _q({"question": "Name?"}))
     tool.question_fn = fake_fn
-    assert tool.call() == "free text answer"
+    assert await tool.call_async() == "free text answer"
     spec = calls[0][0]
     assert spec.choices is None
     assert spec.previews is None
     assert spec.recommended is None
 
-def test_ask_tool_call_empty_list_raises(tmp_path):
+async def test_ask_tool_call_empty_list_raises(tmp_path):
     """call() raises ToolError when questions list is missing or empty."""
     s = session(tmp_path)
     with pytest.raises(ToolError, match="non-empty 'questions' list"):
-        AskTool(s, [{"questions": []}]).call()
+        await AskTool(s, [{"questions": []}]).call_async()
     with pytest.raises(ToolError, match="non-empty 'questions' list"):
-        AskTool(s, [{}]).call()
+        await AskTool(s, [{}]).call_async()
 
-def test_ask_tool_call_empty_question_raises(tmp_path):
+async def test_ask_tool_call_empty_question_raises(tmp_path):
     """call() raises ToolError for empty/missing question text."""
     s = session(tmp_path)
     with pytest.raises(ToolError, match="each question requires a 'question' field"):
-        AskTool(s, _q({"question": ""})).call()
+        await AskTool(s, _q({"question": ""})).call_async()
     with pytest.raises(ToolError, match="each question requires a 'question' field"):
-        AskTool(s, _q({})).call()
+        await AskTool(s, _q({})).call_async()
 
-def test_ask_tool_call_invalid_args_raises(tmp_path):
+async def test_ask_tool_call_invalid_args_raises(tmp_path):
     """call() raises ToolError for malformed top-level args."""
     s = session(tmp_path)
     with pytest.raises(ToolError, match="Ask requires named fields"):
-        AskTool(s, ["just a string"]).call()
+        await AskTool(s, ["just a string"]).call_async()
     with pytest.raises(ToolError, match="Ask requires named fields"):
-        AskTool(s, []).call()
+        await AskTool(s, []).call_async()
 
-def test_ask_tool_call_invalid_choices_raises(tmp_path):
+async def test_ask_tool_call_invalid_choices_raises(tmp_path):
     """call() validates choices type."""
     s = session(tmp_path)
     with pytest.raises(ToolError, match="Ask choices must be a list of strings"):
-        AskTool(s, _q({"question": "Q", "choices": "not-a-list"})).call()
+        await AskTool(s, _q({"question": "Q", "choices": "not-a-list"})).call_async()
     with pytest.raises(ToolError, match="Ask choices must be a list of strings"):
-        AskTool(s, _q({"question": "Q", "choices": [1, 2, 3]})).call()
+        await AskTool(s, _q({"question": "Q", "choices": [1, 2, 3]})).call_async()
 
-def test_ask_tool_call_invalid_previews_raises(tmp_path):
+async def test_ask_tool_call_invalid_previews_raises(tmp_path):
     """call() validates previews type and length."""
     s = session(tmp_path)
     with pytest.raises(ToolError, match="Ask previews must be a list of strings"):
-        AskTool(s, _q({"question": "Q", "choices": ["A"], "previews": [1]})).call()
+        await AskTool(s, _q({"question": "Q", "choices": ["A"], "previews": [1]})).call_async()
     with pytest.raises(ToolError, match="Ask previews must match choices length"):
-        AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "previews": ["only one"]})).call()
+        await AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "previews": ["only one"]})).call_async()
 
-def test_ask_tool_call_invalid_recommended_raises(tmp_path):
+async def test_ask_tool_call_invalid_recommended_raises(tmp_path):
     """call() validates recommended is an in-range choice index."""
     s = session(tmp_path)
     with pytest.raises(ToolError, match="valid 0-based choice index"):
-        AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call()
+        await AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call_async()
     with pytest.raises(ToolError, match="valid 0-based choice index"):
-        AskTool(s, _q({"question": "Q", "recommended": 0})).call()  # no choices
+        await AskTool(s, _q({"question": "Q", "recommended": 0})).call_async()  # no choices
     with pytest.raises(ToolError, match="valid 0-based choice index"):
-        AskTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call()  # bool not int
+        await AskTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call_async()  # bool not int
 
-def test_ask_tool_call_invokes_callback(tmp_path):
-    """call() passes the whole batch to question_fn and returns its single answer verbatim."""
+async def test_ask_tool_call_invokes_callback(tmp_path):
+    """The whole batch goes to question_fn in one call, and its single answer comes back verbatim."""
     s = session(tmp_path)
     calls = []
 
-    def fake_fn(specs):
+    async def fake_fn(specs):
         calls.append(specs)
         return ["user chose B"]
 
     tool = AskTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
     tool.question_fn = fake_fn
-    result = tool.call()
+    result = await tool.call_async()
     assert result == "user chose B"
     spec = calls[0][0]
     assert (spec.question, spec.choices, spec.previews, spec.recommended) == ("A or B?", ["A", "B"], ["PA", "PB"], 1)
     assert len(calls[0]) == 1  # the whole batch arrives in one call
 
-def test_ask_tool_call_multiple_questions(tmp_path):
-    """call() asks the whole batch at once and labels the combined answers."""
+async def test_ask_tool_call_multiple_questions(tmp_path):
+    """The whole batch is asked at once, and the combined answers are labelled."""
     s = session(tmp_path)
     asked = []
 
-    def fake_fn(specs):
+    async def fake_fn(specs):
         asked.extend(spec.question for spec in specs)
         return [{"Runtime?": "Node", "Name?": "core"}[spec.question] for spec in specs]
 
@@ -122,21 +122,21 @@ def test_ask_tool_call_multiple_questions(tmp_path):
         ),
     )
     tool.question_fn = fake_fn
-    result = tool.call()
+    result = await tool.call_async()
     assert asked == ["Runtime?", "Name?"]  # batch order preserved
     assert result == "Q: Runtime?\nA: Node\n\nQ: Name?\nA: core"
 
-def test_ask_tool_call_no_previews_with_choices(tmp_path):
+async def test_ask_tool_call_no_previews_with_choices(tmp_path):
     """call() allows choices without previews."""
     s = session(tmp_path)
-    assert AskTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call() == "Q"
+    assert await AskTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call_async() == "Q"
 
-def test_ask_tool_call_with_choices(tmp_path):
+async def test_ask_tool_call_with_choices(tmp_path):
     """call() accepts choices and returns fallback question text."""
     s = session(tmp_path)
-    assert AskTool(s, _q({"question": "Which?", "choices": ["A", "B"]})).call() == "Which?"
+    assert await AskTool(s, _q({"question": "Which?", "choices": ["A", "B"]})).call_async() == "Which?"
 
-def test_ask_tool_call_with_choices_and_previews(tmp_path):
+async def test_ask_tool_call_with_choices_and_previews(tmp_path):
     """call() accepts choices + previews."""
     s = session(tmp_path)
     tool = AskTool(
@@ -149,7 +149,7 @@ def test_ask_tool_call_with_choices_and_previews(tmp_path):
             }
         ),
     )
-    assert tool.call() == "Which?"
+    assert await tool.call_async() == "Which?"
 
 def test_ask_tool_registered():
     """AskTool is in TOOLS and TOOL_REGISTRY."""
@@ -206,7 +206,7 @@ def test_ask_tool_validates_batch_before_asking(tmp_path):
     s = session(tmp_path)
     asked = []
 
-    def fake_fn(specs):
+    async def fake_fn(specs):
         asked.extend(spec.question for spec in specs)
         return ["x"] * len(specs)
 
@@ -228,7 +228,7 @@ def test_ask_tool_wired_in_tool_runner(tmp_path):
     ctx = ContextManager(s)
     captured = []
 
-    def fake_question_fn(specs):
+    async def fake_question_fn(specs):
         captured.append(specs)
         return ["test answer"]
 

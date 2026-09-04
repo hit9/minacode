@@ -25,6 +25,19 @@ from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 
+async def _returns_immediately():
+    """Stands in for the runtime's input loop when a test only exercises startup."""
+
+
+def handled_command(exit_now=False, handled=True):
+    """A stand-in for `CommandLoop.command`, which dispatch awaits like the real one."""
+
+    async def command(_text):
+        return handled, exit_now
+
+    return command
+
+
 def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeypatch):
     scenario_session = session(tmp_path)
     scenario_session.resumed = True
@@ -112,36 +125,45 @@ def test_batched_emits_join_the_scrollback_queue_in_order(monkeypatch):
     assert "".join(printed) == "queued first\nbatched second\nbatched third\n"
 
 @pytest.mark.parametrize("entered", [" /help", "exit "])
-def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
+async def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
     command_loop = loop(tmp_path)
     dispatched = []
-    command_loop.command = lambda text: dispatched.append(text) or (True, False)
+    async def record(text):
+        dispatched.append(text)
+        return True, False
+
+    command_loop.command = record
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
 
-    assert runtime.dispatch(entered)
+    assert await runtime.dispatch(entered)
     assert dispatched == [entered.strip()]
 
 def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     runtime = TuiRuntime(command_loop)
     warmed = []
-    done = threading.Event()
+    done = asyncio.Event()
 
     class FakeTui:
+        """The application as the runtime now sees it: a task it awaits, not a thread it joins."""
+
         ready = threading.Event()
 
-        def run(self, style=None):
+        async def run_async(self, style=None):
             del style
             self.ready.set()
-            done.wait(1)
+            await done.wait()
 
         def exit(self):
             done.set()
 
+        def write_to_scrollback_async(self, callback):
+            raise AssertionError("this scenario writes nothing")
+
     fake_tui = FakeTui()
     monkeypatch.setattr(runtime, "build_tui", lambda: fake_tui)
-    monkeypatch.setattr(runtime, "run_agent_loop", lambda: None)
+    monkeypatch.setattr(runtime, "run_agent_loop", _returns_immediately)
     monkeypatch.setattr(command_loop, "start_session", lambda: None)
     monkeypatch.setattr(command_loop, "take_pending_inputs", list)
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
@@ -169,11 +191,14 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
         def __init__(self):
             self.ready.set()
 
-        def run(self, style=None):
+        async def run_async(self, style=None):
             del style
 
         def exit(self):
             pass
+
+        def write_to_scrollback_async(self, callback):
+            raise AssertionError("this scenario writes nothing")
 
         def set_running(self, label):
             calls.append(("running", label))
@@ -183,7 +208,7 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
 
     fake_tui = FakeTui()
     monkeypatch.setattr(runtime, "build_tui", lambda: fake_tui)
-    monkeypatch.setattr(runtime, "run_agent_loop", lambda: None)
+    monkeypatch.setattr(runtime, "run_agent_loop", _returns_immediately)
     monkeypatch.setattr(command_loop, "start_session", lambda: calls.append(("start_session",)))
     monkeypatch.setattr(command_loop, "take_pending_inputs", list)
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
@@ -192,7 +217,7 @@ def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
     assert runtime.run() == 0
     assert calls == [("running", RESUME_STATUS_LABEL), ("start_session",), ("idle",)]
 
-def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
+async def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
@@ -200,7 +225,7 @@ def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
     command_loop.session.enqueue_user_input("followup B")
 
     # Empty history makes /compact return early (no model) yet still exercise the command path.
-    assert runtime.dispatch("/compact")
+    assert await runtime.dispatch("/compact")
 
     # The queued follow-ups flush exactly as they do after a model turn: the first is ready to
     # run and the rest stay queued, instead of being stranded behind the command.
@@ -208,34 +233,37 @@ def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
     assert runtime.pending.get_nowait() == "followup A"
     assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup B"]
 
-def test_tui_dispatch_command_flushes_single_followup_completely(tmp_path):
+async def test_tui_dispatch_command_flushes_single_followup_completely(tmp_path):
     command_loop = loop(tmp_path)
-    command_loop.command = lambda text: (True, False)
+    command_loop.command = handled_command()
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
     command_loop.session.enqueue_user_input("only followup")
 
-    assert runtime.dispatch("/compact")
+    assert await runtime.dispatch("/compact")
 
     assert runtime.pending.qsize() == 1
     assert runtime.pending.get_nowait() == "only followup"
     assert command_loop.session.pending_user_inputs == []
 
-def test_tui_dispatch_failed_command_still_flushes_followup(tmp_path):
+async def test_tui_dispatch_failed_command_still_flushes_followup(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
     command_loop.session.enqueue_user_input("followup after error")
-    command_loop.command = lambda _text: (_ for _ in ()).throw(WizoltError("command failed"))
+    async def fail(_text):
+        raise WizoltError("command failed")
 
-    assert runtime.dispatch("/broken")
+    command_loop.command = fail
+
+    assert await runtime.dispatch("/broken")
 
     assert runtime.pending.get_nowait() == "followup after error"
     assert command_loop.session.pending_user_inputs == []
 
-def test_tui_dispatch_queues_older_followup_before_restoring_idle(tmp_path):
+async def test_tui_dispatch_queues_older_followup_before_restoring_idle(tmp_path):
     command_loop = loop(tmp_path)
-    command_loop.command = lambda _text: (True, False)
+    command_loop.command = handled_command()
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
     command_loop.session.enqueue_user_input("older followup")
@@ -254,23 +282,23 @@ def test_tui_dispatch_queues_older_followup_before_restoring_idle(tmp_path):
     runtime.submit_next = submit_next
     runtime.reset_turn = reset_turn
 
-    assert runtime.dispatch("/slow-command")
+    assert await runtime.dispatch("/slow-command")
 
     assert events == ["submit", "idle"]
     assert runtime.pending.get_nowait() == "older followup"
 
-def test_tui_dispatch_command_with_empty_queue_stays_idle(tmp_path):
+async def test_tui_dispatch_command_with_empty_queue_stays_idle(tmp_path):
     command_loop = loop(tmp_path)
-    command_loop.command = lambda text: (True, False)
+    command_loop.command = handled_command()
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
 
-    assert runtime.dispatch("/help")
+    assert await runtime.dispatch("/help")
 
     assert runtime.pending.qsize() == 0
     assert command_loop.session.pending_user_inputs == []
 
-def test_tui_dispatch_non_command_leaves_followups_for_agent_turn(tmp_path):
+async def test_tui_dispatch_non_command_leaves_followups_for_agent_turn(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
@@ -278,20 +306,20 @@ def test_tui_dispatch_non_command_leaves_followups_for_agent_turn(tmp_path):
 
     # A plain message is not a command: dispatch returns False and must not flush the queue,
     # because run_agent_turn owns follow-up dispatch for model turns (no double dispatch).
-    assert not runtime.dispatch("answer me")
+    assert not await runtime.dispatch("answer me")
 
     assert runtime.pending.qsize() == 0
     assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup A"]
 
-def test_tui_dispatch_exit_does_not_flush_queued_followups(tmp_path):
+async def test_tui_dispatch_exit_does_not_flush_queued_followups(tmp_path):
     command_loop = loop(tmp_path)
-    command_loop.command = lambda text: (True, True)
+    command_loop.command = handled_command(exit_now=True)
     command_loop.tui = TuiApp()
     command_loop.tui.exit = lambda: None
     runtime = TuiRuntime(command_loop)
     command_loop.session.enqueue_user_input("followup A")
 
-    assert runtime.dispatch("/exit")
+    assert await runtime.dispatch("/exit")
 
     assert runtime.pending.qsize() == 0
     assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup A"]

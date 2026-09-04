@@ -78,7 +78,7 @@ async def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatc
     on_stream("output_done", "t")
     assert calls == [("output", "x"), ("", "")]
 
-def test_status_reports_worker_delegation_state(tmp_path):
+async def test_status_reports_worker_delegation_state(tmp_path):
     from wizolt.cli import CommandLoop
     from wizolt.engine import Agent
     from wizolt.session import Session
@@ -88,14 +88,14 @@ def test_status_reports_worker_delegation_state(tmp_path):
     outputs: list = []
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=outputs.append)
 
-    def status_text():
+    async def status_text():
         outputs.clear()
-        loop.command("/status")
+        await loop.command("/status")
         return "\n".join(str(text) for text in outputs)
 
     # No worker session: one `worker` row naming the configured [worker] provider. Everything is
     # one flat table — the session's own rows, the parent's, then the worker's under `worker*`.
-    text = status_text()
+    text = await status_text()
     assert text.lstrip().startswith("| field | value |")  # rendered in the content column
     assert "###" not in text
     assert "[worker] provider" in text and "default" in text
@@ -105,7 +105,7 @@ def test_status_reports_worker_delegation_state(tmp_path):
 
     # A fresh worker has no requests yet: the worker context row says so instead of inventing
     # tokens, and the model row mirrors the parent's (provider/model, api, reasoning).
-    text = status_text()
+    text = await status_text()
     assert "| worker | `default/" in text
     assert "| worker ctx | (no requests yet); `idle`, rounds `0` |" in text
 
@@ -114,14 +114,14 @@ def test_status_reports_worker_delegation_state(tmp_path):
     worker.usage.last_cached_prompt_tokens = 25
     worker.usage.prompt_tokens = 50
     worker.usage.cached_prompt_tokens = 25
-    text = status_text()
+    text = await status_text()
     # Scope to the worker rows: the parent's own cache row also says "(no requests yet)".
     worker_section = text.split("| worker |", 1)[1]
     assert "~50 / 100" in worker_section and "(no requests yet)" not in worker_section
     assert "| worker cache | " in worker_section and "last `50.0%`; session `50.0%`" in worker_section
 
     worker._active_turn_messages.append({"role": "user", "content": "order"})
-    text = status_text()
+    text = await status_text()
     assert "`delegating`, rounds `0`" in text
 
 def test_worker_status_command_is_human_readable(tmp_path):

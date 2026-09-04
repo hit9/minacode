@@ -520,7 +520,7 @@ async def test_worker_reset_appends_event_message(tmp_path):
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    loop.command("/worker reset")
+    await loop.command("/worker reset")
 
     assert parent.worker is None
     assert parent.messages[-1].get(SESSION_EVENT_KEY) == "worker_reset"

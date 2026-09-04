@@ -134,13 +134,13 @@ def test_a_snapshot_written_before_the_metadata_still_loads():
 # --- headless review --------------------------------------------------------------------------
 
 
-def test_compact_log_lists_stored_segments(tmp_path):
+async def test_compact_log_lists_stored_segments(tmp_path):
     s = session(tmp_path)
     s.state.compaction_count = 3
     store(s, title="first task", created_at="2026-08-13T13:12:00+08:00")
     store(s, title="second task", scope="turn", trigger="manual")
 
-    text = block_text(compact(loop(s), "log"))
+    text = block_text(await compact(loop(s), "log"))
 
     assert "3 compactions · 2 stored segments" in text  # a pass with nothing to evict stores none
     assert text.index("seg.2") < text.index("seg.1")  # newest first, like RecallContext(list)
@@ -149,11 +149,11 @@ def test_compact_log_lists_stored_segments(tmp_path):
     assert "first task" in text and "second task" in text
 
 
-def test_compact_log_prints_one_segments_whole_summary(tmp_path):
+async def test_compact_log_prints_one_segments_whole_summary(tmp_path):
     s = session(tmp_path)
     store(s, text="user: line one\nassistant: line two", summary="what survived\nand the next step")
 
-    text = block_text(compact(loop(s), "log seg.1"))
+    text = block_text(await compact(loop(s), "log seg.1"))
 
     assert "what survived" in text
     assert "and the next step" in text  # a multi-line summary is not clipped to its first line
@@ -161,20 +161,20 @@ def test_compact_log_prints_one_segments_whole_summary(tmp_path):
     assert "line one" not in text
 
 
-def test_compact_log_rejects_an_unknown_segment(tmp_path):
+async def test_compact_log_rejects_an_unknown_segment(tmp_path):
     s = session(tmp_path)
     store(s)
 
-    assert compact(loop(s), "log seg.9") == "No stored segment seg.9"
-    assert compact(loop(s), "log nonsense") == "Usage: /compact log [seg.N]"
+    assert await compact(loop(s), "log seg.9") == "No stored segment seg.9"
+    assert await compact(loop(s), "log nonsense") == "Usage: /compact log [seg.N]"
 
 
-def test_compact_log_says_so_when_nothing_is_stored(tmp_path):
-    assert compact(loop(session(tmp_path)), "log") == "No compaction has stored a segment yet"
+async def test_compact_log_says_so_when_nothing_is_stored(tmp_path):
+    assert await compact(loop(session(tmp_path)), "log") == "No compaction has stored a segment yet"
 
 
-def test_compact_still_rejects_other_arguments(tmp_path):
-    assert compact(loop(session(tmp_path)), "now") == "Usage: /compact [log [seg.N]]"
+async def test_compact_still_rejects_other_arguments(tmp_path):
+    assert await compact(loop(session(tmp_path)), "now") == "Usage: /compact [log [seg.N]]"
 
 
 # --- the viewer -------------------------------------------------------------------------------

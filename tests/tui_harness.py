@@ -1,6 +1,8 @@
 """Shared harness for the TUI test modules: session/loop builders, recording prompt-toolkit
 outputs, and the helpers that drive a real Application over a pipe input."""
 
+import asyncio
+import concurrent.futures
 import threading
 import time
 
@@ -49,6 +51,38 @@ def wait_until(predicate, timeout=5.0):
             return
         time.sleep(0.005)
     raise AssertionError("interactive TUI condition was not reached")
+
+
+async def wait_for(predicate, timeout=5.0):
+    """Yield to the loop until `predicate` holds. The timeout is a deadlock bound, not a pace."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError("condition was not reached")
+        await asyncio.sleep(0.001)
+
+
+def request_input_from_driver(app, prompt="Approve? "):
+    """Ask a live TuiApp for input from a driver thread, and hand back a future to read.
+
+    The request itself belongs to the application's own loop -- that is where the prompt lives and
+    where the answer resolves -- so the driver schedules it there rather than running it itself."""
+    result: concurrent.futures.Future = concurrent.futures.Future()
+
+    def start() -> None:
+        async def request() -> None:
+            try:
+                result.set_result(await app.request_input_async(prompt))
+            except BaseException as error:  # noqa: BLE001 - the driver reads every ending off the future
+                result.set_exception(error)
+
+        # A plain task, not one of the application's background tasks: in production the request is
+        # awaited by the turn the runtime owns, so the app shutting down resolves it as cancelled
+        # rather than tearing the waiter down with itself.
+        app.app.loop.create_task(request())
+
+    app.app.loop.call_soon_threadsafe(start)
+    return result
 
 
 def rendered_screen_text(application, output):

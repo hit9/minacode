@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from wizolt.base import Json, ToolError
@@ -34,7 +34,10 @@ class AskTool(Tool):
     )
     MUTATES = False
     STORES_RESULT = True
-    question_fn: Callable[[list[AskSpec]], list[str]] | None = None
+    # Injected by ToolRunner: asks the whole batch and awaits the answers. Awaitable because the
+    # questions are put to the user on the runtime loop, which must stay responsive while they sit
+    # unanswered -- an Ask can wait as long as the user takes.
+    question_fn: Callable[[list[AskSpec]], Awaitable[list[str]]] | None = None
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -51,6 +54,24 @@ class AskTool(Tool):
         # fmt: on
 
     def call(self) -> str:
+        """Ask waits on the user, so its work is a coroutine; see call_async.
+
+        Reached only if something outside the runner invokes it as an ordinary tool. Validation
+        still runs -- it is the tool's own -- and then it says what it needs."""
+
+        self._prepared()
+        raise ToolError(f"{self.NAME} requires a tool runner to reach the user")
+
+    async def call_async(self) -> str:
+        prepared = self._prepared()
+        # Ask for the whole batch at once (the modal pages through it); fall back to the question
+        # texts when no interactive question function is wired.
+        answers = await self.question_fn(prepared) if self.question_fn else [spec.question for spec in prepared]
+        if len(answers) == 1:
+            return answers[0]
+        return "\n\n".join(f"Q: {spec.question}\nA: {answer}" for spec, answer in zip(prepared, answers))
+
+    def _prepared(self) -> list[AskSpec]:
         questions = self.single_dict_arg(f"{self.NAME} requires named fields").get("questions")
         if not isinstance(questions, list) or not questions:
             raise ToolError(f"{self.NAME} requires a non-empty 'questions' list")
@@ -79,12 +100,7 @@ class AskTool(Tool):
             ):
                 raise ToolError(f"{self.NAME} recommended must be a valid 0-based choice index")
             prepared.append(AskSpec(question, choices, previews, recommended))
-        # Ask for the whole batch at once (the modal pages through it); fall back to the question
-        # texts when no interactive question function is wired.
-        answers = self.question_fn(prepared) if self.question_fn else [spec.question for spec in prepared]
-        if len(answers) == 1:
-            return answers[0]
-        return "\n\n".join(f"Q: {spec.question}\nA: {answer}" for spec, answer in zip(prepared, answers))
+        return prepared
 
     def short_args(self) -> list[str]:
         questions = self.args[0].get("questions") if self.args and isinstance(self.args[0], dict) else None

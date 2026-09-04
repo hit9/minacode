@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
-import queue
 import signal
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
-from wizolt.base import MalformedToolCallError, TurnBox, WizoltError
+from wizolt.base import MalformedToolCallError, TurnBox, WizoltError, fail_if_running_loop
 from wizolt.cli.modals import tool_output_viewer
 from wizolt.image import UserInput
 from wizolt.render import search_sources_footer
@@ -34,17 +34,119 @@ class _TurnCancelled(Exception):
     being torn down -- and the runtime needs to tell a cancelled turn apart from a failed one."""
 
 
+class ScrollbackWriter:
+    """One ordered queue for completed scrollback writes while the TUI is live.
+
+    Printing above a live application means suspending it, so a write is not something a producer
+    can just do: it has to be handed to the loop that owns the terminal. Everything goes through one
+    FIFO queue, so what the reader sees is the order things happened in -- a promoted answer above
+    the tool output of the batch that followed it, not interleaved with it.
+
+    Nothing blocks the loop. Producers submit and move on; a caller that genuinely needs a write to
+    be on screen before it continues -- the turn, between a promoted response and its tool batch --
+    awaits a `barrier` instead of a threading Event.
+
+    Admission and scheduling share one lock, so a producer cannot pass the gate and then find the
+    loop gone: whoever loses that race is refused, and a refused write takes the direct-output
+    fallback rather than disappearing."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, write: Callable[[Callable[[], None]], Awaitable[None]], fallback: Callable[[Callable[[], None]], None]):
+        self._loop = loop
+        self._write = write
+        self._fallback = fallback
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._lock = threading.Lock()
+        self._open = True
+        self._error: BaseException | None = None
+        self._task = loop.create_task(self._pump(), name="scrollback-writer")
+
+    @property
+    def lock(self) -> threading.Lock:
+        """The admission lock. Shared with the background-output gate: closing that gate and
+        scheduling a write are the same race, so they are decided by the same lock."""
+        return self._lock
+
+    def submit(self, callback: Callable[[], None]) -> None:
+        """Queue one completed write. FIFO, from any thread, and never blocking.
+
+        Scheduling happens under the lock so the queue order is the submit order: `call_soon` is
+        itself FIFO, so ordering the schedule calls orders the writes."""
+
+        with self._lock:
+            if not self._open:
+                self._fallback(callback)
+                return
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, callback)
+
+    async def barrier(self) -> None:
+        """Return once every write submitted before this call has reached the terminal.
+
+        Re-raises the first write failure: a terminal that refused a write is the runtime's problem,
+        not something to bury in a background task nobody observes."""
+
+        done: asyncio.Future[None] = self._loop.create_future()
+        with self._lock:
+            if not self._open:
+                self._raise_pending()
+                return
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, done)
+        await done
+        self._raise_pending()
+
+    async def close(self) -> None:
+        """Stop accepting writes, drain the ones already accepted, and end the writer task."""
+
+        with self._lock:
+            if not self._open:
+                return
+            self._open = False
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+
+    def _raise_pending(self) -> None:
+        error, self._error = self._error, None
+        if error is not None:
+            raise error
+
+    async def _pump(self) -> None:
+        while True:
+            item = await self._queue.get()
+            if item is None:
+                return
+            if isinstance(item, asyncio.Future):
+                if not item.done():
+                    item.set_result(None)
+                continue
+            try:
+                await self._write(item)
+            except Exception as error:  # noqa: BLE001 - kept for the next barrier or close to raise.
+                if self._error is None:
+                    self._error = error
+
+
 class TuiRuntime:
     """Own the interactive session timeline while CommandLoop owns session behavior."""
 
     def __init__(self, command_loop: CommandLoop):
         self.loop = command_loop
-        self.pending: queue.Queue[UserInput] = queue.Queue()
+        # Submitted user input, on the runtime loop. TUI callbacks run there too, so they enqueue
+        # directly; anything arriving from another thread schedules the put instead.
+        self.pending: asyncio.Queue[UserInput] = asyncio.Queue()
         self.stop = threading.Event()
         self.cancel_pending = threading.Event()
         self.main_busy = threading.Event()
         self.force_exit_timer: threading.Timer | None = None
         self.error: BaseException | None = None
+        # The loop this runtime owns, and everything it started on it. Every task created here is
+        # either awaited in its lexical scope or registered below with a done callback that
+        # observes its result, so nothing is left to an event-loop exception handler.
+        self.runtime_loop: asyncio.AbstractEventLoop | None = None
+        self.tasks: set[asyncio.Task] = set()
+        self.scrollback: ScrollbackWriter | None = None
+        # Set to end the input loop: an asyncio event, so waiting for it is an await rather than a
+        # poll, and it is owned by the loop that sets it.
+        self.shutdown: asyncio.Event | None = None
 
     @property
     def tui(self) -> TuiApp:
@@ -87,7 +189,7 @@ class TuiRuntime:
         if not text:
             return
         if not value.images and "\n" not in text and text.startswith("/"):
-            threading.Thread(target=self.loop.run_queued_command, args=(text,), daemon=True).start()
+            self.spawn(self.loop.run_queued_command(text), name="queued-command")
         else:
             self.loop.session.enqueue_user_input(value)
             self.loop.session.save_snapshot()
@@ -97,23 +199,74 @@ class TuiRuntime:
         return self.loop.recall_pending_input(self._request_model_retry)
 
     def expand_output(self) -> None:
-        threading.Thread(target=lambda: tool_output_viewer(self.loop), name="tool-output", daemon=True).start()
+        self.spawn(asyncio.to_thread(tool_output_viewer, self.loop), name="tool-output")
+
+    def spawn(self, coroutine, *, name: str = "") -> asyncio.Task | None:
+        """Start one runtime-owned task and keep it until it is done.
+
+        Registered rather than fired and forgotten: the done callback consumes the result, so an
+        expected cancellation is absorbed and an unexpected failure brings the runtime down through
+        its own shutdown path instead of surfacing as an unretrieved-exception warning."""
+
+        loop = self.runtime_loop
+        if loop is None:
+            return None
+        task = loop.create_task(coroutine, name=name or None)
+        self.tasks.add(task)
+        task.add_done_callback(self._task_done)
+        return task
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self.tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is None:
+            return
+        # An owned task failed on its own. Record it for the caller of run() and unwind: leaving
+        # the runtime up around a dead command or viewer would be a quieter, worse failure.
+        if self.error is None:
+            self.error = error
+        self.request_shutdown()
+
+    def request_shutdown(self) -> None:
+        """Stop accepting new turns and let run_async begin its shutdown sequence."""
+        self.stop.set()
+        event, loop = self.shutdown, self.runtime_loop
+        if event is None or loop is None:
+            return
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(event.set)
 
     def request_exit(self) -> None:
-        self.stop.set()
+        """Ctrl-D or /exit: ask the runtime to shut down.
+
+        The application is not stopped here. It stays up until the shutdown sequence has settled
+        the active turn and drained accepted scrollback; exiting it first would take the terminal
+        away from output that was already accepted."""
+
+        self.request_shutdown()
         self.loop.save_and_emit_resume()
 
     def force_exit(self) -> None:
-        self.stop.set()
-        threading.Thread(target=self.loop.agent.cancel, daemon=True).start()
+        """The emergency escape hatch: ask for the graceful path, then arm a deadline.
+
+        A forced signal cannot promise that anything was closed, which is why it is last: the
+        ordinary path is requested first and given its chance to unwind."""
+
+        self.request_shutdown()
+        self.loop.agent.cancel()
         self.force_exit_timer = threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
         self.force_exit_timer.daemon = True
         self.force_exit_timer.start()
-        os.kill(os.getpid(), signal.SIGINT)
+
+    def submit_chat(self, value: UserInput) -> None:
+        """Accept one submitted line. Runs on the runtime loop, where the TUI's callbacks run."""
+        self.pending.put_nowait(value)
 
     def build_tui(self) -> TuiApp:
         return TuiApp(
-            on_chat_submit=self.pending.put,
+            on_chat_submit=self.submit_chat,
             on_running_submit=self.submit_running,
             on_exit_request=self.request_exit,
             on_force_exit=self.force_exit,
@@ -139,7 +292,7 @@ class TuiRuntime:
         if not entered:
             return
         first = entered[0] if isinstance(entered[0], UserInput) else UserInput(entered[0])
-        self.pending.put(first)
+        self.pending.put_nowait(first)
         for text in entered[1:]:
             self.loop.session.enqueue_user_input(text)
 
@@ -153,21 +306,20 @@ class TuiRuntime:
         self.cancel_pending.clear()
         self.main_busy.clear()
 
-    def dispatch(self, user_input: str | UserInput) -> bool:
+    async def dispatch(self, user_input: str | UserInput) -> bool:
         """Dispatch one input. Return true when it was fully handled as a command."""
         user_input = user_input if isinstance(user_input, UserInput) else UserInput(user_input)
         self.loop.ui.emit_answer(user_input.display_text(), role="user", rule=False)
         try:
-            handled, exit_now = self.loop.command(user_input.strip())
+            handled, exit_now = await self.loop.command(user_input.strip())
         except (KeyboardInterrupt, WizoltError) as error:
             self.loop.emit_turn("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
             self.submit_next(self.loop.take_pending_inputs())
             self.reset_turn()
             return True
         if exit_now:
-            self.stop.set()
             self.main_busy.clear()
-            self.tui.exit()
+            self.request_shutdown()
             return True
         if handled:
             # A command must not strand queued follow-ups: flush them as run_agent_turn does, so
@@ -179,17 +331,21 @@ class TuiRuntime:
         return False
 
     async def _drive_turn(self, user_input: str | UserInput) -> None:
-        """Run one turn as a task, and map its settled cancellation to something this thread can
-        catch. The turn is awaited to completion first: by the time CancelledError surfaces here,
-        Agent has already settled or retracted it and saved the snapshot."""
+        """Run one turn as its own task, and name its settled cancellation.
+
+        A child task rather than a bare await: the turn is the thing Ctrl-C cancels, and cancelling
+        it must not read as the runtime itself being torn down. It is awaited to completion first,
+        so by the time this raises, Agent has settled or retracted the turn and saved its snapshot."""
 
         turn = asyncio.ensure_future(self.loop.agent.run_async(user_input))
         try:
             await turn
         except asyncio.CancelledError:
-            raise _TurnCancelled from None
+            if turn.cancelled():
+                raise _TurnCancelled from None
+            raise
 
-    def run_agent_turn(self, user_input: str | UserInput) -> None:
+    async def run_agent_turn(self, user_input: str | UserInput) -> None:
         user_input = user_input if isinstance(user_input, UserInput) else UserInput(user_input)
         self.loop.emit("")
         self.loop.user_turn_rule()
@@ -200,10 +356,7 @@ class TuiRuntime:
         malformed_tool_call = False
         answered = False
         try:
-            # TODO(async-phase-5): one outer boundary per turn while the TUI still owns its own
-            # thread. It is an entry point, not a bridge: the turn, its model request, its tools,
-            # and any worker all live on this loop. Phase 5 gives the runtime one loop for all of it.
-            asyncio.run(self._drive_turn(user_input))
+            await self._drive_turn(user_input)
             answered = True
         except _TurnCancelled:
             self.submit_next(self.loop.take_pending_inputs())
@@ -237,37 +390,96 @@ class TuiRuntime:
         self.loop.session.save_snapshot()
         self.submit_next(self.loop.take_pending_inputs())
 
-    def run_agent_loop(self) -> None:
-        while not self.stop.is_set():
+    async def run_agent_loop(self) -> None:
+        """Take submitted input one at a time, until shutdown is requested.
+
+        The wait is an await on two futures, not a poll: whichever of the next input and the
+        shutdown request arrives first ends it."""
+
+        assert self.shutdown is not None
+        while not self.shutdown.is_set():
+            waiting = asyncio.ensure_future(self.pending.get())
+            stopping = asyncio.ensure_future(self.shutdown.wait())
             try:
-                user_input = self.pending.get(timeout=0.1)
-            except queue.Empty:
-                continue
+                await asyncio.wait({waiting, stopping}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in (waiting, stopping):
+                    if not task.done():
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await task
+            if not waiting.done() or waiting.cancelled():
+                return
+            user_input = waiting.result()
             self.main_busy.set()
             self.loop.session.clear_quick_hints()  # the user acted; drop last turn's offerings (also covers slash commands, which skip Agent.run)
             if self.cancel_pending.is_set():
                 self.loop.emit_turn("Cancelled")
                 self.reset_turn()
                 continue
-            if not self.dispatch(user_input):
-                self.run_agent_turn(user_input)
+            if not await self.dispatch(user_input):
+                await self._turn_until_shutdown(user_input)
 
-    def run_tui_app(self) -> None:
+    async def _turn_until_shutdown(self, user_input: str | UserInput) -> None:
+        """Run one turn, and let a shutdown request end the *wait* for it.
+
+        The turn is not abandoned by that: it is a runtime-owned task, so `_shutdown` cancels and
+        awaits it in its own fixed order, after asking the agent to stop. Without this race an
+        application that ended under a live turn -- a force exit, a terminal that went away -- would
+        leave the runtime waiting for a turn nobody can see any more, and shutdown could never
+        reach the step that cancels it."""
+
+        assert self.shutdown is not None
+        turn = self.spawn(self.run_agent_turn(user_input), name="agent-turn")
+        assert turn is not None
+        stopping = asyncio.ensure_future(self.shutdown.wait())
         try:
-            self.tui.run(style=self.loop.view.style())
-        except BaseException as error:  # noqa: BLE001 - propagate every TUI-thread failure on the main thread.
-            self.error = error
-            self.stop.set()
+            await asyncio.wait({turn, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not stopping.done():
+                stopping.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stopping
+
+    async def _run_application(self) -> None:
+        """The prompt-toolkit application, as one task of this runtime.
+
+        Its ending is the runtime's ending: a normal return means the app stopped on its own, and a
+        failure is recorded for run() before shutdown proceeds. Either way the runtime unwinds
+        rather than leaving the turn and the writer running with no terminal under them."""
+
+        try:
+            await self.tui.run_async(style=self.loop.view.style())
+        except BaseException as error:
+            if self.error is None:
+                self.error = error
+            raise
+        finally:
+            self.request_shutdown()
 
     def run(self) -> int:
-        """Run the agent on the main thread and prompt-toolkit on one joined UI thread."""
+        """Synchronous entry point for the interactive CLI: one loop for the whole runtime."""
+
+        fail_if_running_loop("use await TuiRuntime.run_async(...)")
+        return asyncio.run(self.run_async())
+
+    async def run_async(self) -> int:
+        """Own the interactive session: the application, the active turn, and the output queue.
+
+        One loop for all of it, so a model request, a tool batch, an MCP call and a keystroke are
+        just tasks that take turns -- and a turn's cancellation reaches everything it awaits."""
+
+        self.runtime_loop = asyncio.get_running_loop()
+        self.shutdown = asyncio.Event()
         self.loop.tui = self.build_tui()
-        tui_thread = threading.Thread(target=self.run_tui_app, name="tui")
-        tui_thread.start()
+        application = self.spawn(self._run_application(), name="tui-application")
+        assert application is not None
         try:
-            self.tui.ready.wait()
-            if self.error is not None:
-                raise self.error
+            await self._await_ready(application)
+            self.scrollback = ScrollbackWriter(self.runtime_loop, self.tui.write_to_scrollback_async, self.loop.ui.write_direct)
+            self.loop.scrollback = self.scrollback
+            self.loop.background_output_lock = self.scrollback.lock
+            self.loop.agent.output_barrier = self.scrollback.barrier
             # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
             # so the primary-screen application places them in native terminal/tmux scrollback.
             resuming = self.loop.session.resumed
@@ -281,19 +493,50 @@ class TuiRuntime:
                 # runtime-only snapshot after the prompt is live so the first picker need not wait.
                 self.loop.session.mentions.refresh_async()
             self.submit_next(self.loop.take_pending_inputs())
-            self.run_agent_loop()
+            await self.run_agent_loop()
         finally:
-            self.stop.set()
-            if self.force_exit_timer is not None:
-                self.force_exit_timer.cancel()
-            self.tui.exit()
-            # Do not let interpreter finalization race a TUI thread flushing stdout. The emergency
-            # force-exit timer remains responsible for terminating a genuinely wedged application.
-            tui_thread.join()
-            try:
-                self.loop.close_background_output()
-            finally:
-                self.loop.tui = None
+            await self._shutdown(application)
         if self.error is not None:
             raise self.error
         return 0
+
+    async def _await_ready(self, application: asyncio.Task) -> None:
+        """Wait for the application to be live, or for it to have failed trying."""
+        while not self.tui.ready.is_set():
+            if application.done():
+                await application  # re-raises whatever stopped it
+                return
+            await asyncio.sleep(0.001)
+
+    async def _shutdown(self, application: asyncio.Task) -> None:
+        """Unwind in a fixed order, so nothing is closed while something still needs it.
+
+        Stop taking new work; cancel and await the active turn, including tool quiescence and turn
+        settlement; drain the tasks this runtime started; then close output -- admission first,
+        then the accepted writes -- and only then exit the application and await it. The loop is
+        closed by `asyncio.run` after this returns, which is why every close happens here."""
+
+        self.stop.set()
+        if self.shutdown is not None:
+            self.shutdown.set()
+        if self.force_exit_timer is not None:
+            self.force_exit_timer.cancel()
+        self.loop.agent.cancel()
+        owned = [task for task in self.tasks if task is not application]
+        for task in owned:
+            task.cancel()
+        if owned:
+            await asyncio.gather(*owned, return_exceptions=True)
+        await self.loop.close_resources()
+        writer, self.scrollback = self.scrollback, None
+        if writer is not None:
+            # Admission and the drain are one step: the gate they share is this writer's lock, so a
+            # background worker cannot pass it and then find the queue closed behind it.
+            self.loop.close_background_output()
+            await writer.close()
+        self.loop.scrollback = None
+        self.loop.agent.output_barrier = None
+        self.tui.exit()
+        with contextlib.suppress(asyncio.CancelledError):
+            await application
+        self.loop.tui = None

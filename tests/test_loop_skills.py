@@ -275,14 +275,14 @@ def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
     assert "76.1K" not in cache_row
 
 
-def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
+async def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     plain = []
     rich = []
     loop.emit = lambda text="", indent=0: plain.append(text)
     loop.ui.emit_answer = lambda text, **kwargs: rich.append((text, kwargs))
 
-    assert loop.command("/status") == (True, False)
+    assert await loop.command("/status") == (True, False)
     assert plain == []
     assert len(rich) == 1
     assert rich[0][0].startswith("| field | value |")  # one flat table, no section headings

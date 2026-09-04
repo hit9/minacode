@@ -136,64 +136,66 @@ def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
 
     assert echoed == ["\n• do a thing\n\n• then verify\n\n"]
 
-def test_queue_command_runs_readonly(tmp_path):
+async def test_queue_command_runs_readonly(tmp_path):
     """A read-only slash command in the queue runs immediately and is not queued for the LLM."""
     s = session(tmp_path)
     out = []
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    loop.run_queued_command("/status")
+    await loop.run_queued_command("/status")
 
     assert s.pending_user_inputs == []
     assert out and not any("unavailable" in t for t in out)
 
-def test_queue_command_runs_yolo_toggle(tmp_path):
+async def test_queue_command_runs_yolo_toggle(tmp_path):
     """/yolo flips the runtime flag from the queue while the agent works."""
     s = session(tmp_path)
     out = []
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
     before = s.settings.yolo
-    loop.run_queued_command("/yolo")
+    await loop.run_queued_command("/yolo")
 
     assert s.settings.yolo is (not before)
     assert s.pending_user_inputs == []
 
-def test_hints_command_is_removed(tmp_path):
+async def test_hints_command_is_removed(tmp_path):
     s = session(tmp_path)
     out = []
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
     # Every /hints spelling follows the normal unknown-command path; there is no toggle left.
     for variant in ("/hints", "/hints on", "/hints off"):
-        handled, _ = loop.command(variant)
+        handled, _ = await loop.command(variant)
         assert handled is True
         assert out[-1].endswith("Unknown command: /hints")
     assert "/hints" not in loop_module.COMMAND_LOOKUP
     assert "/hints" not in loop_module.CommandLoop.COMMANDS
 
-def test_queue_command_rejects_mutating(tmp_path):
+async def test_queue_command_rejects_mutating(tmp_path):
     """A state-mutating slash command is refused while the agent works, not queued or run."""
     s = session(tmp_path)
     out = []
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    loop.run_queued_command("/model")
+    await loop.run_queued_command("/model")
 
     assert s.pending_user_inputs == []
     assert any("unavailable while the agent is working" in t for t in out)
 
-def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
+async def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
     """Read-only /mcp is allowed; mutating subcommands like connect are refused."""
     s = session(tmp_path)
     out = []
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    loop.run_queued_command("/mcp connect test")
+    await loop.run_queued_command("/mcp connect test")
 
     assert any("read-only /mcp" in t for t in out)
 
-def test_tool_input_without_tui_uses_injected_input(tmp_path):
+async def test_tool_input_without_tui_uses_injected_input(tmp_path):
+    """Without a TUI there is no prompt on the loop, so the injected blocking reader runs on a
+    worker and its answer is awaited like any other."""
     s = session(tmp_path)
     calls = []
     loop = CommandLoop(
@@ -202,7 +204,7 @@ def test_tool_input_without_tui_uses_injected_input(tmp_path):
         output_fn=lambda text: None,
     )
 
-    assert loop.tool_input("[Y/n or reason] ") == "y"
+    assert await loop.tool_input("[Y/n or reason] ") == "y"
 
     assert calls == ["[Y/n or reason] "]
 

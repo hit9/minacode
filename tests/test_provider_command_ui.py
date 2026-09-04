@@ -381,13 +381,13 @@ def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeyp
     assert shown["footer"] == "  │ Why these levels\n  │ declared for this model in your config\n"
 
 
-def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
+async def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     from prompt_toolkit.document import Document
 
     command_loop = loop(tmp_path)
 
     assert "/api" in CommandLoop.COMMANDS
-    command_loop.command("/api anthropic")
+    await command_loop.command("/api anthropic")
     assert command_loop.session.config.provider.api == "anthropic"
 
     texts = [c.text for c in CommandCompleter().get_completions(Document("/api "), None)]
@@ -486,7 +486,7 @@ def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
     assert remote_models(command_loop, provider) == ()
 
 
-def test_effort_is_an_alias_for_reason(tmp_path):
+async def test_effort_is_an_alias_for_reason(tmp_path):
     command_loop = loop(tmp_path)
 
     # Registered as a command that dispatches to the same handler as /reason.
@@ -495,7 +495,7 @@ def test_effort_is_an_alias_for_reason(tmp_path):
     assert "/effort" in reason_command.aliases
 
     # Dispatch sets reasoning effort exactly like /reason.
-    command_loop.command("/effort high")
+    await command_loop.command("/effort high")
     assert command_loop.session.config.provider.reasoning == "high"
 
     # Tab completion offers the same reasoning choices.

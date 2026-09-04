@@ -249,7 +249,7 @@ async def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     assert "user:\n8" in s.history[0].text
 
 
-def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
+async def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     s = session_with_provider(tmp_path)
     # Long enough that something is actually evicted: the rule under test is where the checkpoint
     # lands relative to the latest request, which only exists once there is a head to replace.
@@ -278,7 +278,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
             return json.loads(content)
 
     loop.agent.model = FakeModel(s)
-    result = compact(loop, "")
+    result = await compact(loop, "")
 
     assert len(s.messages) < 12  # a head was evicted
     assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)  # the checkpoint leads
@@ -290,7 +290,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     assert "prior summary inserted" in result
 
 
-def test_manual_compact_names_the_segment_with_the_compactor_title(tmp_path):
+async def test_manual_compact_names_the_segment_with_the_compactor_title(tmp_path):
     """`/compact` must name the span the way the automatic pass does.
 
     apply_compaction takes the title as a parameter rather than reading it off `data`, so every
@@ -320,7 +320,7 @@ def test_manual_compact_names_the_segment_with_the_compactor_title(tmp_path):
             return json.loads(content)
 
     loop.agent.model = FakeModel(s)
-    compact(loop, "")
+    await compact(loop, "")
 
     assert s.history[0].title == "Tokenizer extraction"
 

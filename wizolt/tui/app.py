@@ -40,6 +40,7 @@ from wizolt.base import (
     LogBlock,
     LogEdge,
     WizoltError,
+    fail_if_running_loop,
 )
 from wizolt.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
 from wizolt.mentions import FilePick, MentionSpan, active_mention, encode_file_mention, scan_mentions
@@ -54,6 +55,9 @@ class TuiModal:
     exclusive: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     result: Any = None
+    # Set when the modal was opened from the loop, so its result is awaited there instead of
+    # waited on from a worker thread.
+    future: Any = None
 
 
 @dataclass(frozen=True)
@@ -233,10 +237,13 @@ class TuiApp:
         # Every line of the prompt except the last. The input row's prefix is a single-line
         # processor, so these are rendered as their own rows above it. See _set_mode.
         self._input_prompt_above: list[str] = []
-        self._input_pending: threading.Event | None = None
+        self._input_pending: asyncio.Future[str | None] | None = None
+        self._input_loop: asyncio.AbstractEventLoop | None = None
+        # Set while no modal is visible, so an approval prompt can wait for a selector to close
+        # without polling. Created on the loop that first awaits it.
+        self._modal_idle: asyncio.Event | None = None
         # None is the cancellation signal, distinct from every string the user can submit (including
         # ""). See request_input: callers must not read a cancel as an answer.
-        self._input_result: str | None = None
         # (label, answer) actions of the current approval prompt, and which one is focused. See
         # set_approval_form.
         self._approval_actions: list[tuple[str, str]] = []
@@ -250,59 +257,80 @@ class TuiApp:
         self.exclusive_modal_window: Window | None = None
         self.status_window: Window | None = None
 
-    def request_input(self, prompt: str) -> str | None:
-        """Called from the agent thread to get a line of user input inline (approval prompts,
-        Ask tool, etc.). Blocks until the TUI thread's widget submits, and returns what was
-        submitted -- possibly "".
+    async def request_input_async(self, prompt: str) -> str | None:
+        """Ask for a line of user input inline (an approval prompt, an Ask free-text page) and await it.
 
         Returns None when the input was cancelled instead of answered: Ctrl-C, Ctrl-D on an empty
-        line, or the app exiting while the agent thread is still parked here. Cancellation must be
-        its own value, not a string: "" is a legitimate submission that `confirm` reads as the
-        default approve, and any placeholder text ("cancelled") would reach the model as a real
-        answer. Callers decide what a cancel means -- `confirm` refuses, Ask dismisses."""
+        line, or the app exiting while something is still waiting here. Cancellation must be its own
+        value, not a string: "" is a legitimate submission that `confirm` reads as the default
+        approve, and any placeholder text ("cancelled") would reach the model as a real answer.
+        Callers decide what a cancel means -- `confirm` refuses, Ask dismisses.
+
+        At most one request may be pending; a second is an internal error, not a queue. The input
+        mode is restored in `finally`, so a cancelled or failed request never strands the prompt."""
+
+        if self._input_pending is not None:
+            raise WizoltError("internal error: a TUI input request is already pending")
         # A tool approval must not replace an already-visible selector. Wait for that selector to
         # close, then reuse the shared input row.
-        with self.modal_lock:
-            pass
-        event = threading.Event()
+        await self._modal_idle_event().wait()
+        loop = asyncio.get_running_loop()
+        pending: asyncio.Future[str | None] = loop.create_future()
+        self._input_loop = loop
+        self._input_pending = pending
         previous_mode, previous_prompt = self.input_mode, self.full_input_prompt()
         previous_document: Document | None = None
         previous_images = self.input_images
-        self._input_pending = event
-        self._input_result = None
 
-        def switch(document: Document, mode: str, prompt_text: str, done: threading.Event) -> None:
+        def switch(document: Document, mode: str, prompt_text: str) -> None:
             nonlocal previous_document
             if previous_document is None:
                 previous_document = self.input_buffer.document
             images = previous_images if mode == previous_mode else ()
             self._reset_input(UserInput(document.text, images), cursor_position=document.cursor_position)
             self._set_mode(mode, prompt_text)
-            done.set()
 
-        switched = threading.Event()
-        self._schedule(switch, Document(""), "approval", prompt, switched)
-        switched.wait()
+        switch(Document(""), "approval", prompt)
         try:
-            event.wait()
+            return await pending
         finally:
             self._input_pending = None
+            self._input_loop = None
             self._approval_actions = []  # the form belongs to one prompt; the next one declares its own
-            restored = threading.Event()
-            self._schedule(switch, previous_document or Document(""), previous_mode, previous_prompt, restored)
-            restored.wait()
-        return self._input_result
+            switch(previous_document or Document(""), previous_mode, previous_prompt)
+
+    def resolve_input(self, value: str | None) -> None:
+        """Answer the pending input request. Called on the loop; a later answer is ignored."""
+        pending = self._input_pending
+        if pending is not None and not pending.done():
+            pending.set_result(value)
 
     def cancel_input(self) -> None:
-        """Resolve a pending `request_input` with the cancel value, from any thread.
+        """Resolve a pending input request as cancelled, from any thread.
 
-        Idempotent and safe when nothing is pending. Cancellation is its own value, never a string:
-        callers read it as a refusal or a dismissal, and any placeholder text would reach the model
-        as something the user actually typed."""
-        pending = self._input_pending
-        if pending is not None:
-            self._input_result = None
-            pending.set()
+        Idempotent and safe when nothing is pending. Scheduled onto the loop that owns the future
+        when it is asked for from elsewhere: a future belongs to its loop, whoever asks."""
+
+        pending, loop = self._input_pending, self._input_loop
+        if pending is None or loop is None or pending.done():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self.resolve_input(None)
+            return
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(self.resolve_input, None)
+
+    def _modal_idle_event(self) -> asyncio.Event:
+        """Set while no modal is visible. Created on the loop that first awaits it."""
+        if self._modal_idle is None:
+            self._modal_idle = asyncio.Event()
+            if self.modal is None:
+                self._modal_idle.set()
+        return self._modal_idle
 
     def set_approval_form(self, actions: list[tuple[str, str]]) -> bool:
         """Give the *next* approval prompt a row of selectable actions, as (label, answer) pairs
@@ -389,12 +417,33 @@ class TuiApp:
         if self.input_mode != "running":
             self.invalidate()
 
+    async def write_to_scrollback_async(self, callback: Callable[[], None]) -> None:
+        """Print above the live application, on its own loop, and return once the terminal took it.
+
+        `run_in_terminal` owns the erase/write/redraw sequence, while `create_app_session` routes
+        nested prompt-toolkit printers to this application's output. A write failure is raised to
+        the caller -- the writer task -- rather than buried in a background task nobody observes.
+
+        Once the application has stopped there is nothing to print above, so the callback runs
+        directly: that is the same fallback the direct-output path uses while the runtime unwinds."""
+
+        app = self.app
+        if app is None or not app.is_running:
+            callback()
+            return
+
+        def render() -> None:
+            with create_app_session(output=app.output):
+                callback()
+
+        await run_in_terminal(render)
+
     def write_to_scrollback(self, callback: Callable[[], None]) -> None:
         """Print above the live application and wait until the terminal has accepted it.
 
-        `run_in_terminal` owns the erase/write/redraw sequence, while `create_app_session` routes
-        nested prompt-toolkit printers to this application's output. Waiting is intentional: the
-        caller must not start tool output until the promoted response is permanent scrollback.
+        The blocking form, for callers that are not on the application's loop -- a modal viewer on
+        its own thread, a standalone application. The runtime uses the awaitable form through its
+        ordered writer instead.
         """
         app = self.app
         if app is None or not app.is_running:
@@ -449,8 +498,7 @@ class TuiApp:
         if self.input_mode == "approval" and self._input_pending is not None:
             # Enter fires the focused action while the line is empty, and sends the reason once
             # there is one. Both submit a plain string, so the approval loop reads one protocol.
-            self._input_result = self._approval_actions[self._approval_focus][1] if not text and self._approval_actions else text
-            self._input_pending.set()
+            self.resolve_input(self._approval_actions[self._approval_focus][1] if not text and self._approval_actions else text)
             return False
         if self.input_mode == "running":
             if text.strip():
@@ -846,6 +894,38 @@ class TuiApp:
         first = old[: delta.prefix].count(IMAGE_MARKER)
         self.input_images = self.input_images[:first] + self.input_images[first + removed :]
 
+    async def show_modal_async(
+        self,
+        fragments_fn: Callable[[], StyleAndTextTuples],
+        key_fn: Callable[[str, str], Any],
+        *,
+        exclusive: bool = False,
+    ) -> Any:
+        """Show a modal inside this Application and await its result on the loop that runs it.
+
+        The modal's key handling already runs on this loop, so awaiting here is what keeps a
+        runtime-owned command or viewer task from parking the loop on a threading primitive."""
+
+        app = self.app
+        if app is None or not app.is_running or self.modal_window is None:
+            return None
+        await self._modal_idle_event().wait()
+        modal = TuiModal(fragments_fn, key_fn, exclusive=exclusive)
+        modal.future = asyncio.get_running_loop().create_future()
+        self._activate_modal(app, modal, exclusive=exclusive)
+        return await modal.future
+
+    def _activate_modal(self, app: Application, modal: TuiModal, *, exclusive: bool) -> None:
+        """Make `modal` the visible one. Runs on the loop, whichever entry point opened it."""
+        self.modal = modal
+        self._modal_idle_event().clear()
+        target = self.exclusive_modal_window if exclusive else self.modal_window
+        assert target is not None
+        app.layout.focus(target)
+        if exclusive:
+            self._use_alternate_screen(True)
+        app.invalidate()
+
     def show_modal(
         self,
         fragments_fn: Callable[[], StyleAndTextTuples],
@@ -860,16 +940,7 @@ class TuiApp:
                 return None
             modal = TuiModal(fragments_fn, key_fn, exclusive=exclusive)
 
-            def activate() -> None:
-                self.modal = modal
-                target = self.exclusive_modal_window if exclusive else self.modal_window
-                assert target is not None
-                app.layout.focus(target)
-                if exclusive:
-                    self._use_alternate_screen(True)
-                app.invalidate()
-
-            self._schedule(activate)
+            self._schedule(lambda: self._activate_modal(app, modal, exclusive=exclusive))
             modal.done.wait()
             return modal.result
 
@@ -879,11 +950,15 @@ class TuiApp:
             return
         modal.result = result
         self.modal = None
+        if self._modal_idle is not None:
+            self._modal_idle.set()
         if self.app is not None and self.input_window is not None:
             self.app.layout.focus(self.input_window)
         if modal.exclusive:
             self._use_alternate_screen(False)
         self.invalidate()
+        if modal.future is not None and not modal.future.done():
+            modal.future.set_result(result)
         modal.done.set()
 
     def _use_alternate_screen(self, enabled: bool) -> None:
@@ -1148,8 +1223,7 @@ class TuiApp:
             if self.input_buffer.text:
                 self.input_buffer.reset(Document(""))
             elif self._input_pending is not None:
-                self._input_result = None
-                self._input_pending.set()
+                self.resolve_input(None)
 
         bindings.add("escape", filter=~modal & Condition(lambda: self.input_mode == "approval" and bool(self._approval_actions)))(escape)
 
@@ -1215,8 +1289,7 @@ class TuiApp:
                 self._abort_history_search()
                 return
             if self.input_mode == "approval" and self._input_pending is not None:
-                self._input_result = None
-                self._input_pending.set()
+                self.resolve_input(None)
                 return
             if self.input_mode == "chat":
                 if self.input_buffer.text:
@@ -1251,8 +1324,7 @@ class TuiApp:
             if self.input_mode == "approval" and self._input_pending is not None:
                 # EOF on an empty approval line cancels rather than submitting "", which confirm()
                 # would read as the default approve -- the same trap Ctrl-C used to fall into.
-                self._input_result = self.input_buffer.text or None
-                self._input_pending.set()
+                self.resolve_input(self.input_buffer.text or None)
             elif self.input_buffer.text and self.input_mode in {"chat", "running"}:
                 self.input_buffer.delete()
             elif self.input_mode == "chat":
@@ -1402,6 +1474,44 @@ class TuiApp:
         app._on_resize = on_resize
 
     def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
+        """Standalone entry point: own a loop for this application alone.
+
+        The interactive runtime does not use this. It owns one loop for the application, the active
+        turn, and its own background work, and awaits `run_async` on it."""
+
+        fail_if_running_loop("use await TuiApp.run_async(...)")
+        return asyncio.run(self.run_async(style))
+
+    async def run_async(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
+        app = self._build_application(style)
+        self.app = app
+        self.ready.clear()
+
+        def start() -> None:
+            # pre_run already runs inside the application's loop, and the task it starts is
+            # cancelled with the rest of the application's background tasks on exit.
+            app.create_background_task(self.animate())
+            self.ready.set()
+
+        try:
+            with patch_stdout():
+                await app.run_async(pre_run=start)
+        finally:
+            self._after_run()
+
+    def _after_run(self) -> None:
+        self.ready.set()
+        # Flush anything still queued in the scrollback batching window before the terminal is
+        # handed back; a timer fired inside the app loop would never get to run again.
+        self.on_app_stop()
+        self.app = None
+        # Anything still parked on an input request unblocks as a cancel: a pending approval must
+        # not be granted by the app shutting down.
+        self.resolve_input(None)
+        if self.modal is not None:
+            self.close_modal(None)
+
+    def _build_application(self, style: Style | None = None) -> Application:  # pragma: no cover — interactive
         app = Application(
             layout=self.build_layout(),
             key_bindings=self.make_bindings(),
@@ -1416,29 +1526,4 @@ class TuiApp:
         # legacy behavior of silently degrading on terminals that do not answer the probe.
         app.renderer.cpr_not_supported_callback = lambda: None
         self._install_resize_reanchor(app)
-        self.app = app
-        self.ready.clear()
-
-        def start() -> None:
-            # pre_run already runs inside the application's loop, and the task it starts is
-            # cancelled with the rest of the application's background tasks on exit.
-            app.create_background_task(self.animate())
-            self.ready.set()
-
-        try:
-            with patch_stdout():
-                app.run(pre_run=start)
-        finally:
-            self.ready.set()
-            # Flush anything still queued in the scrollback batching window before the terminal
-            # is handed back; a timer fired inside the app loop would never get to run again.
-            self.on_app_stop()
-            self.app = None
-            # If the agent thread is still parked in request_input at exit, unblock it so its frame
-            # unwinds instead of leaking a thread. It unblocks as a cancel: a pending approval must
-            # not be granted by the app shutting down.
-            if self._input_pending is not None:
-                self._input_result = None
-                self._input_pending.set()
-            if self.modal is not None:
-                self.close_modal(None)
+        return app

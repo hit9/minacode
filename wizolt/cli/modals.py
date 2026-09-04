@@ -8,6 +8,7 @@ without a CommandLoop instance.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
 import threading
@@ -254,18 +255,18 @@ def choice_application(
     return result
 
 
-def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[str]:
+async def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[str]:
     """Entry point for Ask (the whole batch in one call). With a live TUI the batch runs in a
     single selector modal -- one page per question, options left, the selected option's rich
     markdown preview right (below the options on narrow terminals); a free-text page drops to
     the shared input row mid-flow and the modal reopens for the rest. Headless runs keep the
     plain per-question text prompts. The final tool log renders the returned answers."""
     if loop.tui is None or not loop.interactive_input:
-        return [loop.read_input("\n" + spec.question) for spec in specs]
+        return [await asyncio.to_thread(loop.read_input, "\n" + spec.question) for spec in specs]
     state = AskViewState.build(specs)
     while True:
         size = shutil.get_terminal_size((120, 24))
-        result = loop.tui.show_modal(
+        result = await loop.tui.show_modal_async(
             lambda size=size: state.fragments(size.columns, max(1, size.lines - 6)),
             state.handle_key,
         )
@@ -274,7 +275,7 @@ def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[str]:
         if isinstance(result, tuple) and len(result) == 2 and result[0] is ASK_FREE_TEXT:
             index = result[1]
             prompt = f"({index + 1}/{len(specs)}) {specs[index].question}" if len(specs) > 1 else specs[index].question
-            answer = loop.tui.request_input("\n" + prompt)
+            answer = await loop.tui.request_input_async("\n" + prompt)
             if answer is None:
                 return [DISMISSED] * len(specs)  # Ctrl-C on a free-text page dismisses the batch
             state.picked[index] = answer

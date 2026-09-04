@@ -7,14 +7,16 @@ queue-safe allowlist.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import inspect
 import json
 import os
 import re
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -36,10 +38,11 @@ from wizolt.base import (
     TurnBox,
     WizoltError,
     __version__,
+    fail_if_running_loop,
 )
 from wizolt.cli import commands, worker
 from wizolt.cli.modals import approval_text_viewer, question_interaction
-from wizolt.cli.runtime import TuiRuntime
+from wizolt.cli.runtime import ScrollbackWriter, TuiRuntime
 from wizolt.cli.update import UpdateChecker
 from wizolt.cli.view import CommandCompleter, View
 from wizolt.engine import Agent
@@ -58,7 +61,9 @@ class Command:
     name: str  # "/status"
     # A LogBlock result is the structured form of `render="plain"`: it goes to the log renderer as
     # tool output does, so a handler with rows to show does not have to pre-format them as text.
-    handler: Callable[[CommandLoop, str], str | LogBlock | None]
+    # A handler that reaches the network returns an awaitable instead, which dispatch awaits on the
+    # session's own loop; every other handler is local and bounded and returns its result directly.
+    handler: Callable[[CommandLoop, str], str | LogBlock | None | Awaitable[str | LogBlock | None]]
     aliases: tuple[str, ...] = ()
     queue_safe: bool = False  # may run from the follow-up input while a turn works
     render: str = "plain"  # "plain" | "answer" | "compact"
@@ -208,6 +213,10 @@ Full documentation: https://wizolt.readthedocs.io
         self.resume_request = ""
         self.background_output_lock = threading.Lock()
         self.background_output_open = True
+        # The runtime's ordered scrollback queue while the TUI is live. Set by TuiRuntime, which
+        # also lends its admission lock to the background-output gate above: closing that gate and
+        # scheduling a write are the same race, so one lock decides both.
+        self.scrollback: ScrollbackWriter | None = None
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         # Set by run_tui() while the full-TUI shell is active; tool_input reroutes through it so
         # approval prompts land in the same input widget the user is already typing in.
@@ -383,7 +392,7 @@ Full documentation: https://wizolt.readthedocs.io
             return ""
         return "\n".join(parts)
 
-    def run_queued_command(self, text: str) -> None:
+    async def run_queued_command(self, text: str) -> None:
         """Dispatch a read-only slash command while an agent turn is running."""
         name = text.partition(" ")[0]
         entry = COMMAND_LOOKUP.get(name)
@@ -395,7 +404,7 @@ Full documentation: https://wizolt.readthedocs.io
             if sub and sub[0] != "tools":
                 self.emit_turn("Only read-only /mcp (status, tools) is available while the agent is working.")
                 return
-        self.command(text)
+        await self.command(text)
 
     def take_pending_inputs(self) -> list[UserInput]:
         """Remove and return queued inputs that are not currently being flushed."""
@@ -422,11 +431,43 @@ Full documentation: https://wizolt.readthedocs.io
         return item.user_input()
 
     def run(self) -> int:
+        """Synchronous entry point for the CLI. Both frontends run on one loop from here."""
+
+        fail_if_running_loop("use await CommandLoop.run_simple_async(...) or TuiRuntime.run_async()")
         # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
         if self.interactive_input:
             return self.run_tui()
+        return asyncio.run(self.run_simple_async())
+
+    async def run_simple_async(self) -> int:
+        """The non-TTY frontend, on a loop of its own.
+
+        The same loop as the TUI frontend gives the turn: one owner for startup discovery, the
+        model client, and MCP, so everything this session opened is closed before it closes."""
+
         self.session.next_hints_available = False  # the simple REPL has no chip UI; don't offer an invisible terminal tool
         self.start_session()
+        try:
+            return await self._simple_loop()
+        finally:
+            await self.close_resources()
+
+    async def close_resources(self) -> None:
+        """Close what this session opened, on the loop that opened it.
+
+        MCP is the one exception left: it still owns a private loop of its own, so its synchronous
+        close runs on the managed executor rather than here.
+        """
+
+        with contextlib.suppress(Exception):
+            await self.agent.model.close_async()
+        mcp = self.session.mcp
+        if mcp is not None:
+            # TODO(async-phase-6): MCP owns its own loop until it moves onto this one.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(mcp.close)
+
+    async def _simple_loop(self) -> int:
         while True:
             try:
                 entered = self.take_pending_inputs()
@@ -434,7 +475,7 @@ Full documentation: https://wizolt.readthedocs.io
                     "\n".join(str(item) for item in entered),
                     tuple(image for item in entered for image in item.images),
                 )
-                user_input = self.read_input(initial_text=initial_input)
+                user_input = await asyncio.to_thread(self.read_input, initial_text=initial_input)
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()
@@ -443,7 +484,7 @@ Full documentation: https://wizolt.readthedocs.io
                 continue
             if not user_input.strip():
                 continue
-            handled, exit_now = self.command(user_input.strip())
+            handled, exit_now = await self.command(user_input.strip())
             if exit_now:
                 return 0
             if handled:
@@ -456,9 +497,9 @@ Full documentation: https://wizolt.readthedocs.io
             try:
                 self.status_bar.start()
                 try:
-                    self.agent.run(user_input)
+                    await self.agent.run_async(user_input)
                     answered = True
-                except KeyboardInterrupt:
+                except (asyncio.CancelledError, KeyboardInterrupt):
                     self.emit_turn("Cancelled")
                     continue
                 except MalformedToolCallError as error:
@@ -747,7 +788,10 @@ Full documentation: https://wizolt.readthedocs.io
         self.emit(text, TurnBox.CONTENT_LEVEL)
 
     def emit_background(self, text: str) -> None:
-        """Emit from a daemon worker only while this loop still owns terminal output."""
+        """Emit from a daemon worker only while this loop still owns terminal output.
+
+        The gate and the scrollback writer's admission share one lock while the TUI is live, so a
+        worker cannot pass this check and then race the writer closing behind it."""
         with self.background_output_lock:
             if self.background_output_open:
                 self.emit(text)
@@ -858,7 +902,26 @@ Full documentation: https://wizolt.readthedocs.io
         if tui is not None:
             tui.invalidate_frame()
             if promote:
-                self.with_status_paused(lambda: tui.write_to_scrollback(lambda: self.emit_agent_output(promote)))
+                # Queued, not written here: this runs on the runtime loop (a stream callback), and
+                # printing above the application means suspending it. The turn awaits the writer's
+                # barrier before its tool batch, so the promoted answer is on screen first.
+                self.write_scrollback(lambda: self.with_status_paused(lambda: self.emit_agent_output(promote)))
+
+    def write_scrollback(self, callback: Callable[[], None]) -> None:
+        """Publish one completed write into the runtime's ordered queue, or print it directly.
+
+        There is no queue outside the interactive runtime -- headless output is synchronous and
+        already in order -- so the callback simply runs."""
+
+        writer = self.scrollback
+        if writer is not None:
+            writer.submit(callback)
+            return
+        tui = self.tui
+        if tui is not None:
+            tui.write_to_scrollback(callback)
+        else:
+            callback()
 
     def set_approval_form(self, actions: list[tuple[str, str]]) -> bool:
         # The selectable action row exists only in the TUI. Headless and piped runs report False so
@@ -871,14 +934,20 @@ Full documentation: https://wizolt.readthedocs.io
         if self.tui is not None:
             self.tui.cancel_input()
 
-    def tool_input(self, prompt: str = "") -> str | None:
-        # Under the TUI, route agent approvals through TuiApp's input widget instead of a separate
-        # pt Application (pt does not nest). None propagates the TUI's cancel signal; the headless
-        # `input` path can only return a string.
-        if self.tui is not None:
-            return self.tui.request_input(prompt)
+    async def tool_input(self, prompt: str = "") -> str | None:
+        """Await one line of user input for a tool: an approval, an Ask free-text page.
 
-        return self.with_status_paused(lambda: self.input_fn(prompt))
+        Under the TUI this is the application's own input row -- prompt-toolkit does not nest, so a
+        second application is not an option -- awaited on the loop that runs it. None propagates the
+        TUI's cancel signal.
+
+        Without a TUI the injected `input_fn` blocks, so it runs on a worker. That contract belongs
+        to whoever injected it: it must return, or be unblocked, at shutdown. `asyncio.run` waits
+        for the default executor, so an uninterruptible reader would hold the process there."""
+
+        if self.tui is not None:
+            return await self.tui.request_input_async(prompt)
+        return await asyncio.to_thread(lambda: self.with_status_paused(lambda: self.input_fn(prompt)))
 
     # How close a phase rule may come to the one above it, in rendered rows. Under this the rule
     # is skipped: two rules a few rows apart part nothing, they just add lines to what is already
@@ -998,7 +1067,13 @@ Full documentation: https://wizolt.readthedocs.io
             self.status_bar.start(reset=False)
             self.live_status_paused = False
 
-    def command(self, text: str) -> tuple[bool, bool]:
+    async def command(self, text: str) -> tuple[bool, bool]:
+        """Dispatch one slash command, on the loop that owns this session.
+
+        A handler that needs the network -- `/compact` is the one -- is a coroutine and is awaited
+        here, so its request lives on the same loop as everything else the session opened. Every
+        other handler is local and bounded, and runs directly."""
+
         if text in {"/exit", "/quit", "exit", "quit"}:
             self.save_and_emit_resume()
             return True, True
@@ -1007,6 +1082,8 @@ Full documentation: https://wizolt.readthedocs.io
         name, _, args = text.partition(" ")
         entry = COMMAND_LOOKUP.get(name)
         output = entry.handler(self, args.strip()) if entry else f"Unknown command: {name}"
+        if inspect.isawaitable(output):
+            output = await output
         # None means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
             if isinstance(output, LogBlock):

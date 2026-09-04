@@ -10,6 +10,7 @@ import shutil
 import sys
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
@@ -279,6 +280,16 @@ class UiPrinter:
         # Rendered rows since the last full-width rule was drawn. Read by the loop to decide
         # whether a new rule would land too close to the one above it to be worth drawing.
         self.rows_since_rule = 0
+
+    def write_direct(self, callback: Callable[[], None]) -> None:
+        """Run one write with no application to print above, draining anything queued first.
+
+        The fallback for a write the ordered queue can no longer accept -- the runtime is unwinding
+        and the application may already have stopped. Ordering still holds: whatever was batched
+        goes out before this does."""
+
+        self.drain_scrollback()
+        callback()
 
     def drain_scrollback(self) -> None:
         """Synchronously print anything still queued in the batching window.

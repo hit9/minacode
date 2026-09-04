@@ -1,4 +1,5 @@
 """tui resume queue (split from tests/test_tui_runtime.py)."""
+import asyncio
 import threading
 import time
 from dataclasses import replace
@@ -81,7 +82,9 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
             requests.append([message.get("content") for message in messages if message.get("role") == "user"])
             if len(requests) == 1:
                 first_request.set()
-                assert release_first.wait(timeout=1)
+                # Waited off the loop: a real request awaits the network, and the prompt has to
+                # keep accepting the follow-up this test is about while it does.
+                assert await asyncio.to_thread(release_first.wait, 2)
             return {"role": "assistant", "content": "done"}, [], "done"
 
         def cancel_active_request(self):
@@ -117,7 +120,7 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
     assert not driver.is_alive()
     assert "queued task" in requests[1]
 
-def test_resend_command_only_resends_while_running(tmp_path):
+async def test_resend_command_only_resends_while_running(tmp_path):
     command_loop = loop(tmp_path)
     retried = []
     command_loop.tui = TuiApp(on_retry=lambda: retried.append(True))
@@ -127,24 +130,24 @@ def test_resend_command_only_resends_while_running(tmp_path):
 
     # Idle chat: no-op with guidance.
     command_loop.tui.set_idle()
-    command_loop.command("/resend")
+    await command_loop.command("/resend")
     assert retried == []
 
     # Running but no model call in flight: still a no-op.
     command_loop.tui.set_running("working")
     command_loop.session.state.current_model_call_started_at = 0.0
-    command_loop.command("/resend")
+    await command_loop.command("/resend")
     assert retried == []
 
     # Backoff countdown: there is no request in flight to resend.
     command_loop.session.state.current_model_call_started_at = 1.0
     command_loop.session.state.model_retry_until = 2.0
-    command_loop.command("/resend")
+    await command_loop.command("/resend")
     assert retried == []
 
     # Running with a model call in flight: resends via on_retry.
     command_loop.session.state.model_retry_until = 0.0
-    command_loop.command("/resend")
+    await command_loop.command("/resend")
     assert retried == [True]
 
 def test_manual_resend_preserves_stream_driven_status(tmp_path, monkeypatch):
@@ -353,7 +356,7 @@ def test_resume_redraw_keeps_tool_pairing_after_truncation(tmp_path, monkeypatch
     assert "tr.2" in text  # the newest call pairs with its own record
     assert "tr.1" not in text  # the folded turn's record is not rendered
 
-def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
+async def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.ui.color = True
     # Dispatch calls the registry's callable directly, so patch the registry entry (not the
@@ -363,9 +366,9 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     printed = []
     monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
 
-    assert command_loop.command("/help") == (True, False)
-    assert command_loop.command("/status") == (True, False)
-    assert command_loop.command("/skills") == (True, False)
+    assert await command_loop.command("/help") == (True, False)
+    assert await command_loop.command("/status") == (True, False)
+    assert await command_loop.command("/skills") == (True, False)
 
     assert len(printed) == 3
     text = "".join(printed)

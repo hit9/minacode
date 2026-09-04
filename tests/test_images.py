@@ -245,7 +245,11 @@ def test_simple_cli_preserves_images_when_combining_pending_inputs(tmp_path, mon
     s.enqueue_user_input(s.images.prepare(s.images.recognize(path.name)))
     agent = Agent(s, output_fn=lambda _text: None)
     received = []
-    monkeypatch.setattr(agent, "run", lambda value: received.append(value) or "done")
+    async def run_async(value):
+        received.append(value)
+        return "done"
+
+    monkeypatch.setattr(agent, "run_async", run_async)
     monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _self: None)
     monkeypatch.setattr(loop_module.CodeIndex, "refresh_existing_async", lambda _self: False)
 

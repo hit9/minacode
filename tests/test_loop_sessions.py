@@ -27,13 +27,13 @@ from wizolt.session import Session, SessionEntry, SessionSnapshotStore
 from wizolt.tui import TuiApp
 
 
-def test_exit_command_prints_resume_command(tmp_path):
+async def test_exit_command_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     output = []
     loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
 
-    handled, exit_now = loop.command("/exit")
+    handled, exit_now = await loop.command("/exit")
 
     assert (handled, exit_now) == (True, True)
     # The session took its name from the opening message; the pasted line still carries the uid.
@@ -49,14 +49,14 @@ def stored_session(tmp_path, text, *, name=""):
     other.save_snapshot()
     return other
 
-def test_resume_is_an_alias_for_sessions(tmp_path):
+async def test_resume_is_an_alias_for_sessions(tmp_path):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     emitted = []
     loop.emit = lambda text="", indent=0: emitted.append(text)
 
-    assert loop.command("/resume") == (True, False)
+    assert await loop.command("/resume") == (True, False)
 
     # `--resume` is the flag people already know; the command answers to the same word.
     assert emitted == ["No saved sessions yet."]
@@ -79,7 +79,7 @@ def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
     assert sessions_command(loop, "nonsense") == "Usage: /sessions [all]"
     assert loop.resume_request == ""
 
-def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path, monkeypatch):
+async def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
@@ -90,13 +90,13 @@ def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path, mon
     loop.interactive_input = True
     monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: target.uid)
 
-    handled, exit_now = loop.command("/sessions")
+    handled, exit_now = await loop.command("/sessions")
 
     # Choosing a session ends this run the way /exit does; main() starts the next one on it.
     assert (handled, exit_now) == (True, True)
     assert loop.resume_request == target.uid
 
-def test_sessions_command_choosing_the_current_session_changes_nothing(tmp_path):
+async def test_sessions_command_choosing_the_current_session_changes_nothing(tmp_path):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
@@ -106,12 +106,12 @@ def test_sessions_command_choosing_the_current_session_changes_nothing(tmp_path)
     loop.interactive_input = True
     loop.choice_application = lambda *args, **kwargs: s.uid
 
-    assert loop.command("/sessions") == (True, False)
+    assert await loop.command("/sessions") == (True, False)
     assert loop.resume_request == ""
 
     # Cancelling the picker is likewise not a request to go anywhere.
     loop.choice_application = lambda *args, **kwargs: None
-    assert loop.command("/sessions") == (True, False)
+    assert await loop.command("/sessions") == (True, False)
     assert loop.resume_request == ""
 
 def test_session_labels_carry_age_and_size(tmp_path):
@@ -136,7 +136,7 @@ def test_session_labels_carry_age_and_size(tmp_path):
     assert "1 round " in row + " "
     assert session_preview(entry) == []  # no summary, no preview
 
-def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
+async def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
     """The picker's labels are table rows: each column padded to the widest value in it, so names
     of different lengths -- CJK included -- still line up their ages and round counts."""
     s = session(tmp_path)
@@ -152,7 +152,7 @@ def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
     captured: dict[str, dict[str, str]] = {}
     monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: captured.update(labels=args[2]) or None)
 
-    assert loop.command("/sessions") == (True, False)
+    assert await loop.command("/sessions") == (True, False)
     labels = list(captured["labels"].values())
     assert len(labels) == 3
     # Once the name and age columns are padded, the round count starts at the same display
@@ -160,7 +160,7 @@ def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
     # char-index find() differs across CJK rows, so compare padded display widths instead.
     assert len({get_cwidth(row[: row.find("3 rounds")]) for row in labels}) == 1
 
-def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(tmp_path, monkeypatch):
+async def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(tmp_path, monkeypatch):
     """The picker is exclusive (alternate screen) with a viewport cap, its rows are styled per
     field, and the preview carries the session's recent messages."""
     s = session(tmp_path)
@@ -176,7 +176,7 @@ def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(tmp_pat
     captured: dict[str, object] = {}
     monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: captured.update(args=args, kwargs=kwargs) or target.uid)
 
-    assert loop.command("/sessions") == (True, True)
+    assert await loop.command("/sessions") == (True, True)
     assert captured["kwargs"]["exclusive"] is True
     assert captured["kwargs"]["max_rows"] > 0
     label_fn = captured["kwargs"]["label_fn"]

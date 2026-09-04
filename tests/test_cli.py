@@ -47,6 +47,10 @@ def test_cli_initializes_config(monkeypatch, capsys, created, prefix):
 
 
 def test_cli_runs_session_and_closes_resources(monkeypatch):
+    """The entry point owns only the terminal-output gate now.
+
+    Everything the session opened -- the model client, MCP -- is closed by the runtime, on the loop
+    that opened it. Closing MCP here would mean closing it after that loop was already gone."""
     closed = []
     mcp = SimpleNamespace(close=lambda: closed.append("mcp"))
     session = SimpleNamespace(settings=SimpleNamespace(theme="dark"), mcp=mcp)
@@ -70,7 +74,7 @@ def test_cli_runs_session_and_closes_resources(monkeypatch):
     monkeypatch.setattr(cli, "CommandLoop", FakeLoop)
 
     assert cli.main(["--config", "custom.toml", "--yolo", "--theme", "light"]) == 7
-    assert closed == ["resolved-dark", "background", "mcp"]
+    assert closed == ["resolved-dark", "background"]
 
 
 def test_cli_loads_resumed_session_with_runtime_overrides(monkeypatch):

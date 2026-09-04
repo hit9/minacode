@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import inspect
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -186,7 +187,7 @@ class ToolRunner:
         # Renders the worker's interim and final model text like an agent answer (markdown), wired by the loop;
         # None lets the worker publish it through its ordinary output channel (headless).
         self.worker_answer: Callable[[str], None] | None = None
-        self.question_fn: Callable[[list[AskSpec]], list[str]] | None = None
+        self.question_fn: Callable[[list[AskSpec]], Awaitable[list[str]]] | None = None
         # Injected by CommandLoop: drives the Delegate confirm-time `c` config loop through the
         # shared choice selector (see CommandLoop.run_worker_config). None degrades the `c` key to
         # printing the current worker config only (headless / non-CommandLoop runners).
@@ -333,13 +334,15 @@ class ToolRunner:
             cancel_error: asyncio.CancelledError | None = None
             while not future.done():
                 try:
-                    await asyncio.shield(future)
+                    # `wait` rather than awaiting the future: it never raises the worker's own
+                    # outcome, so that outcome is still there to be read off the future below. A
+                    # shield would leave it to be collected by the loop's exception handler, which
+                    # is exactly the kind of unobserved ending this runner is not allowed to have.
+                    await asyncio.wait({future})
                 except asyncio.CancelledError as error:
                     cancel_error = cancel_error or error
                     if tool is not None:
                         self.request_tool_stop(tool)
-                except BaseException:  # noqa: BLE001 - the outcome is read off the future below.
-                    break
             try:
                 result = future.result()
             except BaseException as worker_error:
@@ -385,6 +388,10 @@ class ToolRunner:
         if isinstance(tool, JobTool):
             with self._active_job.track(tool):
                 return await self._run_in_executor(tool.call, tool)
+        if isinstance(tool, AskTool):
+            # The user is asked on the loop and may take as long as they like; the prompt stays
+            # live and cancellable rather than parking a worker on them.
+            return await tool.call_async()
         if isinstance(tool, MCPTool):
             # TODO(async-phase-6): MCP still owns its own loop, so a call is managed synchronous
             # work whose future is awaited here. Phase 6 dispatches it as a native coroutine.
@@ -509,7 +516,9 @@ class ToolRunner:
             cancel_error: asyncio.CancelledError | None = None
             while not future.done():
                 try:
-                    await asyncio.shield(future)
+                    # `wait`, not the future itself: the script's own outcome stays on the future
+                    # for the read below instead of escaping into the loop's exception handler.
+                    await asyncio.wait({future})
                 except asyncio.CancelledError as error:
                     cancel_error = cancel_error or error
                     for budget in budget_holder:
@@ -517,8 +526,6 @@ class ToolRunner:
                     gateway = self._gateway
                     if gateway is not None:
                         await gateway.close()
-                except BaseException:  # noqa: BLE001 - the outcome is read off the future below.
-                    break
             try:
                 result = future.result()
             except BaseException as worker_error:
@@ -919,7 +926,7 @@ class ToolRunner:
         )
         while True:
             self.declare_approval_form(actions)  # the TUI drops the form when a prompt resolves
-            reply = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + toolblocks.approval_prompt(always_option, form))
+            reply = await self.request_input(LogBlock.prefix(2, LogEdge.CONTINUE) + toolblocks.approval_prompt(always_option, form))
             if reply is None:
                 # The TUI cancelled the prompt (Ctrl-C, Ctrl-D on an empty line, app shutdown).
                 # A cancel is a plain refusal: never the default approve, and never a reason —
@@ -945,6 +952,18 @@ class ToolRunner:
             if lower in {"", "y", "yes"}:
                 return True, ""
             return False, "" if lower in {"n", "no"} else answer
+
+    async def request_input(self, prompt: str) -> str | None:
+        """Await one line of user input for an approval.
+
+        The injected `input_fn` is awaitable under the CLI, which puts the prompt on the runtime
+        loop. A plain callable (headless, a test, an embedding) runs on a worker instead, and its
+        injector owns unblocking it -- nothing here can interrupt a blocking read."""
+
+        reply = self.input_fn(prompt)
+        if inspect.isawaitable(reply):
+            return await reply
+        return reply
 
     def declare_approval_form(self, actions: list[tuple[str, str]]) -> bool:
         """Offer the actions to the TUI as a selectable row; report whether it took them. False

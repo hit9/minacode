@@ -18,12 +18,12 @@ from wizolt.session import SessionSnapshotStore, ToolResultRecord
 from wizolt.tools import CodeIndex
 
 
-def test_empty_exit_does_not_print_resume_command(tmp_path):
+async def test_empty_exit_does_not_print_resume_command(tmp_path):
     s = session(tmp_path)
     output = []
     loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
 
-    handled, exit_now = loop.command("/exit")
+    handled, exit_now = await loop.command("/exit")
 
     assert (handled, exit_now) == (True, True)
     assert output == []
@@ -247,7 +247,11 @@ def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, monkeypat
 
     agent = Agent(session(tmp_path), output_fn=output.append)
     if interrupt_phase == "request":
-        agent.run = lambda _input: (_ for _ in ()).throw(KeyboardInterrupt())
+
+        async def interrupted(_input):
+            raise KeyboardInterrupt
+
+        agent.run_async = interrupted
     command_loop = CommandLoop(agent, input_fn=read_input, output_fn=output.append)
     monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _checker: None)
     monkeypatch.setattr(CodeIndex, "status", lambda _index: False)
@@ -273,13 +277,13 @@ def test_simple_repl_publishes_the_final_answer_exactly_once(tmp_path, monkeypat
 
     agent = Agent(session(tmp_path), output_fn=output.append)
 
-    def run(_user_input):
+    async def run_async(_user_input):
         if raised:
             raise WizoltError("provider is down")
-        agent.output_fn("The answer.")  # what Agent.run does before it returns
+        agent.output_fn("The answer.")  # what a turn does before it returns
         return "The answer."
 
-    agent.run = run
+    agent.run_async = run_async
     command_loop = CommandLoop(agent, input_fn=read_input, output_fn=output.append)
     monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _checker: None)
     monkeypatch.setattr(CodeIndex, "status", lambda _index: False)

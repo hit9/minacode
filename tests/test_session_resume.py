@@ -50,7 +50,7 @@ def test_resume_replays_full_transcript_after_model_context_and_retained_records
     assert "-old" in text and "+new" in text
     assert "compacted model context" not in text
 
-def test_compact_command_persists_the_compacted_history(tmp_path):
+async def test_compact_command_persists_the_compacted_history(tmp_path):
     """/compact rewrites the history in place; without a save, leaving the session would resume
     from the pre-compaction log."""
     s = session_with_data_dir(tmp_path)
@@ -69,7 +69,7 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
         return "", "", '{"summary": "a compacted summary"}'
 
     loop.agent.model.api_request = summary_request
-    result = compact(loop, "")
+    result = await compact(loop, "")
 
     assert "Compacted context" in result
     assert len(s.messages) < before
