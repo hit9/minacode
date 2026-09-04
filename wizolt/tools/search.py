@@ -130,9 +130,48 @@ class SearchTool(Tool):
         for index, request in enumerate(requests):
             for path, _ in await self.find_candidates(request):
                 candidates.setdefault(path, set()).add(index)
+        counts, blocks = await self.hydrate(requests, [(path, tuple(indices)) for path, indices in candidates.items()])
+        parts: list[str | SourceBlock] = []
+        for index, request in enumerate(requests):
+            parts.append(f"<Search pattern={json.dumps(request['pattern'])} matches={counts[index]}>")
+            for path in sorted(path for path, query_indices in candidates.items() if index in query_indices):
+                if path in blocks:
+                    parts.append(blocks[path])
+            parts.append("</Search>")
+        return ToolOutput.rendered(parts)
+
+    async def hydrate(
+        self,
+        requests: list[Json],
+        candidates: list[tuple[str, tuple[int, ...]]],
+    ) -> tuple[list[int], dict[str, SourceBlock]]:
+        """Read and match every candidate off the loop; return counts and per-path blocks.
+
+        The filesystem work -- size check, read, regex matching, view building -- is one
+        `run_blocking` call, so a slow disk or a large batch cannot stall the loop, and the worker
+        is never abandoned on cancellation: it finishes, then the cancellation is reported. The
+        worker sees frozen request data and paths; nothing on `Session` is mutated there, and the
+        loop side keeps source-view registration order intact."""
+
+        return await run_blocking(lambda: self._hydrate_sync(requests, candidates))
+
+    def _hydrate_sync(
+        self,
+        requests: list[Json],
+        candidates: list[tuple[str, tuple[int, ...]]],
+    ) -> tuple[list[int], dict[str, SourceBlock]]:
+        """The worker body of `hydrate`. Runs on an executor thread.
+
+        Rows are re-derived from the content read here, not from what the candidate finder
+        reported, so a file that changed between discovery and capture still yields current
+        results. `_stopped` is honored so a cancelled search stops reading files it will never
+        render."""
+
         counts = [0] * len(requests)
         blocks: dict[str, SourceBlock] = {}
-        for path, query_indices in candidates.items():
+        for path, query_indices in candidates:
+            if self._stopped:
+                break
             lines = self.read_current(path)
             if lines is None:
                 continue
@@ -148,14 +187,7 @@ class SearchTool(Tool):
                     for line_index in range(max(0, match - context), min(len(lines), match + context + 1)):
                         visible.setdefault(line_index, False)
             blocks[path] = self.build_block(path, lines, visible)
-        parts: list[str | SourceBlock] = []
-        for index, request in enumerate(requests):
-            parts.append(f"<Search pattern={json.dumps(request['pattern'])} matches={counts[index]}>")
-            for path in sorted(path for path, query_indices in candidates.items() if index in query_indices):
-                if path in blocks:
-                    parts.append(blocks[path])
-            parts.append("</Search>")
-        return ToolOutput.rendered(parts)
+        return counts, blocks
 
     def short_args(self) -> list[str]:
         rows = []
@@ -244,7 +276,10 @@ class SearchTool(Tool):
         Prefers ripgrep; falls back to a Python scan. Both backends are candidate finders only:
         matches are re-derived from the current file content during hydration.
         """
-        patterns = self.gitignore_patterns(str(request["path"]))
+        # Parsing .gitignore is filesystem work: do it on the executor, never on the loop. The
+        # cache is shared with the Python fallback's worker (`files()`), which is why the lock
+        # stays; `gitignore_patterns` updates the cache under it from whichever thread runs it.
+        patterns = await run_blocking(lambda: self.gitignore_patterns(str(request["path"])))
         if self.default_ignored(str(request["path"]), patterns):
             return []
         if "\n" not in str(request["pattern"]):

@@ -885,3 +885,73 @@ async def test_search_python_fallback_quiesces_before_cancellation_returns(tmp_p
     with pytest.raises(asyncio.CancelledError):
         await task
     assert ended.is_set()
+
+
+async def test_search_hydration_blocked_still_lets_a_heartbeat_advance(tmp_path, monkeypatch):
+    """A search whose file reads are stuck in a worker must not stall the loop: hydration is one
+    `run_blocking` call, so the loop stays free while the worker is blocked on disk."""
+    import threading
+
+    (tmp_path / "a.py").write_text("needle\n", encoding="utf-8")
+    s = session(tmp_path)
+    tool = SearchTool(s, [{"pattern": "needle", "path": "."}])
+    entered, release = threading.Event(), threading.Event()
+    real_read = SearchTool.read_current
+
+    def slow_read(self, path):
+        entered.set()
+        release.wait(5)
+        return real_read(self, path)
+
+    monkeypatch.setattr(SearchTool, "read_current", slow_read)
+
+    beats = 0
+
+    async def heartbeat():
+        nonlocal beats
+        while True:
+            beats += 1
+            await asyncio.sleep(0.001)
+
+    pulse = asyncio.create_task(heartbeat())
+    search = asyncio.create_task(tool.call())
+    await asyncio.to_thread(entered.wait, 5)
+    await asyncio.sleep(0.02)
+    assert beats > 0, "the loop stalled behind the hydration worker"
+    release.set()
+    out = await search
+    pulse.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pulse
+    assert "needle" in out.retained_text
+
+
+async def test_search_hydration_cancellation_quiesces_before_reporting(tmp_path, monkeypatch):
+    """Cancelling a search whose hydration worker is mid-read waits for that worker -- it must not
+    be abandoned holding a file open -- then reports the cancellation."""
+    import threading
+
+    (tmp_path / "a.py").write_text("needle\n", encoding="utf-8")
+    s = session(tmp_path)
+    tool = SearchTool(s, [{"pattern": "needle", "path": "."}])
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_read = SearchTool.read_current
+
+    def slow_read(self, path):
+        entered.set()
+        try:
+            release.wait(5)
+            return real_read(self, path)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(SearchTool, "read_current", slow_read)
+    search = asyncio.create_task(tool.call())
+    await asyncio.to_thread(entered.wait, 5)
+    search.cancel()
+    await asyncio.sleep(0.05)
+    assert not finished.is_set()  # run_blocking kept waiting rather than abandoning the worker
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await search
+    assert finished.is_set()
