@@ -40,10 +40,13 @@ class _Submission:
 
     `value` is an input to queue before saving; a submission with none is a queue mutation the
     callback already applied and only needs written down. `resume_notice` prints the paste-ready
-    resume line once the save that carries it has returned a uid."""
+    resume line once the save that carries it has returned a uid. `turn_boundary` is queued after
+    a turn's last output: the single consumer persists and flushes every earlier input before it
+    opens admission for the next turn."""
 
     value: UserInput | None = None
     resume_notice: bool = False
+    turn_boundary: asyncio.Future[None] | None = None
 
 
 class ScrollbackWriter:
@@ -151,6 +154,7 @@ class TuiRuntime:
         self.submissions: asyncio.Queue[_Submission] = asyncio.Queue()
         self.submissions_task: asyncio.Task | None = None
         self.accepting = False
+        self.turn_active = False
         self.cancel_pending = False
         self.force_exit_timer: threading.Timer | None = None
         self.error: BaseException | None = None
@@ -241,14 +245,28 @@ class TuiRuntime:
         while True:
             submission = await self.submissions.get()
             try:
+                if submission.turn_boundary is not None:
+                    await self.loop.session.save_snapshot()
+                    self.turn_active = False
+                    self.submit_next(self.loop.take_pending_inputs())
+                    if not submission.turn_boundary.done():
+                        submission.turn_boundary.set_result(None)
+                    continue
                 if submission.value is not None:
                     admitted = await self._admit_input(submission.value)
                     if admitted is None:
                         continue  # refused: the draft went back to the editor, nothing was queued
+                    if not self.turn_active:
+                        self.pending.put_nowait(admitted)
+                        continue
                     self.loop.session.enqueue_user_input(admitted)
                 uid = await self.loop.session.save_snapshot()
                 if submission.resume_notice:
                     self.loop.emit_resume_line(uid)
+            except BaseException as error:
+                if submission.turn_boundary is not None and not submission.turn_boundary.done():
+                    submission.turn_boundary.set_exception(error)
+                raise
             finally:
                 self.submissions.task_done()
 
@@ -371,7 +389,7 @@ class TuiRuntime:
 
     def submit_chat(self, value: UserInput) -> None:
         """Accept one submitted line. Runs on the runtime loop, where the TUI's callbacks run."""
-        self.pending.put_nowait(value)
+        self.submit_accepted(_Submission(value))
 
     def build_tui(self) -> TuiApp:
         return TuiApp(
@@ -457,6 +475,7 @@ class TuiRuntime:
         self.loop.user_turn_rule()
         self.loop.status_bar.begin()
         self.tui.set_running("working")
+        self.turn_active = True
         started = time.monotonic()
         cancelled = False
         malformed_tool_call = False
@@ -465,7 +484,6 @@ class TuiRuntime:
             await self._drive_turn(user_input)
             answered = True
         except _TurnCancelled:
-            self.submit_next(self.loop.take_pending_inputs())
             cancelled = True
         except MalformedToolCallError as error:
             answer = str(error)
@@ -473,28 +491,42 @@ class TuiRuntime:
         except WizoltError as error:
             answer = f"Error: {error}"
         finally:
-            self.reset_turn()
             self.loop.session.state.manual_model_retry_requested = False
             self.loop.schedule_index_freshness()
-        if cancelled:
-            self.loop.emit_turn("Cancelled")
+        try:
+            if cancelled:
+                self.loop.model_stream_output("", "")
+                self.loop.emit_turn("Cancelled")
+            else:
+                # The engine publishes its own final answer through output_fn now; only errors it
+                # raised before publishing land here.
+                if not answered:
+                    if self.loop.ui.color:
+                        self.loop.emit()
+                    self.loop.ui.emit_answer(answer, rule=False, indent=TurnBox.CONTENT_LEVEL)
+                # Emitted outside the promotion check: a promoted answer is already in scrollback
+                # without its sources, so skipping the footer there would drop them exactly when a
+                # search ran. It shares the answer's content indent.
+                if footer := search_sources_footer(self.loop.agent.turn_sources):
+                    self.loop.ui.emit_answer(footer, rule=False, indent=TurnBox.CONTENT_LEVEL)
+                if not malformed_tool_call:
+                    self.loop.ui.emit_turn_end(started)
+            await self._finish_turn_submissions()
+        finally:
+            self.turn_active = False
+            self.reset_turn()
+
+    async def _finish_turn_submissions(self) -> None:
+        """Place a FIFO boundary after inputs accepted during this turn and await its commit."""
+
+        if self.submissions_task is None:
+            await self.loop.session.save_snapshot()
+            self.turn_active = False
+            self.submit_next(self.loop.take_pending_inputs())
             return
-        # The engine publishes its own final answer through output_fn now; only errors it raised
-        # before publishing land here.
-        if not answered:
-            if self.loop.ui.color:
-                self.loop.emit()
-            self.loop.ui.emit_answer(answer, rule=False, indent=TurnBox.CONTENT_LEVEL)
-        # Emitted outside the promotion check: a promoted answer is already in scrollback without
-        # its sources, so skipping the footer there would drop them exactly when a search ran.
-        # Indented like the answer it belongs to, which the engine publishes through
-        # emit_agent_output at CONTENT_LEVEL; at column 0 it would hang off the left of its answer.
-        if footer := search_sources_footer(self.loop.agent.turn_sources):
-            self.loop.ui.emit_answer(footer, rule=False, indent=TurnBox.CONTENT_LEVEL)
-        if not malformed_tool_call:
-            self.loop.ui.emit_turn_end(started)
-        await self.loop.session.save_snapshot()
-        self.submit_next(self.loop.take_pending_inputs())
+        boundary = asyncio.get_running_loop().create_future()
+        self.submissions.put_nowait(_Submission(turn_boundary=boundary))
+        await boundary
 
     async def run_agent_loop(self) -> None:
         """Take submitted input one at a time, until shutdown is requested.

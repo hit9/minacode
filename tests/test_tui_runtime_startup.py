@@ -21,6 +21,7 @@ from wizolt.cli import CommandLoop, TuiRuntime
 from wizolt.cli.runtime import RESUME_STATUS_LABEL
 from wizolt.cli.update import UpdateChecker
 from wizolt.engine import Agent
+from wizolt.image import UserInput
 from wizolt.session import SessionSnapshotStore
 from wizolt.tui import TuiApp
 
@@ -339,3 +340,43 @@ async def test_tui_dispatch_exit_does_not_flush_queued_followups(tmp_path):
 
     assert runtime.pending.qsize() == 0
     assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup A"]
+
+
+async def test_turn_boundary_orders_slow_running_input_before_new_idle_input(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+    runtime.accepting = True
+    runtime.turn_active = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def admit(value):
+        if str(value) == "older":
+            entered.set()
+            await release.wait()
+        return value
+
+    async def save():
+        return command_loop.session.uid
+
+    monkeypatch.setattr(runtime, "_admit_input", admit)
+    monkeypatch.setattr(command_loop.session, "save_snapshot", save)
+    consumer = asyncio.create_task(runtime._consume_submissions())
+    runtime.submissions_task = consumer
+    try:
+        runtime.submit_running("older")
+        await entered.wait()
+        boundary = asyncio.create_task(runtime._finish_turn_submissions())
+        await asyncio.sleep(0)  # enqueue the boundary behind the older submission
+        runtime.submit_chat(UserInput("newer"))
+        release.set()
+        await boundary
+        await runtime.submissions.join()
+
+        assert [runtime.pending.get_nowait(), runtime.pending.get_nowait()] == ["older", "newer"]
+        assert command_loop.session.pending_user_inputs == []
+    finally:
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
