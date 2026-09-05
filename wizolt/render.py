@@ -343,17 +343,20 @@ class Theme:
         headings and block quotes, blue links, a cyan table. Left alone they win every argument with
         the palette and turn an answer into a page of blue and cyan.
 
-        The replacements say hierarchy with weight and tone instead of with color. Headings step
-        down in emphasis rather than each taking a hue; body text, list text, and table cells stay
-        the terminal's own foreground; inline code is the one accent prose carries; a link is
-        underlined rather than colored, with its URL beside it in the supporting tone.
+        The replacements spend one hue and carry everything else in weight. A document is mostly
+        words, and each additional colour is another thing the eye has to sort before it can read:
+        the accent marks the two things a reader looks for rather than reads -- the top of a section
+        and code inside a sentence -- and nothing else in a document is coloured at all. Headings
+        below it step down by weight, markers and table headings take weight, links are underlined
+        with the URL beside them in the supporting tone, and body text, list text, and table cells
+        stay the terminal's own foreground.
         """
         muted, subtle, accent = cls.color("muted"), cls.color("subtle"), cls.color("accent")
         return {
-            "markdown.h1": "bold",
-            "markdown.h2": f"bold {accent}",
-            "markdown.h3": "bold",
-            "markdown.h4": f"bold {muted}",
+            "markdown.h1": f"bold {accent}",
+            "markdown.h2": "bold",
+            "markdown.h3": f"bold {muted}",
+            "markdown.h4": f"italic {muted}",
             "markdown.h5": f"italic {muted}",
             "markdown.h6": muted,
             "markdown.h7": f"italic {muted}",
@@ -361,16 +364,14 @@ class Theme:
             "markdown.text": "none",
             "markdown.item": "none",
             # No background band: the block is read as code by its highlighting, and a filled band
-            # is the single loudest thing a theme can put on a terminal. The tone is the one code
-            # strings take, not the accent: inline code lands several times in a sentence, and the
-            # accent at that density turns a paragraph into confetti.
-            "markdown.code": cls.color("syntax_string"),
+            # is the single loudest thing a theme can put on a terminal.
+            "markdown.code": accent,
             "markdown.code_block": "none",
             "markdown.block_quote": muted,
             "markdown.hr": cls.color("rule"),
-            # The marker is what makes a list a list, so it is the one part of it that carries color.
-            "markdown.item.bullet": f"bold {accent}",
-            "markdown.item.number": accent,
+            # The marker is what makes a list a list, so it is set apart -- by weight, not by hue.
+            "markdown.item.bullet": "bold",
+            "markdown.item.number": "bold",
             "markdown.list": "none",
             "markdown.em": "italic",
             "markdown.emph": "italic",

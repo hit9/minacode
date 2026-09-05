@@ -67,9 +67,10 @@
   vertical rhythm: a blank row between blocks, two above a heading because a heading opens a
   section, list items tight until one of them wraps, and no outer margin of its own. Headings are
   left aligned and step down by weight, fenced code keeps the terminal's own background instead of
-  a filled band, tables lose their empty outer edge, list markers carry the accent (and an ordered
-  item keeps its period), inline code takes a quiet code tone rather than the accent, and links are
-  underlined instead of turning a sentence blue.
+  a filled band, tables lose their empty outer edge, and list markers are set apart by weight (an
+  ordered item keeps its period). One hue is spent, on the two things a reader looks for rather
+  than reads: the top of a section and code inside a sentence. Nothing else in a document is
+  coloured -- links are underlined, emphasis is weight and slant.
 - The system prompt now asks for short paragraphs, few headings, and lists only where they aid
   reading, so answers arrive shaped for a terminal rather than for a web page.
 - A restored transcript is spaced like the live turn it replays. Replayed tool calls went
