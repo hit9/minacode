@@ -596,9 +596,14 @@ threshold; provider integration tests verify reported usage and acceptance witho
   records (see "One loop owns the session").
 - Tool failures become matched tool results, not broken turns; cancellation settles every
   already-visible call so replay stays valid.
-- Source-view validation is a safety boundary, not friction: Edit may target only lines the model
-  was shown; changed or ambiguously moved targets stay refused, while a unique exact relocation is
-  accepted. Success and recoverable failure return a fresh bounded view so same-file runs continue.
+- Edit target validation is a safety boundary, not friction. Under a source view, Edit may target
+  only lines the model was shown; changed or ambiguously moved targets stay refused, while a unique
+  exact relocation is accepted. Without one, the exact original text the call supplies is a
+  compare-and-swap condition that must match the current file exactly once -- missing, repeated, or
+  mutually overlapping targets refuse the whole call rather than picking a location. A call uses one
+  evidence mode, and a path may not change modes inside one planned batch: character replacements
+  cannot carry a view's line origins. Success and a failure the file can answer return a fresh
+  bounded view so same-file runs continue.
 - Lower layers contain recoverable detail: retained output supports recall, snapshots support
   resume, deterministic compaction preserves progress when the summarizer is unavailable.
 

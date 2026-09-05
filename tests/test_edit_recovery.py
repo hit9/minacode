@@ -74,7 +74,8 @@ def test_no_model_facing_text_teaches_the_removed_anchor_protocol():
     from wizolt.prompts import SYSTEM_PROMPT
     from wizolt.tools import TOOL_REGISTRY, BashTool
 
-    assert "source view" in EditTool.DESCRIPTION
+    # Both evidence modes are taught, and neither is described through a removed protocol.
+    assert "source=view.N" in EditTool.DESCRIPTION and "old" in EditTool.DESCRIPTION
     for tool in TOOL_REGISTRY.values():
         text = json.dumps([tool.DESCRIPTION, tool.EXAMPLE, tool.params_schema()])
         assert "anchor" not in text.lower(), tool.NAME

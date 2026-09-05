@@ -46,20 +46,30 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     the [code index](#code-symbol-index). Use it for code structure rather than exact text.
 * - **`Edit`**
   - Creates or changes one UTF-8 file by inserting, replacing, or deleting content.
-    For an existing file, `Edit` names the numbered source view returned by `Read`, `Search`, or
-    `InspectCode` (`source=view.N`) and gives one-based line numbers. wizolt extracts the complete
-    target from that view and checks it against the file immediately before writing, and
-    <span class="marker">refuses the edit if the target changed</span>. When the exact target still
-    exists nearby, the edit relocates to it and reports the move. A successful edit returns a fresh
-    source view for the region it changed, so consecutive edits to the same file keep going without
-    re-reading it first. Successful edits appear in [`/diff`](usage.md#reviewing-changes).
+    An existing file is changed in one of two ways, and <span class="marker">wizolt checks the
+    target against the file immediately before writing either way</span>.
 
-    Two costs come with this. A source view lives only as long as the conversation that mentions
-    it: once compaction drops the message it came from, the id expires. Using an expired id is
+    The first names the numbered source view returned by `Read`, `Search`, or `InspectCode`
+    (`source=view.N`) and gives one-based line numbers. wizolt extracts the complete target from
+    that view and refuses the edit if it changed. When the exact target still exists nearby, the
+    edit relocates to it and reports the move.
+
+    The second gives the exact original text of the target instead, with no view — so code found
+    with `rg` or `cat` can be changed in the next tool call, without a `Read` in between. The text
+    has to appear <span class="marker">exactly once</span> in the file. If it appears several
+    times, the edit is refused and comes back showing where each copy is, so the next attempt can
+    quote more of the surrounding lines; if it is not there at all, the edit is refused and nothing
+    is guessed. Matching is literal: spaces, tabs, and case all count.
+
+    A successful edit returns a fresh source view for the region it changed, so consecutive edits
+    to the same file keep going without re-reading it first. Successful edits appear in
+    [`/diff`](usage.md#reviewing-changes).
+
+    One cost comes with source views: a view lives only as long as the conversation that mentions
+    it, so once compaction drops the message it came from, the id expires. Using an expired id is
     refused rather than guessed, and the refusal comes back with the requested lines as they are
-    now, under a new id — so recovering costs one more `Edit`, not a re-read. And output from
-    `Bash` is never a source view, however it was produced, so code found with `rg` or `cat` is
-    read once more through `Read`, `Search`, or `InspectCode` before it can be edited.
+    now, under a new id — so recovering costs one more `Edit`, not a re-read. Prefer a view when
+    the model already has one; reach for the exact-text form to save a read.
 
     :::{figure} ../snapshots/wizolt-edit-preview.png
     :alt: An Edit confirmation previewing the proposed diff

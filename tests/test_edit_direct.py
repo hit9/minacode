@@ -954,3 +954,82 @@ def test_view_numbering_stays_stable_across_mixed_evidence_modes(tmp_path):
 
     assert [first, fresh, s.register_source_drafts(list(sourced.drafts))[0]] == ["view.1", "view.2", "view.3"]
     assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "A\nB\nc\n"
+
+
+# --- prompt and output contracts -------------------------------------------------------------------
+
+
+def example_payloads():
+    for example in EditTool.EXAMPLE:
+        yield example, json.loads(example[example.index("{") :])
+
+
+def test_every_tool_schema_example_parses(tmp_path):
+    """An example the parser would reject teaches the model a call shape that cannot work."""
+    s = session(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def old_name(value):\n    return value\n", encoding="utf-8")
+    key = view(s, "src/app.py")
+    seen = set()
+
+    for example, payload in example_payloads():
+        args = EditTool.payload_args(payload)
+        if args[1]:  # a source-view example names a placeholder id; use a real one for this path
+            args = [args[0], key, args[2]]
+        path, source, edits = EditTool(s, args).parse()
+        seen.add(edit_mode(source, edits))
+        assert path.endswith("app.py"), example
+
+    assert seen == {MODE_CREATE, MODE_SOURCE_VIEW, MODE_DIRECT}  # every mode is shown at least once
+
+
+def test_the_description_teaches_both_modes_and_prefers_a_view_when_one_exists():
+    text = EditTool.DESCRIPTION
+
+    assert "old" in text and "source=view.N" in text
+    assert "Bash output included" in text  # exact text seen there is usable evidence
+    assert "Prefer (1) when a current view for the path is already in hand" in text
+    # And the description no longer claims a redundant Read is required first.
+    assert "before editing" not in text
+
+
+def test_the_system_prompt_points_bash_output_at_direct_evidence():
+    from wizolt import prompts
+
+    source = pathlib.Path(prompts.__file__).read_text()
+
+    assert "its output is not a source view, but exact text seen there can be edited straight away" in source
+    # The old instruction to Read a file before editing what Bash already showed is gone.
+    assert "Read/Search/InspectCode a file before editing it" not in source
+
+
+@pytest.mark.parametrize(
+    ("edits", "expected"),
+    [
+        ([{"op": "replace", "old": "a\n", "content": "A\n"}], "include more exact context or use a source view"),
+        ([{"op": "replace", "old": "zzz\n", "content": "Z\n"}], "inspect the current file and retry"),
+        (
+            [{"op": "replace", "old": "a\nb\n", "content": "X\n"}, {"op": "replace", "old": "b\na\n", "content": "Y\n"}],
+            "edit them as one operation",
+        ),
+    ],
+    ids=("ambiguous", "missing", "overlap"),
+)
+def test_every_direct_refusal_names_a_concrete_next_step(tmp_path, edits, expected):
+    s = session(tmp_path)
+    (tmp_path / "code.txt").write_text("a\nb\na\nb\n", encoding="utf-8") if len(edits) == 1 else (tmp_path / "code.txt").write_text("a\nb\na\n", encoding="utf-8")
+
+    with pytest.raises(ToolError, match=expected):
+        edit(s, "code.txt", edits)
+
+
+def test_an_overlap_refusal_names_the_operations_without_dumping_them(tmp_path):
+    s = session(tmp_path)
+    body = "x" * 2500 + "MID" + "y" * 2500
+    (tmp_path / "code.txt").write_text(f"head\n{body}\ntail\n", encoding="utf-8")
+
+    with pytest.raises(ToolError, match="direct targets overlap") as error:
+        edit(s, "code.txt", [{"op": "replace", "old": body, "content": "A"}, {"op": "replace", "old": body[3:], "content": "B"}])
+
+    assert "edits 1 and 2" in str(error.value)
+    assert body not in str(error.value)

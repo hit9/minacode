@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- `Edit` can now patch a file straight from exact text seen anywhere -- `Bash` output included --
+  by giving `old` (the exact original text) and `content` instead of `source=view.N` and line
+  numbers, which saves the `Read` that used to sit between finding a line and changing it. The
+  text must appear exactly once in the file; a target that is missing, repeated, or overlaps
+  another target in the same call refuses the whole call and writes nothing, and a repeated one
+  comes back with a view of the places it occurs. Source views still work unchanged, are still
+  preferred when one is in hand, and one path cannot use both kinds of evidence in the same batch.
+
 ### Fixed
 
 - The status bar now keeps one static, semantically colored layout while work is running:
