@@ -355,8 +355,10 @@ def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeyp
         assert command_loop.view.style().get_attrs_for_style_str("").color == ""
 
 
-def test_tool_labels_keep_legacy_green_style():
-    assert UiPrinter.LOG_STYLES[LogRole.TOOL][0] == "ansigreen"
+def test_tool_labels_take_the_palette_tool_color(monkeypatch):
+    for mode in ("dark", "light"):
+        monkeypatch.setattr(Theme, "_mode", mode)
+        assert UiPrinter.log_styles(LogRole.TOOL) == (Theme.fg("tool"), Theme.fg("text"))
 
 
 @pytest.mark.parametrize(("mode", "rgb"), [("dark", "224;169;109"), ("light", "154;91;46")])

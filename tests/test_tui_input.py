@@ -174,7 +174,7 @@ def test_tui_approval_prompt_keeps_connector_style_and_spinner(monkeypatch):
     monkeypatch.setattr(time, "monotonic", lambda: 0.2)
 
     assert app.status_fragments() == [
-        ("ansibrightblack", connector),
+        ("class:muted", connector),
         ("class:approval", "[Y/n] "),
         ("class:approval.wait", "/ "),
     ]
@@ -184,7 +184,7 @@ def test_tui_loading_models_prompt_is_simple_and_dim():
     app = TuiApp()
     app.set_dispatching("Loading models...")
 
-    assert app.status_fragments() == [("ansibrightblack", "Loading models...")]
+    assert app.status_fragments() == [("class:muted", "Loading models...")]
 
 
 def test_tui_non_editing_modes_clear_stale_input_errors():

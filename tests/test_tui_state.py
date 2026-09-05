@@ -385,10 +385,10 @@ def test_model_stream_preview_styles_inline_markdown(tmp_path, monkeypatch):
     loop.model_stream_output("reasoning", "**bold** `code` *italic* and **unclosed")
 
     styled = {(text, style) for style, text in loop.view.model_stream_fragments() if text}
-    assert ("bold", "ansibrightblack bold") in styled
-    assert ("code", "ansibrightblack underline") in styled
-    assert ("italic", "ansibrightblack italic") in styled
-    assert (" and **unclosed", "ansibrightblack") in styled  # no closing marker: the tail stays literal
+    assert ("bold", "class:muted bold") in styled
+    assert ("code", "class:muted underline") in styled
+    assert ("italic", "class:muted italic") in styled
+    assert (" and **unclosed", "class:muted") in styled  # no closing marker: the tail stays literal
 
 
 def test_model_stream_preview_keeps_malformed_star_runs_literal(tmp_path, monkeypatch):
@@ -402,9 +402,9 @@ def test_model_stream_preview_keeps_malformed_star_runs_literal(tmp_path, monkey
     loop.model_stream_output("reasoning", "**a* *a** **** **a**b**")
 
     styled = {(text, style) for style, text in loop.view.model_stream_fragments() if text}
-    assert ("**a* *a** **** ", "ansibrightblack") in styled  # unclosed and empty star runs stay literal
-    assert ("a", "ansibrightblack bold") in styled  # the closed bold inside the last token still renders
-    assert ("b**", "ansibrightblack") in styled  # the trailing unclosed run stays literal
+    assert ("**a* *a** **** ", "class:muted") in styled  # unclosed and empty star runs stay literal
+    assert ("a", "class:muted bold") in styled  # the closed bold inside the last token still renders
+    assert ("b**", "class:muted") in styled  # the trailing unclosed run stays literal
     assert not any(text == "a" and "italic" in style for text, style in styled)  # no italic borrowed from `**`
 
 
@@ -436,7 +436,7 @@ def test_queue_divider_resuming_status_is_a_quiet_gray_line(tmp_path):
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
     loop.tui = SimpleNamespace(status_label=RESUME_STATUS_LABEL)
-    assert loop.view.queue_divider_fragments() == [("ansibrightblack", RESUME_STATUS_LABEL)]
+    assert loop.view.queue_divider_fragments() == [("class:muted", RESUME_STATUS_LABEL)]
 
 
 def test_divider_shows_output_rate_while_a_response_streams(tmp_path):

@@ -695,7 +695,7 @@ class UiPrinter:
         width = shutil.get_terminal_size((80, 20)).columns
         # A blank row below keeps the rule off whatever follows it (narration, tool output); the
         # callers already draw the blank row above, so the two seams land once each.
-        fragments = FormattedText([("ansibrightblack", "─" * width + "\n"), ("", "\n")])
+        fragments = FormattedText([(Theme.fg("rule"), "─" * width + "\n"), ("", "\n")])
         if self._batch_parts is not None:
             self._batch_parts.append(fragments)
             return
@@ -727,9 +727,9 @@ class UiPrinter:
         lead = "─" * self.TURN_END_LEAD + " "
         trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)
         fragments = [
-            ("ansibrightblack", lead),
-            ("fg:default", label),
-            ("ansibrightblack", " " + "─" * trail + "\n"),
+            (Theme.fg("rule"), lead),
+            (Theme.fg("text"), label),
+            (Theme.fg("rule"), " " + "─" * trail + "\n"),
         ]
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(fragments))
@@ -765,9 +765,9 @@ class UiPrinter:
         lead = "─" * self.TURN_END_LEAD + " "
         trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)
         fragments = [
-            ("ansibrightblack", lead),
+            (Theme.fg("rule"), lead),
             (Theme.fg("status_worker"), label),
-            ("ansibrightblack", " " + "─" * trail + "\n"),
+            (Theme.fg("rule"), " " + "─" * trail + "\n"),
         ]
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(fragments))
@@ -835,27 +835,36 @@ class UiPrinter:
             prefix, content = self.USER_LOG_PREFIX, text[len(self.USER_LOG_PREFIX) :]
             return [(self.user_log_style(), prefix + content + "\n")]
         if text.startswith("+ "):
-            return [("ansibrightblack", "+ "), ("fg:default", text[2:] + "\n")]
+            return [(Theme.fg("muted"), "+ "), (Theme.fg("text"), text[2:] + "\n")]
         if text.startswith("done in "):
-            return [("ansibrightblack", text + "\n")]
+            return [(Theme.fg("muted"), text + "\n")]
         if text.startswith("wizolt "):
-            return [("ansicyan", text + "\n")]
+            return [(Theme.fg("accent"), text + "\n")]
         if text.startswith(("Error:", "ConfigError:", "Unknown command:")):
-            return [("ansired", text + "\n")]
-        return [("fg:default", line + "\n") for line in text.splitlines() or [""]]
+            return [(Theme.fg("error"), text + "\n")]
+        return [(Theme.fg("text"), line + "\n") for line in text.splitlines() or [""]]
 
-    LOG_STYLES: ClassVar[dict[LogRole, tuple[str, str]]] = {
-        LogRole.TOOL: ("ansigreen", "fg:default"),
-        LogRole.AUTO: ("ansiblue", "fg:default"),
-        LogRole.META: ("ansibrightblack", "ansibrightblack"),
-        LogRole.WORKER: ("ansiyellow", "fg:default"),
-        LogRole.FIELD: ("ansicyan", "fg:default"),
-        LogRole.OUTPUT: ("ansibrightblack", "ansibrightblack"),
-        LogRole.ERROR: ("ansired", "fg:default"),
-        LogRole.MUTED: ("ansibrightblack", "ansibrightblack"),
-        LogRole.DIFF: ("fg:default", "fg:default"),
-        LogRole.CODE: ("fg:default", "fg:default"),
+    # A log line's label and its text, as palette roles. The label carries the identity (which tool,
+    # which worker, an error) and the text is body copy, so most rows pair a colored label with
+    # ordinary text; the rows that are themselves supporting detail go muted on both.
+    LOG_ROLES: ClassVar[dict[LogRole, tuple[str, str]]] = {
+        LogRole.TOOL: ("tool", "text"),
+        LogRole.AUTO: ("accent_secondary", "text"),
+        LogRole.META: ("muted", "muted"),
+        LogRole.WORKER: ("status_worker", "text"),
+        LogRole.FIELD: ("accent", "text"),
+        LogRole.OUTPUT: ("muted", "muted"),
+        LogRole.ERROR: ("error", "text"),
+        LogRole.MUTED: ("muted", "muted"),
+        LogRole.DIFF: ("text", "text"),
+        LogRole.CODE: ("text", "text"),
     }
+
+    @classmethod
+    def log_styles(cls, role: LogRole) -> tuple[str, str]:
+        """One log role's (label, text) styles under the active theme."""
+        label, text = cls.LOG_ROLES[role]
+        return Theme.fg(label), Theme.fg(text)
 
     def log_segments(self, block: LogBlock) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
@@ -901,8 +910,8 @@ class UiPrinter:
                 highlighted = self.code_lines("\n".join(item.text for item in code), code[0].syntax)
                 number_width = len(str(len(code)))
                 for number, item in enumerate(code, 1):
-                    rendered = highlighted[number - 1] if highlighted is not None and number - 1 < len(highlighted) else [("fg:default", item.text)]
-                    prefix = [*margin, *self.edge_segments(item.edge), ("ansibrightblack", f"{number:>{number_width}}  ")]
+                    rendered = highlighted[number - 1] if highlighted is not None and number - 1 < len(highlighted) else [(Theme.fg("text"), item.text)]
+                    prefix = [*margin, *self.edge_segments(item.edge), (Theme.fg("subtle"), f"{number:>{number_width}}  ")]
                     # A wrapped code row keeps the margin itself (rails included) and blanks only
                     # the edge and gutter, so a long line cannot punch a hole in the rail.
                     continuation = [*margin, ("", " " * sum(get_cwidth(fragment[1]) for fragment in prefix[len(margin) :]))]
@@ -910,7 +919,7 @@ class UiPrinter:
                         segments.extend([*row, ("", "\n")])
                 index = end
                 continue
-            label_style, text_style = self.LOG_STYLES[line.role]
+            label_style, text_style = self.log_styles(line.role)
             prefix = [*margin, *self.edge_segments(line.edge)]
             if line.label:
                 prefix.append((label_style, line.label))
@@ -920,7 +929,7 @@ class UiPrinter:
                 prefix.append((text_style, separator))
                 content.extend(self.syntax_segments(line.text, line.syntax, text_style))
             if line.meta:
-                content.append(("ansired" if line.role is LogRole.ERROR else "ansibrightblack", line.meta))
+                content.append((Theme.fg("error" if line.role is LogRole.ERROR else "muted"), line.meta))
             continuation = [*margin, ("", " " * get_cwidth(line.text_prefix()))]
             for row in Text.wrap_styled(prefix, continuation, content, width):
                 segments.extend([*row, ("", "\n")])
@@ -934,7 +943,7 @@ class UiPrinter:
         stays the single blank segment it has always been."""
         segments: list[tuple[str, str]] = []
         for rail, text in LogBlock.margin_units(level, rails):
-            style = "ansibrightblack" if rail else ""
+            style = Theme.fg("subtle") if rail else ""
             if segments and segments[-1][0] == style:
                 segments[-1] = (style, segments[-1][1] + text)
             else:
@@ -943,7 +952,7 @@ class UiPrinter:
 
     @staticmethod
     def edge_segments(edge: LogEdge) -> list[tuple[str, str]]:
-        return [] if edge is LogEdge.NONE else [("ansibrightblack", edge.value + " ")]
+        return [] if edge is LogEdge.NONE else [(Theme.fg("subtle"), edge.value + " ")]
 
     @staticmethod
     def remove_line_ending(segments: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -981,7 +990,7 @@ class UiPrinter:
             elif UiPrinter.RECORD_TOKEN_RE.fullmatch(token):
                 style = Theme.fg("syntax_number")
             elif token in {";", ","}:
-                style = "ansibrightblack"
+                style = Theme.fg("muted")
             else:
                 style = Theme.fg("syntax_ident")
             segments.append((style, token))
@@ -994,19 +1003,19 @@ class UiPrinter:
             # line, so the whole line is the headline; `plan:`/`known:` head a list below them and
             # are matched exactly, one case down.
             if line.startswith(("goal:", "check:")):
-                segments.append(("ansimagenta", line))
+                segments.append((Theme.fg("accent_secondary"), line))
             elif line in {"summary:", "plan:", "known:"}:
-                segments.append(("ansicyan", line))
+                segments.append((Theme.fg("accent"), line))
             elif line.lstrip().startswith("- [x]"):
-                segments.append(("ansigreen", line))
+                segments.append((Theme.fg("success"), line))
             elif line.lstrip().startswith("- [~]"):
-                segments.append(("ansiyellow", line))
+                segments.append((Theme.fg("warning"), line))
             elif line.lstrip().startswith("- [-]"):
-                segments.append(("ansired", line))
+                segments.append((Theme.fg("error"), line))
             elif line.lstrip().startswith("+ "):
-                segments.append(("ansigreen", line))
+                segments.append((Theme.fg("success"), line))
             else:
-                segments.append(("fg:default", line))
+                segments.append((Theme.fg("text"), line))
             segments.append(("", "\n"))
         return segments
 
@@ -1169,6 +1178,9 @@ class UiPrinter:
             except ValueError:
                 return None
 
+        # The styles below stay ANSI names on purpose. A diff's colors are pinned (see Theme's diff
+        # mapping): the signs, gutter, and hunk headers were tuned against these bands in both
+        # appearances, so they are not migrated to palette roles with the rest of the UI.
         def number(old: int | None, new: int | None, background: str = "") -> None:
             old_text = "" if old is None else str(old)
             new_text = "" if new is None else str(new)
@@ -1417,11 +1429,11 @@ class BashLivePreview:
         limit = max(1, width - get_cwidth(rail) - 1)
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}{remaining}" if body else f"running… {label}{remaining}"
-        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.glyph(self.started_at)), ("ansibrightblack", status)]]
+        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.glyph(self.started_at)), (Theme.fg("muted"), status)]]
         if body:
             # A blank row keeps the spark off the rail: the star caps the region, it does not sit on it.
             rows.append([("", "")])
-            rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
+            rows.extend([(Theme.fg("muted"), rail + Text.clip_width(line, limit))] for line in body)
         return rows
 
 

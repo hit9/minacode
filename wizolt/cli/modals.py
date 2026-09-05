@@ -583,8 +583,8 @@ def code_rows(text: str, lexer: str, width: int, margin: str = "  ") -> list[Sty
     number_width = len(str(len(lines)))
     rows: list[StyleAndTextTuples] = []
     for number, line in enumerate(lines, 1):
-        rendered = highlighted[number - 1] if highlighted is not None and number - 1 <= len(highlighted) - 1 else [("fg:default", line)]
-        prefix: list[tuple[str, str]] = [("", margin), ("ansibrightblack", f"{number:>{number_width}}  ")]
+        rendered = highlighted[number - 1] if highlighted is not None and number - 1 <= len(highlighted) - 1 else [("class:text", line)]
+        prefix: list[tuple[str, str]] = [("", margin), ("class:subtle", f"{number:>{number_width}}  ")]
         continuation: list[tuple[str, str]] = [("", margin + " " * (number_width + 2))]
         rows.extend(cast(list[StyleAndTextTuples], Text.wrap_styled(prefix, continuation, rendered, width)))
     return rows
@@ -638,9 +638,9 @@ def _approval_text_view(
         """The rule between the viewer's sections, optionally naming the one it opens. Labeled or
         not, it runs to the same right edge, so the sections read as one document."""
         if not label:
-            return [("", margin), ("ansibrightblack", "─" * max(0, width - 4))]
+            return [("", margin), ("class:rule", "─" * max(0, width - 4))]
         lead = f"── {label} "
-        return [("", margin), ("ansibrightblack", lead + "─" * max(0, width - 4 - get_cwidth(lead)))]
+        return [("", margin), ("class:rule", lead + "─" * max(0, width - 4 - get_cwidth(lead)))]
 
     def layout(width: int) -> list[StyleAndTextTuples]:
         """Field header rows, a separator, the whole text, and -- when the call has already run --
@@ -656,9 +656,9 @@ def _approval_text_view(
                 cast(
                     list[StyleAndTextTuples],
                     Text.wrap_styled(
-                        [("", margin), ("ansicyan", padded), ("", "  ")],
+                        [("", margin), ("class:accent", padded), ("", "  ")],
                         [("", margin + " " * (label_width + 2))],
-                        [("fg:default", value)],
+                        [("class:text", value)],
                         width,
                     ),
                 )
@@ -766,13 +766,13 @@ async def diff_viewer(loop: CommandLoop) -> None:
         for index, ((_, path, _), (added, removed)) in enumerate(zip(sections, counts)):
             selected = index == state.file
             marker = "> " if selected else "  "
-            style = "ansicyan" if selected else "class:choice.disabled"
+            style = "class:accent" if selected else "class:choice.disabled"
             parts.extend(
                 [
                     (style, marker),
-                    ("ansigreen", f"+{added:>{added_width}}"),
+                    ("class:success", f"+{added:>{added_width}}"),
                     ("", " "),
-                    ("ansired", f"-{removed:>{removed_width}}"),
+                    ("class:error", f"-{removed:>{removed_width}}"),
                     (style, f" {path}\n"),
                 ]
             )
@@ -782,7 +782,7 @@ async def diff_viewer(loop: CommandLoop) -> None:
         state.clamp_file(len(sections))
         status, path, diff = sections[state.file]
         parts.append(("", "\n"))
-        parts.append(("ansicyan", f"  {status.title()} · {path}\n"))
+        parts.append(("class:accent", f"  {status.title()} · {path}\n"))
         lines = loop.ui.segment_lines(loop.ui.diff_segments_live(diff))
         visible = state.view.visible(lines, viewport())
         for line in visible:
@@ -859,11 +859,11 @@ async def compaction_log_viewer(loop: CommandLoop) -> None:
         rows: list[StyleAndTextTuples] = []
         for index, (segment, (when, kind, messages)) in enumerate(zip(segments, columns)):
             selected = index == state.selected
-            style = "ansicyan" if selected else "class:choice.disabled"
+            style = "class:accent" if selected else "class:choice.disabled"
             lead = f"{'> ' if selected else '  '}{segment.key:<{key_width}}  {when:<{when_width}}  {kind:<{kind_width}}  "
             lead += f"{messages:>{messages_width}}  "
             title = Text.clip_width(segment.title, max(8, width - get_cwidth(lead)))
-            rows.append([(style, lead), ("fg:default" if selected else "class:choice.disabled", title)])
+            rows.append([(style, lead), ("class:text" if selected else "class:choice.disabled", title)])
         return rows
 
     def detail_rows(segment: HistorySegment, width: int) -> list[StyleAndTextTuples]:
@@ -873,7 +873,7 @@ async def compaction_log_viewer(loop: CommandLoop) -> None:
         when, _, _ = segment_columns(segment)
         headline, caveat = segment_story(segment)
         rows: list[StyleAndTextTuples] = [
-            [("ansicyan", f"  {segment.key}"), ("class:choice.disabled", f"  {when}")],
+            [("class:accent", f"  {segment.key}"), ("class:choice.disabled", f"  {when}")],
             *wrapped_rows(segment.title, width),
             [],
             [("", "  "), ("class:choice.disabled", Text.clip_width(headline, width - 2))],

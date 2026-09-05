@@ -390,7 +390,7 @@ class TuiApp:
         if not self._approval_actions or self.input_mode != "approval":
             return []
         typing = bool(self.input_buffer.text)
-        parts: StyleAndTextTuples = [("ansibrightblack", LogBlock.prefix(2, LogEdge.CONTINUE))]
+        parts: StyleAndTextTuples = [("class:subtle", LogBlock.prefix(2, LogEdge.CONTINUE))]
         for index, (label, _) in enumerate(self._approval_actions):
             focused = index == self._approval_focus and not typing
             style = "class:approval.action.focused" if focused else "class:approval.action.dim" if typing else "class:approval.action"
@@ -1059,12 +1059,12 @@ class TuiApp:
 
     def status_fragments(self) -> StyleAndTextTuples:
         if self.input_mode == "dispatch" and self.input_prompt:
-            return [("ansibrightblack", self.input_prompt)]
+            return [("class:muted", self.input_prompt)]
         if self.input_mode == "approval" and self.input_prompt:
             frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
             connector = LogBlock.prefix(2, LogEdge.CONTINUE)
             prompt = (
-                [("ansibrightblack", connector), ("class:approval", self.input_prompt[len(connector) :])]
+                [("class:muted", connector), ("class:approval", self.input_prompt[len(connector) :])]
                 if self.input_prompt.startswith(connector)
                 else [("class:approval", self.input_prompt)]
             )

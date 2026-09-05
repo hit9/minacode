@@ -585,7 +585,7 @@ async def test_delegate_order_viewer_field_header_alignment(monkeypatch):
     await approval_text_viewer(loop, ApprovalView("order", "order", "", [("title", "fix"), ("lang", "python"), ("max_steps", "3")]))
 
     fragments = captured["fragments_fn"]()
-    cyan = {text for style, text in fragments if style == "ansicyan" and text.strip() in {"title", "lang", "max_steps"}}
+    cyan = {text for style, text in fragments if style == "class:accent" and text.strip() in {"title", "lang", "max_steps"}}
     assert len(cyan) == 3
     assert {get_cwidth(text) for text in cyan} == {9}  # every label padded to the widest one
 

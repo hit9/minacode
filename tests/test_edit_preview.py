@@ -5,7 +5,7 @@ from test_edit_tool import session, view
 
 from wizolt.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall
 from wizolt.context import ContextManager
-from wizolt.render import UiPrinter
+from wizolt.render import Theme, UiPrinter
 from wizolt.runner import ToolRunner
 from wizolt.tools import CodeIndex
 
@@ -26,7 +26,7 @@ def test_approval_segments_highlight_inline_edit_preview():
     segments = UiPrinter().log_segments(block)
     rendered = "".join(text for _, text in segments)
 
-    assert ("ansigreen", "Edit") in segments
+    assert (Theme.fg("tool"), "Edit") in segments
     assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
     assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
     assert any(style == "fg:default bg:#520000" and "pass" in text for style, text in segments)

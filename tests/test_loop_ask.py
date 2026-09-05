@@ -18,6 +18,7 @@ from wizolt.base import (
 from wizolt.cli import CommandLoop
 from wizolt.cli.modals import choice_application, question_interaction
 from wizolt.engine import Agent
+from wizolt.render import Theme
 from wizolt.tools import AskSpec
 from wizolt.tui import ASK_DONE, ASK_FREE_TEXT
 
@@ -374,7 +375,7 @@ async def test_phase_rule_renders_as_an_unlabelled_full_width_solid_rule(tmp_pat
 
     # The dash line, then a blank row that lifts the rule off whatever follows it (the callers
     # draw the blank row above, so each seam lands once).
-    assert [style for style, _ in frags[0]] == ["ansibrightblack", ""]
+    assert [style for style, _ in frags[0]] == [Theme.fg("rule"), ""]
     text = "".join(fragment for _, fragment in frags[0])
     assert text.endswith("\n\n")
     assert set(text) <= {"─", "\n"}

@@ -265,6 +265,10 @@ class View:
 
     # Breathing green dot shown on the divider while a model request is in flight. The label moves
     # from working to thinking/responding as stream events arrive; the pulse remains until completion.
+    # Deliberately outside the palette: this is a liveness signal rather than a piece of the
+    # interface's color scheme, it reads the same green on light and dark terminals, and it is a
+    # ramp, not a color. Its neighbour LiveSpark does take the palette's accent, because that mark
+    # caps the divider's own rule and has to keep sharing its color.
     WAITING_PULSE_STYLES: ClassVar[tuple[str, ...]] = (
         "fg:#0a3d0a",
         "fg:#146114",
@@ -374,7 +378,7 @@ class View:
         elif status == RESUME_STATUS_LABEL:
             # A quiet gray lead-in to the restored transcript: nothing streams and nothing sweeps
             # while the replay is being prepared, so no pulse pretends there is activity.
-            return [("ansibrightblack", status)]
+            return [("class:muted", status)]
         else:
             label = status
         if queued:
@@ -455,14 +459,14 @@ class View:
             # first chunk of each request and clears between them, so every response opens the
             # spark at its crest instead of wherever the wall clock happened to be.
             (LiveSpark.style(self.loop.session.state.stream_started_at), spark),
-            *([("ansibrightblack", label)] if label else []),
+            *([("class:muted", label)] if label else []),
             ("", "\n"),
             # A blank row keeps the spark off the rail: the star caps the region, it does not sit
             # on it. The running-command frame draws the same gap whenever it has output.
             ("", "\n"),
         ]
         for row in rows:
-            fragments.append(("ansibrightblack", rail))
+            fragments.append(("class:muted", rail))
             fragments.extend(self._stream_inline_fragments(row))
             fragments.append(("", "\n"))
         return fragments
@@ -477,18 +481,18 @@ class View:
         cursor = 0
         for match in cls.STREAM_INLINE_RE.finditer(row):
             if match.start() > cursor:
-                fragments.append(("ansibrightblack", row[cursor : match.start()]))
+                fragments.append(("class:muted", row[cursor : match.start()]))
             token = match.group(1)
             if token.startswith("**"):
-                fragments.append(("ansibrightblack bold", token[2:-2]))
+                fragments.append(("class:muted bold", token[2:-2]))
             elif token.startswith("`"):
-                fragments.append(("ansibrightblack underline", token[1:-1]))
+                fragments.append(("class:muted underline", token[1:-1]))
             else:
-                fragments.append(("ansibrightblack italic", token[1:-1]))
+                fragments.append(("class:muted italic", token[1:-1]))
             cursor = match.end()
         if cursor < len(row):
-            fragments.append(("ansibrightblack", row[cursor:]))
-        return fragments or [("ansibrightblack", row)]
+            fragments.append(("class:muted", row[cursor:]))
+        return fragments or [("class:muted", row)]
 
     def tui_input_hint(self) -> str:
         tui = self.loop.tui
@@ -526,58 +530,59 @@ class View:
         names the view's own widgets in terms of it. Light and dark therefore differ only inside the
         palette, never in a branch here.
         """
+        role = Theme.fg
         return Style.from_dict(
             {
                 **Theme.tui_styles(),
-                "prompt": "ansicyan bold",
+                "prompt": role("accent", "bold"),
                 # The comet fades into the rule it travels over, so both come from the palette.
-                "queue.rule": Theme.fg("rule"),
+                "queue.rule": role("rule"),
                 **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("accent", "rule", self.GLOW_STEPS))},
-                "queue.hint": "ansibrightblack",
-                "quickhint": "ansicyan",
+                "queue.hint": role("muted"),
+                "quickhint": role("accent"),
                 "quickhint.focused": "reverse",
-                "quickhint.sep": "ansibrightblack",
-                "image.attachment": "ansicyan bold",
-                "input.error": "ansired",
-                "divider.working": "ansimagenta bold",
-                "divider.worker": "ansiyellow bold",
-                "approval": "ansiyellow",
-                "approval.wait": "ansimagenta",
-                "approval.action": "ansiyellow",
-                "approval.action.focused": "reverse ansiyellow",
-                "approval.action.dim": "ansibrightblack",
-                "choice.title": "ansicyan bold",
+                "quickhint.sep": role("muted"),
+                "image.attachment": role("accent", "bold"),
+                "input.error": role("error"),
+                "divider.working": role("accent_secondary", "bold"),
+                "divider.worker": role("status_worker", "bold"),
+                "approval": role("warning"),
+                "approval.wait": role("accent_secondary"),
+                "approval.action": role("warning"),
+                "approval.action.focused": role("warning", "reverse"),
+                "approval.action.dim": role("muted"),
+                "choice.title": role("accent", "bold"),
                 "choice.selected": "reverse",
-                "choice.disabled": "ansibrightblack",
-                "choice.preview": "ansigreen italic",
-                "choice.explanation": Theme.fg("status_reason"),
+                "choice.disabled": role("muted"),
+                "choice.preview": role("success", "italic"),
+                "choice.explanation": role("accent_secondary"),
                 # The preview's user messages take the same tone as the transcript's `• ` lines.
-                "choice.user": Theme.fg("user"),
+                "choice.user": role("user"),
                 # The Ctrl-O browser's rows, coloured as the transcript colours the same call: the
-                # tr.N key dim, the tool name in the tool green, the arguments plain. A row that is
-                # still running takes the working divider's magenta instead of the dim key.
-                "choice.meta": "ansibrightblack",
-                "choice.tool": "ansigreen",
-                "choice.live": "ansimagenta bold",
-                "choice.output.ok": "ansigreen bold",
-                "choice.output.fail": "ansired bold",
-                "choice.status.connected": "ansigreen bold",
-                "choice.status.connecting": "ansigreen bold",
-                "choice.status.disconnected": "ansiyellow bold",
-                "choice.status.disconnecting": "ansiyellow bold",
-                "choice.status.error": "ansired bold",
-                "choice.status.skipped": "ansibrightblack",
-                "tab.active": "bold reverse ansicyan",
-                "tab.inactive": "ansicyan",
+                # tr.N key dim, the tool name in the tool colour, the arguments plain. A row that is
+                # still running takes the working divider's tone instead of the dim key.
+                "choice.meta": role("muted"),
+                "choice.tool": role("tool"),
+                "choice.live": role("accent_secondary", "bold"),
+                "choice.output.ok": role("success", "bold"),
+                "choice.output.fail": role("error", "bold"),
+                "choice.status.connected": role("success", "bold"),
+                "choice.status.connecting": role("success", "bold"),
+                "choice.status.disconnected": role("warning", "bold"),
+                "choice.status.disconnecting": role("warning", "bold"),
+                "choice.status.error": role("error", "bold"),
+                "choice.status.skipped": role("muted"),
+                "tab.active": role("accent", "bold", "reverse"),
+                "tab.inactive": role("accent"),
                 "completion-menu": "noreverse bg:default",
-                "completion-menu.completion": "noreverse bg:default fg:default",
-                "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
-                "completion-menu.meta.completion": "noreverse bg:default fg:ansibrightblack",
-                "completion-menu.meta.completion.current": "noreverse bg:default fg:ansicyan",
+                "completion-menu.completion": f"noreverse bg:default {role('text')}",
+                "completion-menu.completion.current": f"noreverse bg:default {role('accent', 'bold')}",
+                "completion-menu.meta.completion": f"noreverse bg:default {role('muted')}",
+                "completion-menu.meta.completion.current": f"noreverse bg:default {role('accent')}",
                 "bottom-toolbar": "noreverse bg:default fg:default",
-                "bottom-toolbar.text": "noreverse bg:default fg:default",
+                "bottom-toolbar.text": f"noreverse bg:default {role('text')}",
                 "search-toolbar": "noreverse bg:default fg:default",
-                "search-toolbar.prompt": "ansicyan",
-                "search-toolbar.text": "fg:default",
+                "search-toolbar.prompt": role("accent"),
+                "search-toolbar.text": role("text"),
             }
         )

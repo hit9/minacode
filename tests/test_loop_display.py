@@ -18,7 +18,7 @@ from wizolt.base import (
 )
 from wizolt.cli import CommandLoop
 from wizolt.engine import Agent
-from wizolt.render import UiPrinter
+from wizolt.render import Theme, UiPrinter
 from wizolt.session import Session
 from wizolt.tui import TuiApp
 
@@ -96,7 +96,7 @@ def test_emit_indents_plain_text_without_losing_its_style(tmp_path):
     margin = LogBlock.margin(TurnBox.CONTENT_LEVEL)
 
     error = ui.indent_segments(ui.segments("Error: provider is down"), margin)
-    assert error[0] == ("ansired", margin)  # the margin carries the style of the line it opens
+    assert error[0] == (Theme.fg("error"), margin)  # the margin carries the style of the line it opens
     assert "".join(text for _, text in error) == f"{margin}Error: provider is down\n"
 
     two_lines = ui.indent_segments(ui.segments("first\nsecond"), margin)

@@ -18,7 +18,7 @@ from wizolt.config import (
     Config,
 )
 from wizolt.context import ContextManager
-from wizolt.render import UiPrinter
+from wizolt.render import Theme, UiPrinter
 from wizolt.runner import ToolRunner
 from wizolt.session import HistorySegment, Session
 from wizolt.tools import (
@@ -705,20 +705,20 @@ def test_uiprinter_renders_note_memory_status_colors():
     ui = UiPrinter(output_fn=lambda text: None)
     segs = ui.segments("goal: ship\ncheck: passed\nplan:\n  - [~] inspect\n  - [x] patch\nknown:\n  + pytest")
 
-    assert ("ansimagenta", "goal: ship") in segs
-    assert ("ansimagenta", "check: passed") in segs
-    assert ("ansicyan", "plan:") in segs
-    assert ("ansiyellow", "  - [~] inspect") in segs
-    assert ("ansigreen", "  - [x] patch") in segs
-    assert ("ansigreen", "  + pytest") in segs
+    assert (Theme.fg("accent_secondary"), "goal: ship") in segs
+    assert (Theme.fg("accent_secondary"), "check: passed") in segs
+    assert (Theme.fg("accent"), "plan:") in segs
+    assert (Theme.fg("warning"), "  - [~] inspect") in segs
+    assert (Theme.fg("success"), "  - [x] patch") in segs
+    assert (Theme.fg("success"), "  + pytest") in segs
 
 
 def test_uiprinter_renders_rejected_line_dim():
     ui = UiPrinter(output_fn=lambda text: None)
     segs = ui.log_segments(LogBlock([LogLine("Read", "· rejected: needs ranges", LogRole.MUTED)]))
 
-    assert any(style == "ansibrightblack" and "rejected" in text for style, text in segs)
-    assert not any(style in ("ansired", "ansigreen") for style, text in segs)
+    assert any(style == Theme.fg("muted") and "rejected" in text for style, text in segs)
+    assert not any(style in (Theme.fg("error"), Theme.fg("success")) for style, text in segs)
 
 
 def test_uiprinter_renders_stored_result_dim():
@@ -727,9 +727,9 @@ def test_uiprinter_renders_stored_result_dim():
 
     assert ui.log_segments(block) == [
         ("", "    "),
-        ("ansibrightblack", "└ "),
-        ("ansibrightblack", "stored"),
-        ("ansibrightblack", " tr.50 [approved]"),
+        (Theme.fg("subtle"), "└ "),
+        (Theme.fg("muted"), "stored"),
+        (Theme.fg("muted"), " tr.50 [approved]"),
         ("", "\n"),
     ]
 

@@ -12,7 +12,7 @@ from wizolt.cli import CommandLoop
 from wizolt.cli.commands import ps_command
 from wizolt.context import ContextManager
 from wizolt.engine import Agent
-from wizolt.render import BashLivePreview, LiveSpark, UiPrinter
+from wizolt.render import BashLivePreview, LiveSpark, Theme, UiPrinter
 from wizolt.runner import ToolRunner
 from wizolt.session import Session
 from wizolt.tools import BashTool, JobTool, Tool, toolblocks, tooloutput
@@ -887,10 +887,10 @@ def test_uiprinter_renders_bash_preview_like_live_output():
     )
     segs = ui.log_segments(block)
 
-    assert ("ansibrightblack", "stderr:") in segs
-    assert ("ansibrightblack", "  Traceback") in segs
-    assert ("ansibrightblack", "    File x") in segs
-    assert ("ansibrightblack", "  AttributeError") in segs
+    assert (Theme.fg("muted"), "stderr:") in segs
+    assert (Theme.fg("muted"), "  Traceback") in segs
+    assert (Theme.fg("muted"), "    File x") in segs
+    assert (Theme.fg("muted"), "  AttributeError") in segs
 
 
 def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
