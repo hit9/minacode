@@ -282,19 +282,9 @@ def drop_nulls(value: object) -> object:
 
 
 class Text:
-    BASE36: ClassVar[str] = "0123456789abcdefghijklmnopqrstuvwxyz"
-
     @staticmethod
     def clean(text: str) -> str:
         return text.encode("utf-8", errors="replace").decode("utf-8")
-
-    @classmethod
-    def base36(cls, value: int) -> str:
-        out = ""
-        while value:
-            value, digit = divmod(value, 36)
-            out = cls.BASE36[digit] + out
-        return out or "0"
 
     @classmethod
     def value(cls, value: Any) -> Any:
