@@ -53,6 +53,10 @@
   highlighted: arrow/Tab can move through `@file:`/`@mcp:`/`@skill:` freely, and the picker
   opens only on an explicit Enter on `@file:` (or once a path is typed after it). `@mcp:` and
   `@skill:` behave as before.
+- The working divider now runs its rule edge to edge in the same solid `─` the turn-end and
+  phase rules use, instead of a short run of `-` capped at 52 columns: a wide terminal no longer
+  leaves most of the row blank, and the animated divider reads as one continuous line with the
+  boundaries above and below it.
 
 ### Added
 

@@ -420,13 +420,14 @@ def test_sweep_divider_widens_for_long_labels_and_keeps_the_track(tmp_path, monk
 
     long_label = "[worker] thinking (5m07s · ↓ 75 tok/s) [ 1 queued ]"
     fragments = view.sweep_divider_fragments(long_label)
-    dashes = sum(1 for _, text in fragments if text == "-")
+    dashes = sum(1 for _, text in fragments if text == "─")
     assert dashes >= 3 + 12  # lead + the minimum trail
     assert any(text == long_label for _, text in fragments)  # never clipped
 
     short_label = "working"
     plain = view.sweep_divider_fragments(short_label)
     assert any(text == short_label for _, text in plain)  # a short label is never clipped
+    assert sum(len(text) for _, text in plain) == 98  # the rule now runs edge to edge (cols - 2)
 
 
 def test_queue_divider_resuming_status_is_a_quiet_gray_line(tmp_path):

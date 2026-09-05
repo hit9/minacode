@@ -69,9 +69,9 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
         for tick in range(200):
             mp.setattr(time, "monotonic", lambda tick=tick: tick * 0.1)
             fragments = loop.view.queue_divider_fragments()
-            seen_head = seen_head or any(style == "class:divider.glow0" and text == "-" for style, text in fragments)
+            seen_head = seen_head or any(style == "class:divider.glow0" and text == "─" for style, text in fragments)
             assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
-            assert all(not style.startswith("class:divider.glow") or text == "-" for style, text in fragments)
+            assert all(not style.startswith("class:divider.glow") or text == "─" for style, text in fragments)
         assert seen_head
 
     s.pending_user_inputs = []
@@ -82,7 +82,7 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
 
 def divider_glow_steps(fragments):
     """The comet's glow step per dash, None where the dash fell back to the plain rule."""
-    return [int(style.removeprefix("class:divider.glow")) if style.startswith("class:divider.glow") else None for style, text in fragments if text == "-"]
+    return [int(style.removeprefix("class:divider.glow")) if style.startswith("class:divider.glow") else None for style, text in fragments if text == "─"]
 
 
 def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
@@ -137,7 +137,7 @@ def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
     text = "".join(fragment for _, fragment in loop.view.tui_activity_fragments())
 
     assert text.index("live output") < text.index("working") < text.index("+ follow up")
-    assert "live output\n\n---" in text
+    assert "live output\n\n───" in text
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):

@@ -318,7 +318,7 @@ class View:
         prefix = prefix or []
         prefix_len = sum(len(fragment[1]) for fragment in prefix)
         cols = shutil.get_terminal_size((80, 20)).columns
-        width = width if width is not None else max(20, min(52, cols - 2))
+        width = width if width is not None else max(20, cols - 2)
         lead = 3
         # A comet needs a track long enough to read as motion. When the label is long (the
         # worker's `[worker]` + status + elapsed + rate + queued), widen the rule so both sides
@@ -344,7 +344,7 @@ class View:
             fragments: StyleAndTextTuples = []
             for i in range(count):
                 step = int(abs(offset + i - head) / self.GLOW_REACH * self.GLOW_STEPS)
-                fragments.append((f"class:divider.glow{step}" if step < self.GLOW_STEPS else "class:queue.rule", "-"))
+                fragments.append((f"class:divider.glow{step}" if step < self.GLOW_STEPS else "class:queue.rule", "─"))
             return fragments
 
         return [
