@@ -194,6 +194,48 @@ async def test_resumed_session_separates_turn_boxes(tmp_path):
     # bullet hangs in that same two-space margin, so every line of text starts at column 2.
     assert output[1:] == ["\n• first", "  one", "", "\n• second", "  two"]
 
+async def test_a_restored_transcript_is_spaced_like_the_live_turn(tmp_path, monkeypatch):
+    """A replay is the same transcript, so it has to be laid out like one.
+
+    Replayed tool calls used to be emitted straight to the printer while live ones went through
+    `tool_output`, so a restored turn ran its narration and every call together in one block, and
+    the user's next message arrived under two blank rows instead of one."""
+    import re
+
+    from prompt_toolkit.formatted_text import to_formatted_text
+
+    s = session(tmp_path)
+    s.resumed = True
+    arguments = json.dumps({"files": [{"path": "a.py", "ranges": [[0, 1]]}]})
+    call = {"id": "tc.1", "type": "function", "function": {"name": "Read", "arguments": arguments}}
+    s.messages.extend(
+        [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "looking", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "tc.1", "content": "raw"},
+            {"role": "assistant", "content": "found it"},
+            {"role": "user", "content": "second"},
+        ]
+    )
+    s.tool_records.append(ToolResultRecord("tr.1", "Read", [{"path": "a.py", "ranges": [[0, 1]]}], "raw", "a.py 0:1"))
+    printed = []
+    # The replay prints as one batch, which goes straight out rather than through `_scrollback_print`.
+    monkeypatch.setattr("wizolt.render.print_formatted_text", lambda *parts, **_kwargs: printed.extend(parts))
+    loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    loop.ui.color = True
+
+    loop.render_resumed_session()
+    loop.ui.drain_scrollback()
+
+    text = "".join(fragment for part in printed for _, fragment in to_formatted_text(part))
+    rows = re.sub(r"\x1b\[[0-9;]*m", "", text).split("\n")[:-1]  # drop the newline that ends the last row
+    blanks = {index for index, row in enumerate(rows) if row.strip() == ""}
+    assert not any(index + 1 in blanks for index in blanks), "\n".join(rows)  # never two blank rows together
+    for opener in ("looking", "Read  a.py 0:1", "found it", "• second"):
+        index = next(i for i, row in enumerate(rows) if opener in row)
+        assert rows[index - 1].strip() == "", (opener, rows[index - 2 : index + 1])
+
+
 async def test_turn_box_groups_followup_users_until_final_assistant():
     messages = [
         {"role": "user", "content": "first"},

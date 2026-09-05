@@ -68,6 +68,10 @@
   links are underlined instead of turning a sentence blue. Every block boundary is one blank row.
 - The system prompt now asks for short paragraphs, few headings, and lists only where they aid
   reading, so answers arrive shaped for a terminal rather than for a web page.
+- A restored transcript is spaced like the live turn it replays. Replayed tool calls went
+  straight to the printer while live ones were parted from what came before, so a resumed
+  session ran its narration and every call together in one dense block, and the next user
+  message arrived under a doubled blank row.
 - Blank rows between transcript blocks are decided in one place, so a block can no longer arrive
   glued to the one above it or open a second gap where a rule already left one.
 - Starting wizolt loads less code before dispatch, and its banner appears before session/UI imports

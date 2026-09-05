@@ -833,13 +833,16 @@ Full documentation: https://wizolt.readthedocs.io
         comes from the approval block; here the stored diff text is the same string, so replaying it
         needs no reconstruction."""
         preview = diffs.get(key, "") if call.name == "Edit" else ""
+        # Through `tool_output`, like the live call: a replayed call opens its own group with a
+        # blank row above it, and its result stays attached underneath. Emitted directly, every
+        # call in a turn ran into the one above it and into the narration that introduced them.
         if not preview:
-            self.emit(toolblocks.finish_display(self.session, call, key, "failed in saved session" if failed else "", failed=failed))
+            self.tool_output(toolblocks.finish_display(self.session, call, key, "failed in saved session" if failed else "", failed=failed))
             return
         # The preview block carries the call line, so the result collapses to its trailing marker
         # underneath it — the same nesting the live approval block produces.
-        self.emit(self.transcript_edit_preview(call, preview))
-        self.emit(toolblocks.finish_display(self.session, call, key, "", failed=False, d=ToolDisplay(nested_display=True)))
+        self.tool_output(self.transcript_edit_preview(call, preview))
+        self.tool_output(toolblocks.finish_display(self.session, call, key, "", failed=False, d=ToolDisplay(nested_display=True)))
 
     def transcript_edit_preview(self, call: ToolCall, preview: str) -> LogBlock:
         lines = preview.rstrip().splitlines()

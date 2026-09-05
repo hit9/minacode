@@ -822,6 +822,11 @@ class UiPrinter:
                 role = ""
             self.output_fn(self.indent_message(text, role, indent))
             return
+        if role == "user":
+            # The user's message opens a turn, so it is parted from whatever the last one left
+            # behind -- through the printer, which knows whether a gap is already there, rather
+            # than by a blank row Rich prints whether one is needed or not.
+            self.separate()
         console = markdown_console(shutil.get_terminal_size().columns)
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
@@ -964,7 +969,6 @@ class UiPrinter:
             console.print(Rule(style="wizolt.rule", characters="─"))
         margin = LogBlock.margin(indent)
         if role == "user":
-            console.print("")
             console.print(Padding(RichText(UiPrinter.USER_LOG_PREFIX + text, style="wizolt.user"), (0, 0, 0, len(margin))))
         elif role == "assistant":
             content = RichText(styled_text, style="wizolt.error") if error else WizoltMarkdown(styled_text)
