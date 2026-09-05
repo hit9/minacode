@@ -66,6 +66,8 @@
   and step down by weight, fenced code keeps the terminal's own background instead of a filled
   band, tables lose their empty outer edge, inline code takes the accent without a background, and
   links are underlined instead of turning a sentence blue. Every block boundary is one blank row.
+- The system prompt now asks for short paragraphs, few headings, and lists only where they aid
+  reading, so answers arrive shaped for a terminal rather than for a web page.
 - Blank rows between transcript blocks are decided in one place, so a block can no longer arrive
   glued to the one above it or open a second gap where a rule already left one.
 - Starting wizolt loads less code before dispatch, and its banner appears before session/UI imports

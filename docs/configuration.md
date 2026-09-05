@@ -219,7 +219,7 @@ Optional; the defaults shown are used when omitted.
 | `bash_wait_timeout` | `10` | Foreground wait before a running command becomes a background job; `0` disables promotion |
 | `max_parallel_tools` | `4` | Maximum read-only tool calls executed concurrently; `1` disables parallelism |
 | `session_retention_days` | `7` | Delete saved sessions untouched for this many days, swept in the background at startup; `0` keeps them indefinitely |
-| `theme` | `auto` | Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme` |
+| `theme` | `auto` | Terminal color scheme: `auto`, `light`, or `dark`; overridden by `--theme`. `auto` reads `COLORFGBG` and falls back to `dark`. Both schemes leave body text in your terminal's own foreground and place everything else around it, so a scheme that matches your terminal's background is the one to pick |
 | `worker` | `false` | Let the model delegate to a second in-process session; see below |
 | `language` | `auto` | Force the reply language (`auto` follows your messages and injects nothing); set a name like `Chinese` to append a fixed `LANGUAGE OVERRIDE` block to the system prompt. Change for the current session with `/language` |
 | `agents_md` | `true` | Inject the project's `AGENTS.md` (falling back to `CLAUDE.md`) into every request as a bounded "Project instructions" section of the Environment block |

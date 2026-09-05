@@ -258,3 +258,13 @@ async def test_agent_does_not_reclassify_content_when_native_tool_call_exists(tm
 
 def test_system_prompt_requires_native_tool_calls():
     assert "Use native tool calls; never print tool XML or tool-call JSON." in SYSTEM_PROMPT
+
+
+def test_system_prompt_asks_for_plain_markdown_without_prescribing_a_template():
+    """The renderer owns spacing, color, and rules; the prompt owns only what the model writes.
+
+    One short, general line, so it cannot grow into a style guide that fights the terminal: no
+    required headings, no fixed sections, and nothing about how the output is drawn."""
+    output = SYSTEM_PROMPT.partition("OUTPUT:")[2].partition("LANGUAGE:")[0]
+    assert "short paragraphs, few headings, and lists only where they aid reading" in output
+    assert not any(word in output.lower() for word in ("blank row", "indent", "color", "divider"))

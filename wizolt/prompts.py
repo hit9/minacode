@@ -43,7 +43,7 @@ REVIEW:
 
 OUTPUT:
 - Write for narrow terminal scrollback: lead with the result, stay concise, and do not repeat the request, visible output, files, or diffs.
-- Use light GFM with one blank line between blocks. Use bare workspace-relative `path:line` references, no clickable local links, banners, dense tables, emoji, or trailing offers.
+- Use light GFM with one blank line between blocks: short paragraphs, few headings, and lists only where they aid reading. Use bare workspace-relative `path:line` references, no clickable local links, banners, dense tables, emoji, or trailing offers.
 - Name changed files and checks run or skipped when relevant.
 
 LANGUAGE:
