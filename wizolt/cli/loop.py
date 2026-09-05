@@ -739,7 +739,6 @@ Full documentation: https://wizolt.readthedocs.io
                     for message in turn.messages:
                         tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results, dry_run=True)
                 self.emit(f"… {hidden} earlier turn{'s' if hidden > 1 else ''} not redrawn (still in context)")
-                # The notice is its own paragraph, like the blank line between turns.
                 self.emit("")
                 turns = turns[hidden:]
             for i, turn in enumerate(turns):
@@ -790,8 +789,7 @@ Full documentation: https://wizolt.readthedocs.io
             # The follow-up marker is model-facing context, part of history because it was sent.
             # The scrollback shows what the user typed, exactly as it looked when they typed it.
             self.ui.emit_answer(content.removeprefix(LIVE_FOLLOWUP_PREFIX.strip()).lstrip(), role=role, rule=False)
-            # A replayed turn opens exactly as the live one does: the message itself is the
-            # boundary, and `user_turn_rule` restarts the count and the rule distance behind it.
+            # Replay the same opening separator used by a live turn.
             self.user_turn_rule()
         return tool_record_index
 
@@ -1225,19 +1223,9 @@ Full documentation: https://wizolt.readthedocs.io
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
     def user_turn_rule(self) -> None:
-        """Open the turn: mark the boundary, but draw nothing.
-
-        The user's own message is the boundary. It arrives in its own color, under its own blank
-        row, and it is the thing the reader just typed -- a rule drawn immediately beneath it
-        separates a message from a turn that has not produced anything yet, which is a seam with
-        nothing on either side of it. The turn's rules come later, where they part one stretch of
-        work from the next, and the turn-end rule closes it.
-
-        The bookkeeping still happens here: the silent-batch count restarts, and the distance to the
-        next rule is measured from the message rather than from whatever the last turn left behind.
-        """
+        """Open a live or restored turn with one separator below the user's message."""
         self._silent_batches = 0
-        self.ui.rows_since_rule = 0
+        self.ui.emit_phase_rule()
 
     def tool_batch_output(self, silent: bool) -> None:
         """Close a run of tool calls that has gone on long enough without the agent saying

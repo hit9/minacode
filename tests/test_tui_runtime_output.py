@@ -1,13 +1,11 @@
 """tui runtime output (split from tests/test_tui_runtime.py)."""
 
 import asyncio
-import threading
 from types import SimpleNamespace
 
 from model_harness import async_create
 from prompt_toolkit.formatted_text import fragment_list_to_text
-from test_tui_runtime import TextRecordingOutput
-from tui_harness import loop, run_interactive_tui, session, wait_until
+from tui_harness import loop, session
 
 from wizolt.base import (
     MalformedToolCallError,
@@ -17,7 +15,6 @@ from wizolt.base import (
 from wizolt.cli import CommandLoop, TuiRuntime
 from wizolt.config import ProviderConfig
 from wizolt.engine import Agent
-from wizolt.tools import CodeIndex
 from wizolt.tui import TuiApp
 
 
@@ -44,7 +41,7 @@ async def _not_a_command(_text):
     return False, False
 
 
-async def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monkeypatch):
+async def test_tui_runtime_does_not_emit_a_stray_blank_before_working_without_color(tmp_path, monkeypatch):
     output = []
     scenario_session = session(tmp_path)
     command_loop = CommandLoop(
@@ -62,7 +59,7 @@ async def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path
     assert not await runtime.dispatch("answer me")
     await runtime.run_agent_turn("answer me")
 
-    assert output[:3] == ["\n• answer me", "", "set_running:working"]
+    assert output[:2] == ["\n• answer me", "set_running:working"]
 
 
 async def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, monkeypatch):

@@ -1,4 +1,5 @@
 """emit and stream (split from tests/test_ui_render.py)."""
+
 import os
 import shutil
 import sys
@@ -28,6 +29,7 @@ def test_emit_turn_end_non_color_uses_elapsed_since_format():
 
     # The footer reuses the divider's `elapsed_since` format: no leading `0m`, seconds zero-padded.
     assert emitted == ["done in 5s", "done in 1m05s"]
+
 
 def test_emit_turn_end_renders_a_left_aligned_rule_under_a_blank_line(monkeypatch):
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
@@ -61,6 +63,7 @@ def test_emit_turn_end_does_not_add_a_gap_to_one_that_is_already_there(monkeypat
     text = "".join(fragment for _, fragment in emitted)
     assert "\n\n\n" not in text
 
+
 def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
     monkeypatch.setattr(Theme, "_mode", "dark")
     expected = UiPrinter.user_log_style()
@@ -72,6 +75,7 @@ def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
     command_loop.session.enqueue_user_input("queued message")
     sent, waiting = command_loop.view.followup_fragments()
     assert any(style == expected and "queued message" in text for style, text in [*sent, *waiting])
+
 
 def test_activity_blank_line_separates_flushed_followup_from_the_stream(tmp_path):
     command_loop = loop(tmp_path)
@@ -89,6 +93,7 @@ def test_activity_blank_line_separates_flushed_followup_from_the_stream(tmp_path
     assert lines[echo + 2]
     assert "streamed reply line" in text
 
+
 def test_activity_leaves_no_hanging_blank_row_when_nothing_streams(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.enqueue_user_input("queued message")
@@ -103,6 +108,7 @@ def test_activity_leaves_no_hanging_blank_row_when_nothing_streams(tmp_path):
     assert lines[echo + 2]
     assert lines[-1]  # the divider closes the region; nothing streams below it
 
+
 @pytest.mark.parametrize("width", [20, 40, 80])
 def test_styled_wrapping_respects_terminal_width_for_unicode(width):
     prefix = [("", "  Read  ")]
@@ -113,6 +119,7 @@ def test_styled_wrapping_respects_terminal_width_for_unicode(width):
     assert "".join(text for _, text in rows[0]).startswith("  Read  ")
     assert all(sum(get_cwidth(text) for _, text in row) <= width for row in rows)
     assert "".join(text for row in rows for _, text in row).replace("  Read  ", "", 1).replace("        ", "") == content_text
+
 
 @pytest.mark.parametrize("mode", ["dark", "light"])
 def test_every_lexer_token_maps_to_a_style_in_both_themes(mode):
@@ -136,6 +143,7 @@ def test_every_lexer_token_maps_to_a_style_in_both_themes(mode):
                 assert isinstance(style, str) and style
     finally:
         Theme.set_mode(previous)
+
 
 def test_highlighting_inherits_from_the_token_hierarchy_rather_than_giving_up():
     """Not crashing is the floor. A token the style never named still has ancestors that carry a
@@ -168,6 +176,7 @@ def test_highlighting_inherits_from_the_token_hierarchy_rather_than_giving_up():
     finally:
         Theme.set_mode(previous)
 
+
 def test_a_lexer_that_fails_mid_stream_costs_the_color_not_the_render():
     """get_tokens is a generator, so a broken lexer raises while the caller pulls from it, not
     when it is called. Highlighting is decoration; it must never take down the edit it previews."""
@@ -179,6 +188,7 @@ def test_a_lexer_that_fails_mid_stream_costs_the_color_not_the_render():
 
     assert UiPrinter._tokenized_lines(ExplodingLexer(), "anything") is None
 
+
 def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
     preview = BashLivePreview()
     preview.active = True
@@ -187,6 +197,7 @@ def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((20, 24)))
         assert all(get_cwidth("".join(text for _, text in row)) < 20 for row in preview.frame_rows())
+
 
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):
     now = [100.0]
@@ -206,6 +217,7 @@ def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, m
     assert recording_output.events[0] == ("write", f"\x1b[{first_rows}A")
     assert sum(event == "erase" for event, _ in recording_output.events) == preview.rendered_lines
     assert recording_output.events[-1] == ("flush", "")
+
 
 def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_output):
     now = [100.0]
@@ -258,9 +270,7 @@ def rendered_answer(text, width, *, mode="dark", monkeypatch=None, **kwargs):
 
 @pytest.mark.parametrize("width", [80, 120])
 def test_markdown_blocks_are_parted_by_a_stable_gap(width):
-    """A document has one rhythm: a blank row between blocks, two above a heading because a heading
-    opens a section, and nothing else. No construct arrives glued to the one above it, and none
-    carries an outer margin of its own -- the gap above a block belongs to the printer."""
+    """A document has one rhythm: exactly one blank row between blocks."""
     rows = rendered_answer(MARKDOWN_SAMPLE, width, role="assistant", rule=False)
 
     for opener in ("def f():", "▌ quoted", "• first", "Closing."):
@@ -268,7 +278,7 @@ def test_markdown_blocks_are_parted_by_a_stable_gap(width):
         assert rows[index - 1].strip() == "" and rows[index - 2].strip(), (opener, rows[index - 3 : index + 1])
     for heading in ("Title", "Section"):
         index = next(i for i, row in enumerate(rows) if heading in row)
-        assert index == 0 or (rows[index - 1].strip() == "" and rows[index - 2].strip() == ""), heading
+        assert index == 0 or (rows[index - 1].strip() == "" and rows[index - 2].strip()), heading
     assert rows[0].strip() and rows[-2].strip()  # no leading or trailing gap of its own
 
 
@@ -318,10 +328,8 @@ def test_blank_rows_at_the_end_of_a_block_are_not_doubled_by_the_next_one():
     assert ui.trailing_blanks == 0
 
 
-def test_a_list_is_tight_until_an_item_wraps():
-    """List spacing follows the list. Single-line items read as one object and stay together; once
-    an item wraps, the bullets are no longer enough to show where an item ends, so the items are
-    parted."""
+def test_list_items_stay_compact_when_one_wraps():
+    """Wrapped items do not make the whole list acquire empty rows."""
     tight = rendered_answer("- one\n- two\n- three\n", 92, role="assistant", rule=False)
     assert not any(row.strip() == "" for row in tight[:-1])
 
@@ -329,5 +337,4 @@ def test_a_list_is_tight_until_an_item_wraps():
     spaced = rendered_answer(f"- {long_item}\n- short\n", 92, role="assistant", rule=False)
     bullets = [index for index, row in enumerate(spaced) if row.lstrip().startswith("• ")]
     assert len(bullets) == 2
-    assert spaced[bullets[1] - 1].strip() == ""
-
+    assert spaced[bullets[1] - 1].strip()

@@ -28,10 +28,11 @@ from wizolt.tui import TuiApp
 
 def test_both_appearances_define_every_role_in_a_shape_the_adapters_accept():
     """Light and dark are the same vocabulary, and every entry is a color both frameworks read."""
-    for palette in (render_module.DARK_PALETTE, render_module.LIGHT_PALETTE):
-        for role in render_module.THEME_ROLES:
-            value = palette.color(role)
-            terminal = value == render_module.TERMINAL_DEFAULT or value in Theme.RICH_COLOR_NAMES
+    assert Theme.DARK.keys() == Theme.LIGHT.keys()
+    for palette in (Theme.DARK, Theme.LIGHT):
+        for role in Theme.ROLES:
+            value = palette[role]
+            terminal = value == "default" or value in Theme.RICH_COLOR_NAMES
             assert terminal or re.fullmatch(r"#[0-9a-f]{6}", value), (role, value)
 
 
@@ -40,22 +41,57 @@ def test_unknown_roles_are_rejected_rather_than_silently_uncolored():
         Theme.color("accent-ish")
 
 
-def test_every_role_resolves_as_a_prompt_toolkit_class_and_a_rich_style(monkeypatch):
+def test_theme_adapters_publish_only_the_styles_the_renderers_reference(monkeypatch):
     for mode in ("dark", "light"):
         monkeypatch.setattr(Theme, "_mode", mode)
-        style = Style.from_dict(Theme.tui_styles())
+        tui_styles = Theme.tui_styles()
+        assert set(tui_styles) == {"text", "muted", "subtle", "accent", "rule", "success", "error"}
+        style = Style.from_dict(tui_styles)
         console = Console(theme=Theme.rich_theme())
-        for role in render_module.THEME_ROLES:
-            attrs = style.get_attrs_for_style_str(Theme.tui_class(role))
+        for role in tui_styles:
+            attrs = style.get_attrs_for_style_str("class:" + role)
             # "default" is the terminal's own foreground, which prompt-toolkit spells as None.
-            assert attrs.color is not None or Theme.color(role) == render_module.TERMINAL_DEFAULT
+            assert attrs.color is not None or Theme.color(role) == "default"
+        for role in ("user", "error", "muted", "rule"):
             console.get_style(f"wizolt.{role.replace('_', '.')}")  # raises for a name Rich cannot resolve
-        for name in ("wizolt.role.user", "wizolt.role.assistant"):
-            assert console.get_style(name).bold
 
 
 def test_status_roles_have_palette_entries():
-    assert all(f"status_{role}" in render_module.THEME_ROLES for role in StatusBar.ROLE_KEYS)
+    assert all(f"status_{role}" in Theme.ROLES for role in StatusBar.ROLE_KEYS)
+
+
+@pytest.mark.parametrize("mode,rule", [("dark", "4b5563"), ("light", "9ca3af")])
+def test_theme_does_not_restyle_frozen_interaction_regions(tmp_path, monkeypatch, mode, rule):
+    """Theme work must not repaint selectors, input hints, thinking, or the divider."""
+    monkeypatch.setattr(Theme, "_mode", mode)
+    style = loop(tmp_path).view.style()
+
+    selected = style.get_attrs_for_style_str("class:choice.selected")
+    assert selected.reverse and selected.color == selected.bgcolor == ""
+    hint = style.get_attrs_for_style_str("class:quickhint")
+    focused_hint = style.get_attrs_for_style_str("class:quickhint.focused")
+    assert hint.color == focused_hint.color == "ansicyan"
+    assert focused_hint.reverse and focused_hint.bgcolor == ""
+    approval = style.get_attrs_for_style_str("class:approval.action.focused")
+    assert approval.color == "ansiyellow" and approval.reverse and approval.bgcolor == ""
+
+    completion = style.get_attrs_for_style_str("class:completion-menu.completion.current")
+    assert completion.color == "ansicyan" and completion.bgcolor == "default"
+    thinking = style.get_attrs_for_style_str("class:muted")
+    assert thinking.color == "ansibrightblack"
+    working = style.get_attrs_for_style_str("class:divider.working")
+    assert working.color == "ansimagenta" and working.bold
+    assert style.get_attrs_for_style_str("class:queue.rule").color == rule
+
+
+def test_markdown_uses_one_inline_accent_without_coloring_every_span(monkeypatch):
+    monkeypatch.setattr(Theme, "_mode", "dark")
+    console = render_module.markdown_console(80)
+
+    assert console.get_style("markdown.code").color is not None
+    assert console.get_style("markdown.link").underline and console.get_style("markdown.link").color is None
+    assert console.get_style("markdown.strong").bold and console.get_style("markdown.strong").color is None
+    assert console.get_style("markdown.em").italic and console.get_style("markdown.em").color is None
 
 
 def test_diff_colors_survive_the_palette_reorganization(monkeypatch):
@@ -453,18 +489,18 @@ def test_the_roles_that_carry_text_are_the_terminal_own_colors():
     syntax tones that pair with a Pygments style, the status footer, and a gradient's endpoints.
     """
     fixed = {"user", "syntax_default", "divider_glow", "divider_rule"}
-    for palette in (render_module.DARK_PALETTE, render_module.LIGHT_PALETTE):
-        for role in render_module.THEME_ROLES:
+    for palette in (Theme.DARK, Theme.LIGHT):
+        for role in Theme.ROLES:
             if role in fixed or role.startswith(("status_", "syntax_")):
                 continue
-            value = palette.color(role)
-            assert value == render_module.TERMINAL_DEFAULT or value in Theme.RICH_COLOR_NAMES, (role, value)
+            value = palette[role]
+            assert value == "default" or value in Theme.RICH_COLOR_NAMES, (role, value)
 
 
 def test_the_two_appearances_agree_wherever_the_terminal_decides():
     """A role the terminal resolves needs no light/dark branch, and having one would mean the
     palette was overriding the reader's scheme in one appearance and not the other."""
-    for role in render_module.THEME_ROLES:
-        dark, light = render_module.DARK_PALETTE.color(role), render_module.LIGHT_PALETTE.color(role)
-        if dark in Theme.RICH_COLOR_NAMES or dark == render_module.TERMINAL_DEFAULT:
+    for role in Theme.ROLES:
+        dark, light = Theme.DARK[role], Theme.LIGHT[role]
+        if dark in Theme.RICH_COLOR_NAMES or dark == "default":
             assert dark == light, role

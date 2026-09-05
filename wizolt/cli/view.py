@@ -531,13 +531,6 @@ class View:
         palette, never in a branch here.
         """
         role = Theme.fg
-        # A selected row is a band, and it has to be unmistakable: white on a deep blue, the
-        # convention every list widget in a terminal has used for decades. One of the few fixed
-        # tones in the UI, because this one is a pair -- the terminal's own blue is a mid tone in
-        # some schemes and a pale one in others, and white on a pale blue is exactly the selection
-        # a reader cannot find. `noreverse` because a row can arrive inside an already-reversed
-        # region, and the band has to win.
-        selected = "noreverse fg:#ffffff bg:#008ec4"
         return Style.from_dict(
             {
                 **Theme.tui_styles(),
@@ -546,9 +539,8 @@ class View:
                 "queue.rule": role("divider_rule"),
                 **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("divider_glow", "divider_rule", self.GLOW_STEPS))},
                 "queue.hint": role("muted"),
-                # A hint is help, not content: grey, like every other piece of supporting text.
-                "quickhint": role("muted"),
-                "quickhint.focused": selected,
+                "quickhint": role("accent"),
+                "quickhint.focused": "reverse",
                 "quickhint.sep": role("muted"),
                 "image.attachment": role("accent", "bold"),
                 "input.error": role("error"),
@@ -557,10 +549,10 @@ class View:
                 "approval": role("warning"),
                 "approval.wait": role("accent_secondary"),
                 "approval.action": role("warning"),
-                "approval.action.focused": selected,
+                "approval.action.focused": role("warning", "reverse"),
                 "approval.action.dim": role("muted"),
                 "choice.title": role("accent", "bold"),
-                "choice.selected": selected,
+                "choice.selected": "reverse",
                 "choice.disabled": role("muted"),
                 "choice.preview": role("success", "italic"),
                 "choice.explanation": role("accent_secondary"),
@@ -585,10 +577,9 @@ class View:
                 "tab.inactive": role("accent"),
                 "completion-menu": "noreverse bg:default",
                 "completion-menu.completion": f"noreverse bg:default {role('text')}",
-                # The completion menu is a list like any other, so its current row takes the band.
-                "completion-menu.completion.current": f"{selected} bold",
+                "completion-menu.completion.current": f"noreverse bg:default {role('accent')} bold",
                 "completion-menu.meta.completion": f"noreverse bg:default {role('muted')}",
-                "completion-menu.meta.completion.current": selected,
+                "completion-menu.meta.completion.current": f"noreverse bg:default {role('accent')}",
                 "bottom-toolbar": "noreverse bg:default fg:default",
                 "bottom-toolbar.text": f"noreverse bg:default {role('text')}",
                 "search-toolbar": "noreverse bg:default fg:default",

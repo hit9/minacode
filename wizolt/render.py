@@ -11,8 +11,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.application import get_app_or_none
@@ -21,10 +20,9 @@ from prompt_toolkit.output import create_output
 from prompt_toolkit.utils import get_cwidth
 from rich import box
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.markdown import CodeBlock, Heading, ListElement, ListItem, Markdown, MarkdownElement, TableElement
+from rich.markdown import CodeBlock, Heading, Markdown, MarkdownElement, TableElement
 from rich.padding import Padding
 from rich.rule import Rule
-from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text as RichText
@@ -97,176 +95,72 @@ def search_sources_footer(sources: list[Json]) -> str:
     return "\n".join(["", "**Sources**", "", *lines])
 
 
-TERMINAL_DEFAULT = "default"
-
-
-@dataclass(frozen=True)
-class ThemePalette:
-    """One appearance's colors, named by what they mean rather than by where they are drawn.
-
-    This is the single owner of color in the UI. A component asks for the meaning it is expressing
-    (`muted`, `error`, `status_provider`) and an adapter turns that into Rich, prompt-toolkit, or
-    Pygments syntax; no component picks a color of its own, and no framework spelling appears here.
-
-    A value is either one of the terminal's own colors (`default`, `ansigreen`, `ansibrightblack`)
-    or a `#rrggbb` tone. The first kind is the default and the important one: the reader chose a
-    scheme for their terminal, and a UI painted in it inherits their contrast, their brightness, and
-    their taste. A fixed hex freezes one designer's guess into every terminal it ever runs in, so it
-    is reserved for the few places that need a specific tone rather than a role -- an identity color,
-    the syntax tones that pair with a Pygments style, the status footer, a gradient's endpoints.
-
-    Layout is deliberately absent. Spacing, indentation, and rules are decisions about structure,
-    not about color, and they belong to the renderers.
-    """
-
-    appearance: Literal["light", "dark"]
-
-    # Text hierarchy: body, supporting detail, and the tones structure takes.
-    text: str
-    muted: str
-    subtle: str
-    # One accent carries attention; the second is the model's own voice, and `info` marks what the
-    # runtime did on its own. Everything else is state (`success`/`warning`/`error`) or identity
-    # (`user`, `tool`).
-    accent: str
-    accent_secondary: str
-    info: str
-    user: str
-    tool: str
-    success: str
-    warning: str
-    error: str
-    rule: str
-
-    # Lightweight highlighting for tool arguments, which never reach a Pygments lexer.
-    syntax_assign: str
-    syntax_string: str
-    syntax_number: str
-    syntax_ident: str
-    syntax_builtin: str
-    # The Pygments style's own body color. A token painted in it is painted in no color at all, so
-    # code inherits the terminal's foreground instead of a near-match the theme cannot control.
-    syntax_default: str
-
-    # The status row reads as a quiet footer, so its plain tone stays below full-strength text and
-    # each field keeps just enough color to be told apart at a glance.
-    status_base: str
-    status_provider: str
-    status_reason: str
-    status_mcp: str
-    status_context: str
-    status_index: str
-    status_yolo: str
-    status_worker: str
-
-    # The working divider's comet fades from one of these to the other, and the live spark breathes
-    # around the first. A gradient needs channels to interpolate, which is the one thing a terminal
-    # color name cannot give, so these two stay hex.
-    divider_glow: str
-    divider_rule: str
-
-    pygments_style: str
-
-    def color(self, role: str) -> str:
-        if role not in THEME_ROLES:
-            raise KeyError(f"unknown theme role: {role}")
-        return getattr(self, role)
-
-
-# Every semantic role, in declaration order. `appearance` and `pygments_style` are not colors and
-# are excluded, so an adapter can walk this list and know each entry renders as one.
-THEME_ROLES: tuple[str, ...] = tuple(field.name for field in fields(ThemePalette) if field.name not in {"appearance", "pygments_style"})
-
-
-# The roles that describe text take the terminal's own colors, so the interface is drawn in the
-# scheme the reader already chose: their grey is the grey, their green is the green, and the whole
-# UI has their contrast rather than a designer's. Light and dark therefore agree on most of this
-# table -- the terminal resolves those names differently on its own -- and the two appearances
-# differ only where a fixed tone is unavoidable.
-DARK_PALETTE = ThemePalette(
-    appearance="dark",
-    text=TERMINAL_DEFAULT,
-    # Supporting detail, and the structure under it. The terminal's dim grey, which is what a
-    # terminal UI has always used to say "this is not the point".
-    muted="ansibrightblack",
-    subtle="ansibrightblack",
-    accent="ansicyan",
-    # The model's own voice: interim narration, thinking, the working divider.
-    accent_secondary="ansimagenta",
-    # What the runtime did on its own, rather than what the model asked for.
-    info="ansiblue",
-    # An identity, not a role: the desert tone the user's own lines have always had.
-    user="#e0a96d",
-    tool="ansigreen",
-    success="ansigreen",
-    warning="ansiyellow",
-    error="ansired",
-    rule="ansibrightblack",
-    # Tuned against the Pygments style below, which is where tool arguments borrow their look from.
-    syntax_assign="#79c0ff",
-    syntax_string="#a5d6ff",
-    syntax_number="#d2a8ff",
-    syntax_ident="#a5d6ff",
-    syntax_builtin="#79c0ff",
-    # Must stay the Pygments style's own body color: a token painted in it is painted in no color
-    # at all, so code inherits the terminal's foreground instead of a near-match.
-    syntax_default="#e6edf3",
-    # The status row sits under the conversation and should read as a quiet footer, not compete
-    # with it, so its plain tone stays below full white and each field keeps just enough color to
-    # be told apart at a glance.
-    status_base="#cbd5e1",
-    status_provider="#60a5fa",
-    status_reason="#a5b4fc",
-    status_mcp="#93c5fd",
-    status_context="#facc15",
-    status_index="#94a3b8",
-    status_yolo="#c084fc",
-    status_worker="#fbbf24",
-    divider_glow="#67e8f9",
-    divider_rule="#4b5563",
-    pygments_style="github-dark",
-)
-
-LIGHT_PALETTE = ThemePalette(
-    appearance="light",
-    text=TERMINAL_DEFAULT,
-    muted="ansibrightblack",
-    subtle="ansibrightblack",
-    accent="ansicyan",
-    accent_secondary="ansimagenta",
-    info="ansiblue",
-    user="#9a5b2e",
-    tool="ansigreen",
-    success="ansigreen",
-    warning="ansiyellow",
-    error="ansired",
-    rule="ansibrightblack",
-    syntax_assign="#005cc5",
-    syntax_string="#032f62",
-    syntax_number="#6f42c1",
-    syntax_ident="#032f62",
-    syntax_builtin="#005cc5",
-    syntax_default="#24292e",
-    status_base="#4b5563",
-    status_provider="#1d4ed8",
-    status_reason="#5b21b6",
-    status_mcp="#1e40af",
-    status_context="#a16207",
-    status_index="#475569",
-    status_yolo="#7e22ce",
-    status_worker="#b45309",
-    divider_glow="#0e7490",
-    divider_rule="#9ca3af",
-    pygments_style="default",
-)
-
-
 class Theme:
-    """The active palette, and the adapters that speak it to Rich, prompt-toolkit, and Pygments.
+    """The two semantic palettes and their small Rich/prompt-toolkit adapters."""
 
-    The palettes answer "what color is this meaning"; the adapters answer "how does this framework
-    spell a color". Nothing else in the codebase does either.
-    """
+    DARK: ClassVar[dict[str, str]] = {
+        "text": "default",
+        "muted": "ansibrightblack",
+        "subtle": "ansibrightblack",
+        "accent": "ansicyan",
+        "accent_secondary": "ansimagenta",
+        "info": "ansiblue",
+        "user": "#e0a96d",
+        "tool": "ansigreen",
+        "success": "ansigreen",
+        "warning": "ansiyellow",
+        "error": "ansired",
+        "rule": "ansibrightblack",
+        "syntax_assign": "#79c0ff",
+        "syntax_string": "#a5d6ff",
+        "syntax_number": "#d2a8ff",
+        "syntax_ident": "#a5d6ff",
+        "syntax_builtin": "#79c0ff",
+        "syntax_default": "#e6edf3",
+        "status_base": "#cbd5e1",
+        "status_provider": "#60a5fa",
+        "status_reason": "#a5b4fc",
+        "status_mcp": "#93c5fd",
+        "status_context": "#facc15",
+        "status_index": "#94a3b8",
+        "status_yolo": "#c084fc",
+        "status_worker": "#fbbf24",
+        "divider_glow": "#67e8f9",
+        "divider_rule": "#4b5563",
+        "pygments": "github-dark",
+    }
+    LIGHT: ClassVar[dict[str, str]] = {
+        "text": "default",
+        "muted": "ansibrightblack",
+        "subtle": "ansibrightblack",
+        "accent": "ansicyan",
+        "accent_secondary": "ansimagenta",
+        "info": "ansiblue",
+        "user": "#9a5b2e",
+        "tool": "ansigreen",
+        "success": "ansigreen",
+        "warning": "ansiyellow",
+        "error": "ansired",
+        "rule": "ansibrightblack",
+        "syntax_assign": "#005cc5",
+        "syntax_string": "#032f62",
+        "syntax_number": "#6f42c1",
+        "syntax_ident": "#032f62",
+        "syntax_builtin": "#005cc5",
+        "syntax_default": "#24292e",
+        "status_base": "#4b5563",
+        "status_provider": "#1d4ed8",
+        "status_reason": "#5b21b6",
+        "status_mcp": "#1e40af",
+        "status_context": "#a16207",
+        "status_index": "#475569",
+        "status_yolo": "#7e22ce",
+        "status_worker": "#b45309",
+        "divider_glow": "#0e7490",
+        "divider_rule": "#9ca3af",
+        "pygments": "default",
+    }
+    ROLES: ClassVar[tuple[str, ...]] = tuple(key for key in DARK if key != "pygments")
 
     # Diff colors are pinned, not derived. They were tuned against real diffs in both appearances
     # and a palette reshuffle must never move them, so they stay their own fixed mapping in the
@@ -292,8 +186,8 @@ class Theme:
         cls._mode = "light" if mode == "light" else "dark"
 
     @classmethod
-    def palette(cls) -> ThemePalette:
-        return LIGHT_PALETTE if cls._mode == "light" else DARK_PALETTE
+    def palette(cls) -> dict[str, str]:
+        return cls.LIGHT if cls._mode == "light" else cls.DARK
 
     # prompt-toolkit spells a terminal color `ansibrightblack`; Rich spells the same one
     # `bright_black`. The palette speaks prompt-toolkit's dialect, since that is what most of the UI
@@ -307,7 +201,7 @@ class Theme:
     @classmethod
     def color(cls, role: str) -> str:
         """The active palette's color for one semantic role: a terminal color name or `#rrggbb`."""
-        return cls.palette().color(role)
+        return cls.palette()[role]
 
     @classmethod
     def rich_color(cls, role: str) -> str:
@@ -329,18 +223,9 @@ class Theme:
         return " ".join((f"fg:{cls.color(role)}", *attributes))
 
     @classmethod
-    def tui_class(cls, role: str) -> str:
-        """The prompt-toolkit class name carrying one role, e.g. `class:status.provider`."""
-        return "class:" + role.replace("_", ".")
-
-    @classmethod
     def tui_styles(cls) -> dict[str, str]:
-        """Every role as a prompt-toolkit class, for the view to compose its own map on top of.
-
-        Roles are the base vocabulary, so a view class that is simply "this role" can point at it
-        (`"choice.tool": "class:tool"`) and the light/dark difference stays here.
-        """
-        return {role.replace("_", "."): f"fg:{cls.color(role)}" for role in THEME_ROLES}
+        """Semantic classes referenced directly by prompt-toolkit fragments."""
+        return {role: f"fg:{cls.color(role)}" for role in ("text", "muted", "subtle", "accent", "rule", "success", "error")}
 
     @classmethod
     def rich_theme(cls) -> RichTheme:
@@ -349,50 +234,29 @@ class Theme:
         Rich resolves an unknown style name by raising, so a console that renders our markup must
         be built with this theme; `markdown_console` is the only place that happens.
         """
-        styles = {f"wizolt.{role.replace('_', '.')}": cls.rich_color(role) for role in THEME_ROLES}
-        # Rich resolves a style string either as a theme name or as attributes, never as both, so
-        # anything wearing a weight on top of a role is named here rather than spelled at the call.
-        styles["wizolt.role.user"] = f"bold {cls.rich_color('accent')}"
-        styles["wizolt.role.assistant"] = f"bold {cls.rich_color('accent_secondary')}"
+        styles = {f"wizolt.{role}": cls.rich_color(role) for role in ("user", "error", "muted", "rule")}
         return RichTheme({**styles, **cls.markdown_styles()}, inherit=True)
 
     @classmethod
     def markdown_styles(cls) -> dict[str, str]:
-        """Rich's Markdown element styles, restated in the palette.
-
-        Rich's own defaults are a second color scheme: cyan inline code on a black band, magenta
-        headings and block quotes, blue links, a cyan table. Left alone they win every argument with
-        the palette and turn an answer into a page of blue and cyan.
-
-        The replacements spend colour exactly once, on inline code: it is the one thing in a
-        paragraph a reader has to pick out at a glance rather than read in sequence. Everything
-        else carries its role in weight -- headings step down bold, bold-dim, dim; markers and
-        table headings are bold; a link is underlined with its URL beside it in the supporting
-        tone; body text, list text, and table cells stay the terminal's own foreground.
-
-        A document is mostly words, and each hue in it is one more thing to sort before reading
-        can start. Structure is a shape, not a colour.
-        """
+        """Restrained Markdown styles: hierarchy comes from shape and weight, not color."""
         muted, subtle = cls.rich_color("muted"), cls.rich_color("subtle")
         return {
             "markdown.h1": "bold",
             "markdown.h2": "bold",
-            "markdown.h3": f"bold {muted}",
-            "markdown.h4": f"italic {muted}",
-            "markdown.h5": f"italic {muted}",
-            "markdown.h6": muted,
-            "markdown.h7": f"italic {muted}",
+            "markdown.h3": "bold",
+            "markdown.h4": "italic",
+            "markdown.h5": "italic",
+            "markdown.h6": "italic",
+            "markdown.h7": "italic",
             "markdown.paragraph": "none",
             "markdown.text": "none",
             "markdown.item": "none",
-            # The one colour a paragraph carries, and no background band behind it: a filled band is
-            # the loudest thing a theme can put on a terminal, and a second hue would make the
-            # sentence a mosaic. The terminal's own accent, so it agrees with the rest of the UI.
+            # Inline code is the one colored span in prose; links and emphasis use shape only.
             "markdown.code": cls.rich_color("accent"),
             "markdown.code_block": "none",
             "markdown.block_quote": muted,
             "markdown.hr": cls.rich_color("rule"),
-            # The marker is what makes a list a list, so it is set apart -- by weight, not by hue.
             "markdown.item.bullet": "bold",
             "markdown.item.number": "bold",
             "markdown.list": "none",
@@ -400,8 +264,6 @@ class Theme:
             "markdown.emph": "italic",
             "markdown.strong": "bold",
             "markdown.s": "strike",
-            # Underline rather than color: a sentence with three links in it should still read as a
-            # sentence. The URL follows in the supporting tone, since nothing here is clickable.
             "markdown.link": "underline",
             "markdown.link_url": muted,
             "markdown.table.border": subtle,
@@ -410,11 +272,7 @@ class Theme:
 
     @classmethod
     def ramp(cls, start_role: str, end_role: str, steps: int) -> list[str]:
-        """Interpolate `steps` hex colors from one role to another.
-
-        Used for gradients that need more shades than the palette names, so a moving highlight can
-        fade between two cells instead of snapping from one named color to the next.
-        """
+        """Interpolate `steps` hex colors from one role to another."""
         start, end = cls.rgb(cls.color(start_role)), cls.rgb(cls.color(end_role))
         span = max(1, steps - 1)
         return [cls.mix(start, end, index / span) for index in range(steps)]
@@ -448,7 +306,7 @@ class Theme:
     def pygments_style(cls) -> type[PygmentsStyle] | None:
         if pygments is None or get_style_by_name is None:
             return None
-        name = cls.palette().pygments_style
+        name = cls.palette()["pygments"]
         if name not in cls._pygments_cache:
             try:
                 cls._pygments_cache[name] = get_style_by_name(name)
@@ -458,22 +316,9 @@ class Theme:
 
 
 class _Heading(Heading):
-    """Headings that read as headings, not as banners.
-
-    Rich centers `h1`, which in a transcript reads as a title page rather than as the top of a
-    section: the text drifts away from the left edge every other line is on. Every level is left
-    aligned here, and the levels differ by weight and tone (see `Theme.markdown_styles`).
-    """
+    """Keep headings aligned with the transcript body."""
 
     LEVEL_ALIGN: ClassVar[dict[str, Any]] = dict.fromkeys(Heading.LEVEL_ALIGN, "left")
-
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        # A heading opens a section, so it gets more room above it than the single row that parts
-        # two paragraphs; one row below keeps it attached to the text it introduces. A document
-        # that opens on a heading does not start with a gap: `emit_answer` trims the outer rows,
-        # because what sits above a block is the printer's business, not the document's.
-        yield RichText("")
-        yield from super().__rich_console__(console, options)
 
 
 class _CodeBlock(CodeBlock):
@@ -512,65 +357,6 @@ class _Table(TableElement):
         yield table
 
 
-class _ListItem(ListItem):
-    """One list item, with a marker that can be seen.
-
-    Rich draws a bare number (`1 `) and leaves both markers in whatever the theme dims them to, so
-    a list reads as text that happens to be indented. The marker is the one thing that says "this
-    is a list": it takes the accent, and an ordered item keeps its period, which is what tells a
-    numbered list from a line that merely starts with a digit.
-    """
-
-    def render_bullet(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        lines = console.render_lines(self.elements, options.update(width=options.max_width - 3), style=self.style)
-        marker = Segment(" • ", console.get_style("markdown.item.bullet", default="none"))
-        padding = Segment(" " * 3)
-        for index, line in enumerate(lines):
-            yield padding if index else marker
-            yield from line
-            yield Segment("\n")
-
-    def render_number(self, console: Console, options: ConsoleOptions, number: int, last_number: int) -> RenderResult:
-        width = len(f"{last_number}.") + 2  # " 12. "
-        lines = console.render_lines(self.elements, options.update(width=options.max_width - width), style=self.style)
-        marker = Segment(f"{number}.".rjust(width - 1) + " ", console.get_style("markdown.item.number", default="none"))
-        padding = Segment(" " * width)
-        for index, line in enumerate(lines):
-            yield padding if index else marker
-            yield from line
-            yield Segment("\n")
-
-
-class _ListElement(ListElement):
-    """A list whose items are parted only when they need to be.
-
-    A list of one-line items reads as one object, and a blank row between each of them turns it
-    into a column of fragments. Once any item wraps, the opposite is true: without a gap the reader
-    cannot see where one item ends and the next begins, and the bullets stop being enough.
-
-    So the list decides for itself: tight while every item fits on a line, spaced once one does not.
-    """
-
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        start = 1 if self.list_start is None else self.list_start
-        # Both renderers yield Segments; the annotation is what lets the newline count below be a
-        # count of rendered rows rather than of whatever a renderable might be.
-        rendered: list[list[Segment]] = [
-            cast(
-                "list[Segment]",
-                list(item.render_bullet(console, options))
-                if self.list_type == "bullet_list_open"
-                else list(item.render_number(console, options, start + index, start + len(self.items))),
-            )
-            for index, item in enumerate(self.items)
-        ]
-        spaced = any(sum(segment.text.count("\n") for segment in item) > 1 for item in rendered)
-        for index, item in enumerate(rendered):
-            if spaced and index:
-                yield Segment("\n")
-            yield from item
-
-
 class WizoltMarkdown(Markdown):
     """The one Markdown renderable in the app, so every surface lays a document out the same way.
 
@@ -581,9 +367,6 @@ class WizoltMarkdown(Markdown):
     elements: ClassVar[dict[str, type[MarkdownElement]]] = {
         **Markdown.elements,
         "heading_open": _Heading,
-        "bullet_list_open": _ListElement,
-        "ordered_list_open": _ListElement,
-        "list_item_open": _ListItem,
         "fence": _CodeBlock,
         "code_block": _CodeBlock,
         "table_open": _Table,
@@ -593,7 +376,7 @@ class WizoltMarkdown(Markdown):
         # The theme's own Pygments style, so a fenced block is colored like the code the transcript
         # prints. `Theme.pygments_style` returning None means the name did not load; Rich falls back
         # to plain ANSI rather than raising on it.
-        style = Theme.palette().pygments_style if Theme.pygments_style() is not None else "ansi_dark"
+        style = Theme.palette()["pygments"] if Theme.pygments_style() is not None else "ansi_dark"
         super().__init__(markup, code_theme=style, hyperlinks=False)
 
 
@@ -625,7 +408,6 @@ class UiPrinter:
     Color is decided once, from whether output is a real terminal.
     """
 
-    MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "wizolt.role.user", "assistant": "wizolt.role.assistant"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
     # How long scrollback emits wait before printing as one batch. Each print suspends the live
@@ -1088,26 +870,10 @@ class UiPrinter:
             console.print(Padding(content, (0, 0, 0, len(margin))))
         else:
             if role:
-                label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "wizolt.muted"))
+                label = RichText(role + ":", style="wizolt.muted")
                 console.print(Padding(label, (0, 0, 0, len(margin))))
             content = RichText(styled_text, style="wizolt.error") if error else WizoltMarkdown(styled_text)
             console.print(Padding(content, (0, 0, 0, len(margin))))
-
-    def emit_markdown(self, text: str) -> None:
-        # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
-        # while the TUI is running can interleave raw escapes with its renderer; capturing first and
-        # emitting as ANSI keeps all terminal output inside the shared application.
-        if not self.color:
-            self.emit(text)
-            return
-        console = markdown_console(shutil.get_terminal_size().columns)
-        with console.capture() as capture:
-            console.print(WizoltMarkdown(text))
-        cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
-        if self._batch_parts is not None:
-            self._batch_parts.append(ANSI(cleaned))
-            return
-        self._scrollback_print(ANSI(cleaned))
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:

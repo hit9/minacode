@@ -498,8 +498,8 @@ class AskViewState:
 
     @staticmethod
     def _preview_rows(markdown_text: str, panel_width: int) -> list[StyleAndTextTuples]:
-        """Render markdown to ANSI with Rich (same capture trick as UiPrinter.emit_markdown) and
-        split it into one (style, text) tuple list per line, styles carried across newlines.
+        """Render markdown to ANSI with Rich, split into physical rows, and carry styles across them.
+
         Preview snippets are ASCII layouts, diffs, and tables whose newlines are structural, so
         each source line gets a hard line break (Markdown folds in-paragraph newlines to spaces)."""
         hard_breaks = "\n".join(line.rstrip() + "  " for line in markdown_text.split("\n"))
