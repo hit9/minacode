@@ -23,9 +23,6 @@
 
 ### Fixed
 
-- Command selectors such as `/provider`, `/model`, and `/effort` now use the alternate screen,
-  so their temporary height cannot turn into a large blank region after a tmux resize. Ask and
-  approval interactions remain inline with their surrounding context.
 - The final resume command now appears as a green saved-session notice with one blank row above it.
 - Slash-command completion now narrows within the same input event, so rapidly typing `/p` and
   pressing Tab no longer closes, reopens, or resets the menu.
