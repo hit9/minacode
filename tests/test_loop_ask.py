@@ -268,10 +268,10 @@ async def test_interim_narration_closes_with_a_phase_rule_when_far_from_last_rul
     assert rules == [1]
 
 
-async def test_user_turn_opens_with_a_phase_rule(tmp_path):
-    """The turn's opening rule sits under the user's message and always draws: the user's
-    message is the top boundary of the turn, so every later rule measures its distance from it
-    rather than the first narration being special-cased."""
+async def test_a_user_message_opens_the_turn_without_drawing_a_rule(tmp_path):
+    """The message is the boundary; a rule under it would part a message from a turn that has not
+    produced anything yet. It still resets the distance, so the turn's first real rule measures
+    from the message rather than from whatever the previous turn left behind."""
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
@@ -279,7 +279,8 @@ async def test_user_turn_opens_with_a_phase_rule(tmp_path):
 
     loop.user_turn_rule()
 
-    assert rules == [1]
+    assert rules == []
+    assert loop.ui.rows_since_rule == 0
 
 
 async def test_user_turn_rule_restarts_the_silent_batch_count(tmp_path):
@@ -432,10 +433,10 @@ async def test_worker_interim_output_gets_the_same_phase_rule(tmp_path):
 
 
 async def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
-    """End to end through the engine: the turn opens with the user's rule, every interim
-    narration closes with one once it is far enough from the rule above, a run of silent tool
-    batches closes with one too, and the final answer takes none. Every tool batch reports its
-    end through the engine hook."""
+    """End to end through the engine: the turn opens on the user's message with no rule of its
+    own, every interim narration closes with one once it is far enough from the boundary above, a
+    run of silent tool batches closes with one too, and the final answer takes none. Every tool
+    batch reports its end through the engine hook."""
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(loop.ui.rows_since_rule)
@@ -464,21 +465,20 @@ async def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_pat
 
     loop.agent.model = FakeModel()
 
-    loop.user_turn_rule()  # the turn's opening rule, drawn under the user's message
+    loop.user_turn_rule()  # the turn opens on the user's message: distance reset, nothing drawn
     assert await loop.agent.run("x") == "改完了。"
 
-    assert len(rules) == 3  # user rule, the second narration's rule, the silent run's rule
-    assert rules[0] == 0  # the user's rule always draws; the first narration lands too close to it and is skipped
-    assert rules[1] >= loop.MIN_ROWS_BETWEEN_RULES  # the second narration's rule
-    assert rules[2] >= loop.MIN_ROWS_BETWEEN_RULES  # the silent run's rule
+    assert len(rules) == 2  # the second narration's rule and the silent run's; the first lands too close
+    assert rules[0] >= loop.MIN_ROWS_BETWEEN_RULES  # the second narration's rule
+    assert rules[1] >= loop.MIN_ROWS_BETWEEN_RULES  # the silent run's rule
     assert silences == [False, False, True, True, True, True]  # narration batches voiced, the rest silent
 
 
 async def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_path):
-    """A resumed session replays its turns with the same phase rules the live run drew: the
-    user's message opens each turn with a rule, interim narration closes with one once it is
-    far enough from the rule above, and a silent run of tool batches closes with the batch
-    rule -- even though the engine never runs again."""
+    """A resumed session replays its turns with the same phase rules the live run drew: the user's
+    message opens a turn without one, interim narration closes with one once it is far enough from
+    the boundary above, and a silent run of tool batches closes with the batch rule -- even though
+    the engine never runs again."""
     from wizolt.session import ToolResultRecord
 
     def rules_for(messages, records):
@@ -496,15 +496,16 @@ async def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_p
     tool_call = lambda i: {"id": f"c{i}", "type": "function", "function": {"name": "Bash", "arguments": json.dumps([f"printf {i}"])}}
     record = lambda: ToolResultRecord(key="tr.1", name="Bash", args=[["printf x"]], output="x")
 
-    # The user's message opens the turn with a rule even when nothing else draws.
+    # A question and its answer draw nothing: the message is the boundary, and one exchange is not
+    # long enough to need parting inside.
     rules = rules_for(
         [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "answer"}],
         [],
     )
-    assert len(rules) == 1
+    assert rules == []
 
-    # Interim narration opens with a rule once it is far enough from the rule above: the first
-    # narration lands too close to the user's rule to draw, the second one clears it. A list
+    # Interim narration opens with a rule once it is far enough from the boundary above: the first
+    # narration lands too close to the user's message to draw, the second one clears it. A list
     # keeps its per-item lines instead of being folded into one paragraph by markdown.
     rules = rules_for(
         [
@@ -519,8 +520,8 @@ async def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_p
         ],
         [record(), record()],
     )
-    assert len(rules) == 2
-    assert rules[1] >= CommandLoop.MIN_ROWS_BETWEEN_RULES  # the second narration's rule is far enough
+    assert len(rules) == 1
+    assert rules[0] >= CommandLoop.MIN_ROWS_BETWEEN_RULES  # the second narration's rule is far enough
 
     # A silent run of four tool batches closes with the batch rule.
     rules = rules_for(
@@ -531,5 +532,5 @@ async def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_p
         ],
         [record()] * 4,
     )
-    assert len(rules) == 2
-    assert rules[1] >= CommandLoop.MIN_ROWS_BETWEEN_RULES  # the silent run's rule is far enough
+    assert len(rules) == 1
+    assert rules[0] >= CommandLoop.MIN_ROWS_BETWEEN_RULES  # the silent run's rule is far enough
