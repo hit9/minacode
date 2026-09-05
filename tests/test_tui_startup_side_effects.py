@@ -31,6 +31,17 @@ def test_background_output_is_closed_before_final_output(tmp_path):
     assert emitted == ["final"]
 
 
+def test_scrollback_without_a_runtime_writer_uses_direct_output(tmp_path):
+    """Startup and teardown have no terminal queue to wait on, so their output stays synchronous."""
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    emitted = []
+
+    command_loop.write_scrollback(lambda: emitted.append("direct"))
+
+    assert emitted == ["direct"]
+
+
 def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     status_checks = []

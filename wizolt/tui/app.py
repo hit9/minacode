@@ -7,7 +7,6 @@ import contextlib
 import os
 import shlex
 import tempfile
-import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -506,41 +505,6 @@ class TuiApp:
                 callback()
 
         await run_in_terminal(render)
-
-    def write_to_scrollback_sync(self, callback: Callable[[], None]) -> None:
-        """Print above the live application and wait until the terminal has accepted it.
-
-        The blocking form, for callers that are not on the application's loop -- a modal viewer on
-        its own thread, a standalone application. The runtime uses the awaitable form through its
-        ordered writer instead.
-        """
-        app = self.app
-        if app is None or not app.is_running:
-            callback()
-            return
-        done = threading.Event()
-        errors: list[Exception] = []
-
-        async def write() -> None:
-            try:
-
-                def render() -> None:
-                    with create_app_session(output=app.output):
-                        callback()
-
-                await run_in_terminal(render)
-            except Exception as error:  # noqa: BLE001 - return terminal failures to the calling thread.
-                errors.append(error)
-            finally:
-                done.set()
-
-        def schedule_write() -> None:
-            app.create_background_task(write())
-
-        self._schedule(schedule_write)
-        done.wait()
-        if errors:
-            raise errors[0]
 
     def _schedule(self, callback: Callable[..., None], *args: Any) -> None:
         app = self.app

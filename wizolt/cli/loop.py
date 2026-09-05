@@ -1156,11 +1156,7 @@ Full documentation: https://wizolt.readthedocs.io
         if writer is not None:
             writer.submit(callback)
             return
-        tui = self.tui
-        if tui is not None:
-            tui.write_to_scrollback_sync(callback)
-        else:
-            callback()
+        callback()
 
     def set_approval_form(self, actions: list[tuple[str, str]]) -> bool:
         # The selectable action row exists only in the TUI. Headless and piped runs report False so
