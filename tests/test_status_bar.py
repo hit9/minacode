@@ -65,13 +65,13 @@ def test_status_bar_keeps_semantic_colors(tmp_path):
     fragments = StatusBar(s).fragments()
     by_text = {text: style for style, text in fragments}
 
-    assert by_text["[yolo] "] == Theme.style("status.yolo")
-    assert by_text["[yolo] "] != Theme.style("status.warn")
-    assert by_text["default/model"] == Theme.style("status.provider")
-    assert by_text[s.config.provider.reasoning] == Theme.style("status.reason")
-    assert by_text["mcp 0"] == Theme.style("status.mcp")
-    assert by_text["ctx 0%"] == Theme.style("status.ctx")
-    assert by_text["index"] == Theme.style("status.index")
+    assert by_text["[yolo] "] == Theme.fg("status_yolo")
+    assert by_text["[yolo] "] != Theme.fg("status_base")
+    assert by_text["default/model"] == Theme.fg("status_provider")
+    assert by_text[s.config.provider.reasoning] == Theme.fg("status_reason")
+    assert by_text["mcp 0"] == Theme.fg("status_mcp")
+    assert by_text["ctx 0%"] == Theme.fg("status_context")
+    assert by_text["index"] == Theme.fg("status_index")
 
 
 def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch):
@@ -90,8 +90,8 @@ def test_status_bar_clip_keeps_role_colors(tmp_path, monkeypatch):
         fragments = StatusBar(s).fragments()
     styles = {style for style, text in fragments if text.strip()}
     assert len(styles) > 1
-    assert Theme.style("status.provider") in styles
-    assert Theme.style("status.reason") in styles
+    assert Theme.fg("status_provider") in styles
+    assert Theme.fg("status_reason") in styles
     assert get_cwidth("".join(text for _, text in fragments)) < 30
 
 

@@ -287,7 +287,7 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
         red, green, blue = Theme.rgb(style.split()[0])
         return 0.299 * red + 0.587 * green + 0.114 * blue
 
-    accent = Theme.style(LiveSpark.ROLE)
+    accent = Theme.color(LiveSpark.ROLE)
     assert luma(ramp[0]) < luma(accent) < luma(ramp[-1])  # the breath brackets the accent
     assert luma(ramp[-1]) - luma(ramp[0]) >= luma(View.WAITING_PULSE_STYLES[-1]) - luma(View.WAITING_PULSE_STYLES[0])
     assert all(step.endswith(" bold") for step in ramp)  # the star is thin; bold carries its weight

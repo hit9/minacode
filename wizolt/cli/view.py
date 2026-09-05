@@ -520,13 +520,19 @@ class View:
         )
 
     def style(self) -> Style:
-        rule = Theme.style("divider.rule")
+        """The one prompt-toolkit style map, built on the palette's semantic classes.
+
+        `Theme.tui_styles()` supplies the vocabulary (`muted`, `accent`, `error`, …); the map below
+        names the view's own widgets in terms of it. Light and dark therefore differ only inside the
+        palette, never in a branch here.
+        """
         return Style.from_dict(
             {
+                **Theme.tui_styles(),
                 "prompt": "ansicyan bold",
                 # The comet fades into the rule it travels over, so both come from the palette.
-                "queue.rule": rule,
-                **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("divider.glow", "divider.rule", self.GLOW_STEPS))},
+                "queue.rule": Theme.fg("rule"),
+                **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("accent", "rule", self.GLOW_STEPS))},
                 "queue.hint": "ansibrightblack",
                 "quickhint": "ansicyan",
                 "quickhint.focused": "reverse",
@@ -544,9 +550,9 @@ class View:
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
                 "choice.preview": "ansigreen italic",
-                "choice.explanation": Theme.style("status.reason"),
+                "choice.explanation": Theme.fg("status_reason"),
                 # The preview's user messages take the same tone as the transcript's `• ` lines.
-                "choice.user": Theme.style("user.log"),
+                "choice.user": Theme.fg("user"),
                 # The Ctrl-O browser's rows, coloured as the transcript colours the same call: the
                 # tr.N key dim, the tool name in the tool green, the arguments plain. A row that is
                 # still running takes the working divider's magenta instead of the dim key.

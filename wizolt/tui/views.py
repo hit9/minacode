@@ -9,11 +9,10 @@ from typing import Any, ClassVar, TypeVar
 
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.utils import get_cwidth
-from rich.console import Console
 from rich.markdown import Markdown
 
 from wizolt.base import SELECTION_BACK, SELECTION_FREE_TEXT
-from wizolt.render import UiPrinter
+from wizolt.render import UiPrinter, markdown_console
 from wizolt.tools.ask import AskSpec
 
 TUI_MODAL_PENDING = object()
@@ -505,7 +504,7 @@ class AskViewState:
         Preview snippets are ASCII layouts, diffs, and tables whose newlines are structural, so
         each source line gets a hard line break (Markdown folds in-paragraph newlines to spaces)."""
         hard_breaks = "\n".join(line.rstrip() + "  " for line in markdown_text.split("\n"))
-        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(10, panel_width))
+        console = markdown_console(panel_width)
         with console.capture() as capture:
             console.print(Markdown(hard_breaks, hyperlinks=False))
         cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))

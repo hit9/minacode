@@ -17,11 +17,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.utils import get_cwidth
-from rich.console import Console
 from rich.markdown import Markdown
 
 from wizolt.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox, oneline
-from wizolt.render import UiPrinter
+from wizolt.render import UiPrinter, markdown_console
 from wizolt.session import BackgroundJob, ToolResultRecord
 from wizolt.tools import AskSpec, BashTool, DelegateTool, ToolScript, tooloutput
 from wizolt.tui import (
@@ -622,7 +621,7 @@ def _approval_text_view(
         to spaces, running them together into one block the approver has to re-read."""
         hard_breaks = "\n".join(line.rstrip() + "  " for line in text.split("\n"))
         content_width = max(1, width - 4)
-        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=content_width)
+        console = markdown_console(content_width)
         with console.capture() as capture:
             console.print(Markdown(hard_breaks, hyperlinks=False))
         cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))

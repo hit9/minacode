@@ -11,7 +11,8 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, ClassVar
+from dataclasses import dataclass, fields
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.application import get_app_or_none
@@ -23,6 +24,7 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.rule import Rule
 from rich.text import Text as RichText
+from rich.theme import Theme as RichTheme
 
 from wizolt.base import (
     MEMORY_PREFIXES,
@@ -91,61 +93,164 @@ def search_sources_footer(sources: list[Json]) -> str:
     return "\n".join(["", "**Sources**", "", *lines])
 
 
+TERMINAL_DEFAULT = "default"
+
+
+@dataclass(frozen=True)
+class ThemePalette:
+    """One appearance's colors, named by what they mean rather than by where they are drawn.
+
+    This is the single owner of color in the UI. A component asks for the meaning it is expressing
+    (`muted`, `error`, `status_provider`) and an adapter turns that into Rich, prompt-toolkit, or
+    Pygments syntax; no component picks a color of its own, and no framework spelling appears here.
+
+    Every value is a normalized `#rrggbb` string or the sentinel `default`, the terminal's own
+    foreground. Body text takes `default` on purpose: the reader already chose a comfortable text
+    color for their terminal, and the palette's job is to place everything else around it.
+
+    Layout is deliberately absent. Spacing, indentation, and rules are decisions about structure,
+    not about color, and they belong to the renderers.
+    """
+
+    appearance: Literal["light", "dark"]
+
+    # Text hierarchy: body, supporting detail, and the near-invisible tones separators take.
+    text: str
+    muted: str
+    subtle: str
+    # One or two accents carry attention. Everything else is state (`success`/`warning`/`error`)
+    # or identity (`user`, `tool`).
+    accent: str
+    accent_secondary: str
+    user: str
+    tool: str
+    success: str
+    warning: str
+    error: str
+    rule: str
+    selection_fg: str
+    selection_bg: str
+
+    # Lightweight highlighting for tool arguments, which never reach a Pygments lexer.
+    syntax_assign: str
+    syntax_string: str
+    syntax_number: str
+    syntax_ident: str
+    syntax_builtin: str
+    # The Pygments style's own body color. A token painted in it is painted in no color at all, so
+    # code inherits the terminal's foreground instead of a near-match the theme cannot control.
+    syntax_default: str
+
+    # The status row reads as a quiet footer, so its plain tone stays below full-strength text and
+    # each field keeps just enough color to be told apart at a glance.
+    status_base: str
+    status_provider: str
+    status_reason: str
+    status_mcp: str
+    status_context: str
+    status_index: str
+    status_yolo: str
+    status_worker: str
+
+    pygments_style: str
+
+    def color(self, role: str) -> str:
+        if role not in THEME_ROLES:
+            raise KeyError(f"unknown theme role: {role}")
+        return getattr(self, role)
+
+
+# Every semantic role, in declaration order. `appearance` and `pygments_style` are not colors and
+# are excluded, so an adapter can walk this list and know each entry renders as one.
+THEME_ROLES: tuple[str, ...] = tuple(field.name for field in fields(ThemePalette) if field.name not in {"appearance", "pygments_style"})
+
+
+DARK_PALETTE = ThemePalette(
+    appearance="dark",
+    text=TERMINAL_DEFAULT,
+    muted="#8b949e",
+    subtle="#4b5563",
+    accent="#67e8f9",
+    accent_secondary="#a5b4fc",
+    user="#e0a96d",
+    tool="#3fb950",
+    success="#3fb950",
+    warning="#d29922",
+    error="#fb7185",
+    rule="#4b5563",
+    selection_fg="#0d1117",
+    selection_bg="#67e8f9",
+    syntax_assign="#79c0ff",
+    syntax_string="#a5d6ff",
+    syntax_number="#d2a8ff",
+    syntax_ident="#a5d6ff",
+    syntax_builtin="#79c0ff",
+    syntax_default="#e6edf3",
+    status_base="#cbd5e1",
+    status_provider="#60a5fa",
+    status_reason="#a5b4fc",
+    status_mcp="#93c5fd",
+    status_context="#facc15",
+    status_index="#94a3b8",
+    status_yolo="#c084fc",
+    status_worker="#fbbf24",
+    pygments_style="github-dark",
+)
+
+LIGHT_PALETTE = ThemePalette(
+    appearance="light",
+    text=TERMINAL_DEFAULT,
+    muted="#6b7280",
+    subtle="#9ca3af",
+    accent="#0e7490",
+    accent_secondary="#5b21b6",
+    user="#9a5b2e",
+    tool="#15803d",
+    success="#15803d",
+    warning="#b45309",
+    error="#b91c1c",
+    rule="#9ca3af",
+    selection_fg="#f8fafc",
+    selection_bg="#0e7490",
+    syntax_assign="#005cc5",
+    syntax_string="#032f62",
+    syntax_number="#6f42c1",
+    syntax_ident="#032f62",
+    syntax_builtin="#005cc5",
+    syntax_default="#24292e",
+    status_base="#4b5563",
+    status_provider="#1d4ed8",
+    status_reason="#5b21b6",
+    status_mcp="#1e40af",
+    status_context="#a16207",
+    status_index="#475569",
+    status_yolo="#7e22ce",
+    status_worker="#b45309",
+    pygments_style="default",
+)
+
+
 class Theme:
-    DARK: ClassVar[dict[str, str]] = {
+    """The active palette, and the adapters that speak it to Rich, prompt-toolkit, and Pygments.
+
+    The palettes answer "what color is this meaning"; the adapters answer "how does this framework
+    spell a color". Nothing else in the codebase does either.
+    """
+
+    # Diff colors are pinned, not derived. They were tuned against real diffs in both appearances
+    # and a palette reshuffle must never move them, so they stay their own fixed mapping in the
+    # frameworks' own spelling — the one place the palette deliberately does not own.
+    DIFF_DARK: ClassVar[dict[str, str]] = {
         "diff.added.bg": "bg:#003b00",
         "diff.added.fg": "fg:default",
         "diff.removed.bg": "bg:#520000",
         "diff.removed.fg": "fg:default",
-        "syntax.assign": "fg:#79c0ff",
-        "syntax.string": "fg:#a5d6ff",
-        "syntax.number": "fg:#d2a8ff",
-        "syntax.ident": "fg:#a5d6ff",
-        "syntax.builtin": "fg:#79c0ff",
-        "syntax.default_hex": "e6edf3",
-        # The status line sits under the conversation and should read as a quiet footer, not compete
-        # with it, so its plain tone stays below full white.
-        "status.base": "#cbd5e1",
-        "status.sep": "#4b5563",
-        "status.provider": "#60a5fa",
-        "status.reason": "#a5b4fc",
-        "status.mcp": "#93c5fd",
-        "status.ctx": "#facc15",
-        "status.index": "#94a3b8",
-        "status.yolo": "#c084fc",
-        "status.warn": "#fb7185",
-        "status.worker": "#fbbf24",
-        "divider.glow": "#67e8f9",
-        "divider.rule": "#4b5563",
-        "user.log": "#e0a96d",
-        "pygments": "github-dark",
     }
-
-    LIGHT: ClassVar[dict[str, str]] = {
+    DIFF_LIGHT: ClassVar[dict[str, str]] = {
         "diff.added.bg": "bg:#d1f0d1",
         "diff.added.fg": "fg:#003b00",
         "diff.removed.bg": "bg:#f5c8c8",
         "diff.removed.fg": "fg:#520000",
-        "syntax.assign": "fg:#005cc5",
-        "syntax.string": "fg:#032f62",
-        "syntax.number": "fg:#6f42c1",
-        "syntax.ident": "fg:#032f62",
-        "syntax.builtin": "fg:#005cc5",
-        "syntax.default_hex": "24292e",
-        "status.base": "#4b5563",
-        "status.sep": "#9ca3af",
-        "status.provider": "#1d4ed8",
-        "status.reason": "#5b21b6",
-        "status.mcp": "#1e40af",
-        "status.ctx": "#a16207",
-        "status.index": "#475569",
-        "status.yolo": "#7e22ce",
-        "status.warn": "#b91c1c",
-        "status.worker": "#b45309",
-        "divider.glow": "#0e7490",
-        "divider.rule": "#9ca3af",
-        "user.log": "#9a5b2e",
-        "pygments": "default",
     }
 
     _mode: ClassVar[str] = "dark"
@@ -156,17 +261,63 @@ class Theme:
         cls._mode = "light" if mode == "light" else "dark"
 
     @classmethod
-    def style(cls, key: str) -> str:
-        return (cls.LIGHT if cls._mode == "light" else cls.DARK)[key]
+    def palette(cls) -> ThemePalette:
+        return LIGHT_PALETTE if cls._mode == "light" else DARK_PALETTE
 
     @classmethod
-    def ramp(cls, start_key: str, end_key: str, steps: int) -> list[str]:
-        """Interpolate `steps` hex colors from one palette entry to another.
+    def color(cls, role: str) -> str:
+        """The active palette's color for one semantic role, as `#rrggbb` or `default`."""
+        return cls.palette().color(role)
+
+    @classmethod
+    def diff_style(cls, key: str) -> str:
+        return (cls.DIFF_LIGHT if cls._mode == "light" else cls.DIFF_DARK)[key]
+
+    @classmethod
+    def fg(cls, role: str, *attributes: str) -> str:
+        """One role as a prompt-toolkit inline style, e.g. `fg:#8b949e bold`.
+
+        For fragments built outside the style map — wrapped rows, ramps, anything assembled from a
+        computed color. Fragments that can name a class should use one instead.
+        """
+        return " ".join((f"fg:{cls.color(role)}", *attributes))
+
+    @classmethod
+    def tui_class(cls, role: str) -> str:
+        """The prompt-toolkit class name carrying one role, e.g. `class:status.provider`."""
+        return "class:" + role.replace("_", ".")
+
+    @classmethod
+    def tui_styles(cls) -> dict[str, str]:
+        """Every role as a prompt-toolkit class, for the view to compose its own map on top of.
+
+        Roles are the base vocabulary, so a view class that is simply "this role" can point at it
+        (`"choice.tool": "class:tool"`) and the light/dark difference stays here.
+        """
+        return {role.replace("_", "."): f"fg:{cls.color(role)}" for role in THEME_ROLES}
+
+    @classmethod
+    def rich_theme(cls) -> RichTheme:
+        """Every role as a Rich style named `wizolt.<role>`, plus the Markdown element styles.
+
+        Rich resolves an unknown style name by raising, so a console that renders our markup must
+        be built with this theme; `markdown_console` is the only place that happens.
+        """
+        styles = {f"wizolt.{role.replace('_', '.')}": cls.color(role) for role in THEME_ROLES}
+        # Rich resolves a style string either as a theme name or as attributes, never as both, so
+        # anything wearing a weight on top of a role is named here rather than spelled at the call.
+        styles["wizolt.role.user"] = f"bold {cls.color('accent')}"
+        styles["wizolt.role.assistant"] = f"bold {cls.color('accent_secondary')}"
+        return RichTheme(styles, inherit=True)
+
+    @classmethod
+    def ramp(cls, start_role: str, end_role: str, steps: int) -> list[str]:
+        """Interpolate `steps` hex colors from one role to another.
 
         Used for gradients that need more shades than the palette names, so a moving highlight can
         fade between two cells instead of snapping from one named color to the next.
         """
-        start, end = cls.rgb(cls.style(start_key)), cls.rgb(cls.style(end_key))
+        start, end = cls.rgb(cls.color(start_role)), cls.rgb(cls.color(end_role))
         span = max(1, steps - 1)
         return [cls.mix(start, end, index / span) for index in range(steps)]
 
@@ -199,13 +350,25 @@ class Theme:
     def pygments_style(cls) -> type[PygmentsStyle] | None:
         if pygments is None or get_style_by_name is None:
             return None
-        name = cls.style("pygments")
+        name = cls.palette().pygments_style
         if name not in cls._pygments_cache:
             try:
                 cls._pygments_cache[name] = get_style_by_name(name)
             except Exception:  # noqa: BLE001 - optional Pygments styles must degrade to plain rendering.
                 cls._pygments_cache[name] = None
         return cls._pygments_cache[name]
+
+
+def markdown_console(width: int) -> Console:
+    """A Rich console for the capture-then-emit path, carrying the palette's named styles.
+
+    Every Rich render in the app goes through one of these. The console is always a capture target,
+    never a direct writer: printing Rich output while the prompt-toolkit application is live
+    interleaves raw escapes with its renderer, so callers capture and emit the result as ANSI.
+
+    Colors come from the theme, so `wizolt.*` style names resolve here and nowhere else.
+    """
+    return Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(10, width), theme=Theme.rich_theme())
 
 
 class UiPrinter:
@@ -224,7 +387,7 @@ class UiPrinter:
     Color is decided once, from whether output is a real terminal.
     """
 
-    MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
+    MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "wizolt.role.user", "assistant": "wizolt.role.assistant"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
     # How long scrollback emits wait before printing as one batch. Each print suspends the live
@@ -243,7 +406,7 @@ class UiPrinter:
 
     @classmethod
     def user_log_style(cls) -> str:
-        return Theme.style("user.log")
+        return Theme.fg("user")
 
     TOOL_ARG_TOKEN: ClassVar[re.Pattern] = re.compile(
         r"""\s+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*=|(?:tr|job)\.\d+|\d+(?::\d+)?|[;,]|[^\s;,]+"""
@@ -490,7 +653,7 @@ class UiPrinter:
                 role = ""
             self.output_fn(self.indent_message(text, role, indent))
             return
-        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
+        console = markdown_console(shutil.get_terminal_size().columns)
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
@@ -603,7 +766,7 @@ class UiPrinter:
         trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)
         fragments = [
             ("ansibrightblack", lead),
-            (Theme.style("status.worker"), label),
+            (Theme.fg("status_worker"), label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
         if self._batch_parts is not None:
@@ -625,19 +788,19 @@ class UiPrinter:
         error = text.startswith(("Error:", "ConfigError:", "Unknown command:"))
         styled_text = self.colorize_mcp_status(text) if role != "user" else text
         if rule and not error:
-            console.print(Rule(style="bright_black", characters="─"))
+            console.print(Rule(style="wizolt.rule", characters="─"))
         margin = LogBlock.margin(indent)
         if role == "user":
             console.print("")
-            console.print(Padding(RichText(UiPrinter.USER_LOG_PREFIX + text, style=self.user_log_style()), (0, 0, 0, len(margin))))
+            console.print(Padding(RichText(UiPrinter.USER_LOG_PREFIX + text, style="wizolt.user"), (0, 0, 0, len(margin))))
         elif role == "assistant":
-            content = RichText(styled_text, style="red") if error else Markdown(styled_text, hyperlinks=False)
+            content = RichText(styled_text, style="wizolt.error") if error else Markdown(styled_text, hyperlinks=False)
             console.print(Padding(content, (0, 0, 0, len(margin))))
         else:
             if role:
-                label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
+                label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "wizolt.muted"))
                 console.print(Padding(label, (0, 0, 0, len(margin))))
-            content = RichText(styled_text, style="red") if error else Markdown(styled_text, hyperlinks=False)
+            content = RichText(styled_text, style="wizolt.error") if error else Markdown(styled_text, hyperlinks=False)
             console.print(Padding(content, (0, 0, 0, len(margin))))
 
     def emit_markdown(self, text: str) -> None:
@@ -647,7 +810,7 @@ class UiPrinter:
         if not self.color:
             self.emit(text)
             return
-        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
+        console = markdown_console(shutil.get_terminal_size().columns)
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
@@ -716,9 +879,9 @@ class UiPrinter:
                     rendered = self.remove_line_ending(rendered)
                     for row in Text.wrap_styled(prefix, prefix, rendered, width):
                         if item.text.startswith("+") and not item.text.startswith("+++"):
-                            background = Theme.style("diff.added.bg")
+                            background = Theme.diff_style("diff.added.bg")
                         elif item.text.startswith("-") and not item.text.startswith("---"):
-                            background = Theme.style("diff.removed.bg")
+                            background = Theme.diff_style("diff.removed.bg")
                         else:
                             background = ""
                         if background:
@@ -812,15 +975,15 @@ class UiPrinter:
             if token.isspace():
                 style = fallback_style
             elif token.endswith("="):
-                style = Theme.style("syntax.assign")
+                style = Theme.fg("syntax_assign")
             elif token.startswith(('"', "'")):
-                style = Theme.style("syntax.string")
+                style = Theme.fg("syntax_string")
             elif UiPrinter.RECORD_TOKEN_RE.fullmatch(token):
-                style = Theme.style("syntax.number")
+                style = Theme.fg("syntax_number")
             elif token in {";", ","}:
                 style = "ansibrightblack"
             else:
-                style = Theme.style("syntax.ident")
+                style = Theme.fg("syntax_ident")
             segments.append((style, token))
         return segments or [(fallback_style, text)]
 
@@ -875,12 +1038,12 @@ class UiPrinter:
         if token_type in Token.Text.Whitespace:
             return "fg:default"
         if token_type in Token.Name.Builtin:
-            return Theme.style("syntax.builtin")
+            return Theme.fg("syntax_builtin")
         definition = cls.token_definition(style, token_type)
         if definition is None:
             return "fg:default"
         color = definition.get("color")
-        default_hex = Theme.style("syntax.default_hex")
+        default_hex = Theme.color("syntax_default").lstrip("#")
         parts = ["fg:default" if not color or color.lower() == default_hex else f"fg:#{color}"]
         parts.extend(attribute for attribute in ("bold", "italic", "underline") if definition.get(attribute))
         return " ".join(parts)
@@ -1035,15 +1198,15 @@ class UiPrinter:
                 number(None, None)
                 segments.append(("ansibrightblack", line + suffix))
             elif line.startswith("+"):
-                background = Theme.style("diff.added.bg")
+                background = Theme.diff_style("diff.added.bg")
                 number(None, new_line, background)
-                content_hl = hl_by_index.get(index) or [(Theme.style("diff.added.fg"), line[1:])]
+                content_hl = hl_by_index.get(index) or [(Theme.diff_style("diff.added.fg"), line[1:])]
                 append_hl("+", "ansigreen", content_hl, suffix, background)
                 new_line = None if new_line is None else new_line + 1
             elif line.startswith("-"):
-                background = Theme.style("diff.removed.bg")
+                background = Theme.diff_style("diff.removed.bg")
                 number(old_line, None, background)
-                append_hl("-", "ansired", [(Theme.style("diff.removed.fg"), line[1:])], suffix, background)
+                append_hl("-", "ansired", [(Theme.diff_style("diff.removed.fg"), line[1:])], suffix, background)
                 old_line = None if old_line is None else old_line + 1
             elif line.startswith(" "):
                 number(old_line, new_line)
@@ -1096,7 +1259,7 @@ class LiveSpark:
     PERIOD: ClassVar[float] = 3.2
     STEPS: ClassVar[int] = 12
     # The divider's own accent, so the live rule and the live region it caps read as one thing.
-    ROLE: ClassVar[str] = "divider.glow"
+    ROLE: ClassVar[str] = "accent"
     # How far the breath reaches past that color, as a fraction of the way to black at the trough
     # and to white at the crest. Wide on purpose: a shallow fade reads as the terminal mis-drawing
     # a cell rather than as a breath, and the crest has to clear the gray rows beside it. The
@@ -1116,7 +1279,7 @@ class LiveSpark:
         in both themes and answers to nothing, while this spark caps the divider's own rule and has
         to keep sharing its color when a theme changes it.
         """
-        hue = Theme.rgb(Theme.style(cls.ROLE))
+        hue = Theme.rgb(Theme.color(cls.ROLE))
         low = Theme.rgb(Theme.mix(hue, (0, 0, 0), cls.FLOOR))
         high = Theme.rgb(Theme.mix(hue, (255, 255, 255), cls.CEILING))
         span = max(1, cls.STEPS - 1)
@@ -1274,11 +1437,11 @@ class StatusBar:
     """
 
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
-    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "index", "yolo", "warn")
+    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "context", "index", "yolo", "worker")
 
     @classmethod
     def role_style(cls, role: str) -> str:
-        return Theme.style("status." + role) if role in cls.ROLE_KEYS else Theme.style("status.base")
+        return Theme.fg("status_" + role) if role in cls.ROLE_KEYS else Theme.fg("status_base")
 
     def __init__(self, session: Session):
         self.session = session
@@ -1397,14 +1560,14 @@ class StatusBar:
         groups: list[list[tuple[str, str]]] = [
             identity,
             [(f"mcp {mcp_count}", "mcp"), (" · ", "sep"), (f"skills {skill_count}", "mcp")],
-            [(f"ctx {ctx_percent}%", "ctx"), (" · ", "sep"), (f"cache {cache_percent}%", "ctx")],
+            [(f"ctx {ctx_percent}%", "context"), (" · ", "sep"), (f"cache {cache_percent}%", "context")],
             [("index" + self.index_status(), "index")],
         ]
         fragments: StyleAndTextTuples = []
         for group in groups:
             if fragments:
-                fragments.append((Theme.style("status.sep"), " | "))
-            fragments.extend((self.role_style(role), text) if role != "sep" else (Theme.style("status.sep"), text) for text, role in group)
+                fragments.append((Theme.fg("subtle"), " | "))
+            fragments.extend((self.role_style(role), text) if role != "sep" else (Theme.fg("subtle"), text) for text, role in group)
 
         text = "".join(fragment[1] for fragment in fragments)
         columns = shutil.get_terminal_size((120, 20)).columns

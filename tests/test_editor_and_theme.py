@@ -3,12 +3,14 @@
 import asyncio
 import os
 import pathlib
+import re
 import signal
 import sys
 import threading
 
 import pytest
 from prompt_toolkit.formatted_text import to_formatted_text
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from tui_harness import loop
 
@@ -24,14 +26,70 @@ from wizolt.render import StatusBar, Theme, UiPrinter
 from wizolt.tui import TuiApp
 
 
-def test_theme_palettes_have_identical_complete_keys():
-    assert Theme.DARK.keys() == Theme.LIGHT.keys()
-    assert all(Theme.DARK.values())
-    assert all(Theme.LIGHT.values())
+def test_both_appearances_define_every_role_in_a_shape_the_adapters_accept():
+    """Light and dark are the same vocabulary, and every entry is a color both frameworks read."""
+    for palette in (render_module.DARK_PALETTE, render_module.LIGHT_PALETTE):
+        for role in render_module.THEME_ROLES:
+            value = palette.color(role)
+            assert value == render_module.TERMINAL_DEFAULT or re.fullmatch(r"#[0-9a-f]{6}", value), (role, value)
 
 
-def test_status_roles_have_theme_entries():
-    assert all(f"status.{role}" in Theme.DARK and f"status.{role}" in Theme.LIGHT for role in StatusBar.ROLE_KEYS)
+def test_unknown_roles_are_rejected_rather_than_silently_uncolored():
+    with pytest.raises(KeyError):
+        Theme.color("accent-ish")
+
+
+def test_every_role_resolves_as_a_prompt_toolkit_class_and_a_rich_style(monkeypatch):
+    for mode in ("dark", "light"):
+        monkeypatch.setattr(Theme, "_mode", mode)
+        style = Style.from_dict(Theme.tui_styles())
+        console = Console(theme=Theme.rich_theme())
+        for role in render_module.THEME_ROLES:
+            attrs = style.get_attrs_for_style_str(Theme.tui_class(role))
+            # "default" is the terminal's own foreground, which prompt-toolkit spells as None.
+            assert attrs.color is not None or Theme.color(role) == render_module.TERMINAL_DEFAULT
+            console.get_style(f"wizolt.{role.replace('_', '.')}")  # raises for a name Rich cannot resolve
+        for name in ("wizolt.role.user", "wizolt.role.assistant"):
+            assert console.get_style(name).bold
+
+
+def test_status_roles_have_palette_entries():
+    assert all(f"status_{role}" in render_module.THEME_ROLES for role in StatusBar.ROLE_KEYS)
+
+
+def test_diff_colors_survive_the_palette_reorganization(monkeypatch):
+    """Diff colors are pinned, not derived: reshuffling the palette must not move them."""
+    assert Theme.DIFF_DARK == {
+        "diff.added.bg": "bg:#003b00",
+        "diff.added.fg": "fg:default",
+        "diff.removed.bg": "bg:#520000",
+        "diff.removed.fg": "fg:default",
+    }
+    assert Theme.DIFF_LIGHT == {
+        "diff.added.bg": "bg:#d1f0d1",
+        "diff.added.fg": "fg:#003b00",
+        "diff.removed.bg": "bg:#f5c8c8",
+        "diff.removed.fg": "fg:#520000",
+    }
+    for mode, expected in (("dark", Theme.DIFF_DARK), ("light", Theme.DIFF_LIGHT)):
+        monkeypatch.setattr(Theme, "_mode", mode)
+        assert {key: Theme.diff_style(key) for key in expected} == expected
+
+
+def test_missing_pygments_degrades_to_plain_text_rather_than_failing(monkeypatch):
+    monkeypatch.setattr(render_module, "pygments", None)
+    monkeypatch.setattr(render_module, "get_style_by_name", None)
+    monkeypatch.setattr(Theme, "_pygments_cache", {})
+    assert Theme.pygments_style() is None
+    assert UiPrinter.code_lines("x = 1\n", "python") is None
+    assert UiPrinter.syntax_segments("x = 1", "python", "fg:default") == [("fg:default", "x = 1")]
+
+
+def test_an_unloadable_pygments_style_degrades_to_plain_text(monkeypatch):
+    monkeypatch.setattr(render_module, "get_style_by_name", lambda name: (_ for _ in ()).throw(ValueError(name)))
+    monkeypatch.setattr(Theme, "_pygments_cache", {})
+    assert Theme.pygments_style() is None
+    assert UiPrinter.pygments_style(render_module.Token.Name) == "fg:default"
 
 
 def test_editor_command_prefers_visual_then_editor_then_vim(monkeypatch):
@@ -291,7 +349,7 @@ def test_editor_context_combined_budget_keeps_latest_without_note(tmp_path):
 
 def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
-    for mode, expected in (("dark", "#e0a96d"), ("light", "#9a5b2e")):
+    for mode, expected in (("dark", "fg:#e0a96d"), ("light", "fg:#9a5b2e")):
         monkeypatch.setattr(Theme, "_mode", mode)
         assert UiPrinter.user_log_style() == expected
         assert command_loop.view.style().get_attrs_for_style_str("").color == ""
@@ -305,7 +363,7 @@ def test_tool_labels_keep_legacy_green_style():
 def test_resumed_user_rendering_emits_desert_truecolor(mode, rgb, monkeypatch):
     monkeypatch.setattr(Theme, "_mode", mode)
     ui = UiPrinter(output_fn=lambda text: None)
-    console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=40)
+    console = render_module.markdown_console(40)
 
     with console.capture() as capture:
         ui.render_message(console, "hello", "user", False, 0)
