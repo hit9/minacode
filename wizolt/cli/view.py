@@ -544,7 +544,8 @@ class View:
                 "queue.rule": role("rule"),
                 **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("accent", "rule", self.GLOW_STEPS))},
                 "queue.hint": role("muted"),
-                "quickhint": role("accent"),
+                # A hint is help, not content: grey, like every other piece of supporting text.
+                "quickhint": role("muted"),
                 "quickhint.focused": selected,
                 "quickhint.sep": role("muted"),
                 "image.attachment": role("accent", "bold"),

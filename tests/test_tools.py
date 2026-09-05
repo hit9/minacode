@@ -696,9 +696,9 @@ def test_uiprinter_highlights_generic_tool_arguments(tmp_path):
 
     assert line.syntax == "tool-args"
     segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([line]))
-    assert ("fg:#a5d6ff", '"done in"') in segments
-    assert ("fg:#79c0ff", "glob=") in segments
-    assert ("fg:#d2a8ff", "2") in segments
+    assert (Theme.fg("syntax_string"), '"done in"') in segments
+    assert (Theme.fg("syntax_assign"), "glob=") in segments
+    assert (Theme.fg("syntax_number"), "2") in segments
 
 
 def test_uiprinter_renders_note_memory_status_colors():

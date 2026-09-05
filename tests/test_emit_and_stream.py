@@ -156,9 +156,15 @@ def test_highlighting_inherits_from_the_token_hierarchy_rather_than_giving_up():
         )
         assert "uv run pytest -q" in "".join(text for _, text in ui.diff_segments(diff))
 
-        literal = UiPrinter.pygments_style(pygments_token.Token.Literal.Scalar.Plain)
-        assert literal == UiPrinter.pygments_style(pygments_token.Token.Literal.String)  # inherited
-        assert literal != "fg:default"  # and not quietly flattened
+        # The walk-up itself, on the style that first hit the hole: github-dark raises for a YAML
+        # plain scalar, whose nearest named ancestor is the Literal it is a kind of. (A style that
+        # names the root token, as the built-in ones now do, answers for every token itself, so it
+        # cannot show whether the fallback works.)
+        styles = pytest.importorskip("pygments.styles")
+        github = styles.get_style_by_name("github-dark")
+        plain = UiPrinter.token_definition(github, pygments_token.Token.Literal.Scalar.Plain)
+        assert plain == github.style_for_token(pygments_token.Token.Literal)  # inherited
+        assert plain is not None and plain["color"]  # and not quietly flattened
     finally:
         Theme.set_mode(previous)
 

@@ -656,7 +656,7 @@ def test_job_start_uses_bash_highlighting(tmp_path):
     assert start_line.syntax == "bash"
     assert wait_line.syntax == "tool-args"
     wait_segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([wait_line]))
-    assert ("fg:#d2a8ff", "job.1") in wait_segments
+    assert (Theme.fg("syntax_number"), "job.1") in wait_segments
 
 
 async def test_job_status_accepts_bare_numeric_id(tmp_path):
@@ -899,9 +899,11 @@ def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
 
     assert line.syntax == "bash"
     segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([line]))
-    assert ("fg:#79c0ff", "cd") in segments
-    assert ("fg:#79c0ff", "printf") in segments
-    assert ("fg:#a5d6ff", "'%s\\n'") in segments
+    # Lexed by pygments, so the colors are the theme's style rather than the palette's own roles;
+    # what matters is that keywords and strings are told apart and no band is painted behind them.
+    styles = {text: style for style, text in segments}
+    assert styles["cd"] == styles["printf"]  # both bash builtins
+    assert styles["'%s\\n'"] != styles["cd"]  # a string is not a builtin
     assert not any("bg:" in style for style, _ in segments)
 
 

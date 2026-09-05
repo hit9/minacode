@@ -175,77 +175,82 @@ THEME_ROLES: tuple[str, ...] = tuple(field.name for field in fields(ThemePalette
 DARK_PALETTE = ThemePalette(
     appearance="dark",
     text=TERMINAL_DEFAULT,
-    # A step brighter than the old bright-black: supporting detail has to stay readable, and the
-    # transcript is mostly supporting detail.
-    muted="#98a2b0",
+    # The greys are warm. A cool grey beside warm text is what makes a terminal read as washed out,
+    # and supporting detail is most of what is on screen.
+    muted="#a49484",
     # Structure, not text: rails, gutters, bullets. Below muted, above the background.
-    subtle="#5b6472",
-    # Calmer than the old near-neon cyan, and now worn by far fewer things, so the interface stops
-    # reading as blue-on-blue.
-    accent="#74b9e7",
+    subtle="#6b6156",
+    # Teal, not sky blue, and worn by few things: the prompt, field labels, inline code. One cool
+    # note against warm text is contrast; a screen of blue is a scheme with nothing to say.
+    accent="#5fb3a1",
     # The model's own voice: interim narration, thinking, the working divider.
-    accent_secondary="#b3a4e8",
+    accent_secondary="#cf8fa6",
     user="#e0a96d",
-    tool="#63c174",
-    success="#63c174",
-    warning="#d9a441",
-    error="#f4767e",
-    # Neutral and quiet: a rule parts blocks, it does not announce one.
-    rule="#464e58",
-    # A slate band rather than the accent: a selected row is a large area of color, and the accent
+    tool="#98c379",
+    success="#98c379",
+    warning="#e0a34a",
+    error="#e8767c",
+    # Visible enough to read as a boundary: a rule that fades into the background stops parting
+    # anything, and the transcript loses its sense of blocks. Neutral and warm, never colored.
+    rule="#7a6f63",
+    # A warm band rather than the accent: a selected row is a large area of color, and an accent
     # at that size takes over the screen.
-    selection_fg="#eef2f6",
-    selection_bg="#2f3742",
-    syntax_assign="#79c0ff",
-    syntax_string="#a5d6ff",
-    syntax_number="#d2a8ff",
-    syntax_ident="#a5d6ff",
-    syntax_builtin="#79c0ff",
-    syntax_default="#e6edf3",
-    # The status row is a footer: its plain tone stays below full white, and each field carries
+    selection_fg="#f2ece4",
+    selection_bg="#3a332d",
+    syntax_assign="#5fb3a1",
+    syntax_string="#d9b48c",
+    syntax_number="#cf8fa6",
+    syntax_ident="#c8bfb3",
+    syntax_builtin="#5fb3a1",
+    # Must stay the Pygments style's own body color: a token painted in it is painted in no color
+    # at all, so code inherits the terminal's foreground instead of a near-match.
+    syntax_default="#dddddd",
+    # The status row is a footer: its plain tone stays below full strength, and each field carries
     # just enough color to be picked out without competing with the transcript above it.
-    status_base="#c3ccd6",
-    status_provider="#74b9e7",
-    status_reason="#b3a4e8",
-    status_mcp="#8fb8d8",
-    status_context="#dcb35a",
-    status_index="#98a2ae",
-    status_yolo="#c99ae0",
-    status_worker="#e2b25f",
-    pygments_style="github-dark",
+    status_base="#cdc3b6",
+    status_provider="#5fb3a1",
+    status_reason="#cf8fa6",
+    status_mcp="#8fc9bb",
+    status_context="#e0a34a",
+    status_index="#a49484",
+    status_yolo="#d987b4",
+    status_worker="#e0b45f",
+    # Warm highlighting, so a code block does not reintroduce the blues the rest of the scheme
+    # spends its effort avoiding.
+    pygments_style="gruvbox-dark",
 )
 
 LIGHT_PALETTE = ThemePalette(
     appearance="light",
     text=TERMINAL_DEFAULT,
-    muted="#697586",
-    subtle="#a3acb9",
-    accent="#1f6f8b",
-    accent_secondary="#6d3fa8",
+    muted="#6f6257",
+    subtle="#a89e93",
+    accent="#116b60",
+    accent_secondary="#9c4f6c",
     user="#9a5b2e",
-    tool="#217a3c",
-    success="#217a3c",
+    tool="#3f7a2e",
+    success="#3f7a2e",
     warning="#a2620a",
     error="#b3261e",
-    # Lighter than the text it parts: on a white terminal a mid-grey rule reads as a bar.
-    rule="#c3c9d1",
-    selection_fg="#1f2937",
-    selection_bg="#dde5ef",
-    syntax_assign="#005cc5",
-    syntax_string="#032f62",
-    syntax_number="#6f42c1",
-    syntax_ident="#032f62",
-    syntax_builtin="#005cc5",
-    syntax_default="#24292e",
-    status_base="#4b5563",
-    status_provider="#1f5fc0",
-    status_reason="#6d3fa8",
-    status_mcp="#2c5fa8",
-    status_context="#a16207",
-    status_index="#5b6675",
-    status_yolo="#7e22ce",
+    # Lighter than the text it parts, but still a line the eye lands on.
+    rule="#a89e93",
+    selection_fg="#2b2019",
+    selection_bg="#ecdfcd",
+    syntax_assign="#116b60",
+    syntax_string="#7a5c2e",
+    syntax_number="#9c4f6c",
+    syntax_ident="#4a4038",
+    syntax_builtin="#116b60",
+    syntax_default="#3c3836",
+    status_base="#54493f",
+    status_provider="#116b60",
+    status_reason="#9c4f6c",
+    status_mcp="#1f6b5e",
+    status_context="#a2620a",
+    status_index="#635649",
+    status_yolo="#8a3f6a",
     status_worker="#a2620a",
-    pygments_style="default",
+    pygments_style="gruvbox-light",
 )
 
 

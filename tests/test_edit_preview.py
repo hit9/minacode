@@ -27,7 +27,7 @@ def test_approval_segments_highlight_inline_edit_preview():
     rendered = "".join(text for _, text in segments)
 
     assert (Theme.fg("tool"), "Edit") in segments
-    assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
+    assert any(style.endswith("bg:#003b00") and style != "bg:#003b00" and "return" in text for style, text in segments)
     assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
     assert any(style == "fg:default bg:#520000" and "pass" in text for style, text in segments)
     assert "\n\n" not in rendered
@@ -136,7 +136,9 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     segments = ui.diff_segments(diff)
 
     assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
-    assert any(t == "return" and s == "fg:#ff7b72 bg:#003b00" for s, t in segments)
+    # Highlighted by the theme's Pygments style, on the added band: the color is the style's, the
+    # band is the diff's own pinned green.
+    assert any(t == "return" and s.endswith("bg:#003b00") and s.startswith("fg:#") for s, t in segments)
 
     assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
     assert any("pass" in t and s == "fg:default bg:#520000" for s, t in segments)
