@@ -4,6 +4,7 @@ Every test here drives `TuiRuntime` on the test's own event loop with a stand-in
 what is exercised is the runtime's ordering -- not prompt-toolkit's rendering, which the
 interactive TUI tests cover.
 """
+
 import asyncio
 
 import pytest
@@ -206,6 +207,17 @@ async def test_a_terminal_write_error_reaches_the_runtime():
     # Reported once: the next barrier is not haunted by the failure already raised.
     await writer.barrier()
     await writer.close()
+
+
+async def test_a_terminal_write_error_reaches_close_without_a_later_barrier():
+    """Shutdown is itself the final output boundary, so it must surface a queued write failure."""
+    tui = FakeTui()
+    tui.write_error = OSError("terminal went away during shutdown")
+    writer = ScrollbackWriter(asyncio.get_running_loop(), tui.write_to_scrollback, lambda callback: None)
+    writer.submit(lambda: None)
+
+    with pytest.raises(OSError, match="terminal went away during shutdown"):
+        await writer.close()
 
 
 def _appending(sink, label):

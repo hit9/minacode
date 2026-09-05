@@ -118,6 +118,7 @@ class ScrollbackWriter:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
         with contextlib.suppress(asyncio.CancelledError):
             await self._task
+        self._raise_pending()
 
     def _raise_pending(self) -> None:
         error, self._error = self._error, None
