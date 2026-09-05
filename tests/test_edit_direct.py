@@ -1,9 +1,28 @@
-"""Direct replace mode: parsing, mode selection, and the pure exact matcher."""
+"""Direct replace mode: parsing, mode selection, the exact matcher, and the Edit lifecycle."""
+
+
+class _StubModel:
+    """Compactor requires a model; planning-only tests never touch it."""
+
+
+import asyncio
+import json
+import os
+import pathlib
+import random
+import threading
 
 import pytest
 from test_edit_tool import session, view
 
-from wizolt.base import ToolError, split_lines
+from wizolt import compaction
+from wizolt.base import ToolCall, ToolError, split_lines
+from wizolt.config import Config
+from wizolt.context import ContextManager
+from wizolt.runner import ToolRunner
+from wizolt.session import Session, SessionSnapshotStore
+from wizolt.tools import CodeIndex
+from wizolt.tools.editplan import EditBatchPlan
 from wizolt.tools.files import (
     MODE_CREATE,
     MODE_DIRECT,
@@ -528,3 +547,410 @@ def test_confirmation_policy_does_not_depend_on_the_evidence_mode(tmp_path):
 
     assert direct.needs_confirmation() == sourced.needs_confirmation() is True
     assert direct.always_confirms() == sourced.always_confirms() is False
+
+
+# --- batch planning and stale writes -------------------------------------------------------------
+
+
+async def ignore_index_update(_index, _paths):
+    return ""
+
+
+def runner(s):
+    return ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+
+def yolo_session(cwd, monkeypatch):
+    s = session(cwd)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
+    return s
+
+
+def direct_call(call_id, path, edits):
+    return ToolCall(call_id, "Edit", [path, "", edits])
+
+
+async def test_a_planned_direct_call_matches_the_standalone_one(tmp_path, monkeypatch):
+    edits = [{"op": "replace", "old": "b\n", "content": "B\n"}, {"op": "delete", "old": "d\n"}]
+    original = "a\nb\nc\nd\ne\n"
+    (tmp_path / "alone").mkdir()
+    (tmp_path / "planned").mkdir()
+    (tmp_path / "alone" / "code.txt").write_text(original, encoding="utf-8")
+    (tmp_path / "planned" / "code.txt").write_text(original, encoding="utf-8")
+
+    alone = session(tmp_path / "alone")
+    standalone = EditTool(alone, ["code.txt", "", edits]).call().retained_text
+
+    s = yolo_session(tmp_path / "planned", monkeypatch)
+    await runner(s).run([direct_call("e0", "code.txt", edits)])
+
+    planned = next(record for record in s.tool_records if record.name == "Edit").output
+    assert planned == standalone
+    assert (tmp_path / "planned" / "code.txt").read_text(encoding="utf-8") == (tmp_path / "alone" / "code.txt").read_text(encoding="utf-8")
+
+
+async def test_a_later_direct_call_observes_the_earlier_planned_result(tmp_path, monkeypatch):
+    s = yolo_session(tmp_path, monkeypatch)
+    (tmp_path / "code.txt").write_text("a\nb\nc\n", encoding="utf-8")
+
+    await runner(s).run(
+        [
+            direct_call("first", "code.txt", [{"op": "replace", "old": "b\n", "content": "beta\n"}]),
+            # `beta` exists only in the first call's planned result.
+            direct_call("second", "code.txt", [{"op": "replace", "old": "beta\n", "content": "BETA\n"}]),
+        ]
+    )
+
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "a\nBETA\nc\n"
+    assert s.tool_errors == []
+
+
+async def test_a_direct_call_can_follow_a_create_on_the_same_path(tmp_path, monkeypatch):
+    s = yolo_session(tmp_path, monkeypatch)
+
+    await runner(s).run(
+        [
+            ToolCall("make", "Edit", ["new.txt", "", [{"op": "create", "content": "one\ntwo\n"}]]),
+            direct_call("patch", "new.txt", [{"op": "replace", "old": "two\n", "content": "TWO\n"}]),
+        ]
+    )
+
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "one\nTWO\n"
+    assert s.tool_errors == []
+
+
+async def test_direct_calls_on_different_paths_stay_independent(tmp_path, monkeypatch):
+    s = yolo_session(tmp_path, monkeypatch)
+    (tmp_path / "one.txt").write_text("x\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("x\n", encoding="utf-8")
+
+    await runner(s).run(
+        [
+            direct_call("a", "one.txt", [{"op": "replace", "old": "x\n", "content": "1\n"}]),
+            direct_call("b", "two.txt", [{"op": "replace", "old": "x\n", "content": "2\n"}]),
+        ]
+    )
+
+    assert (tmp_path / "one.txt").read_text(encoding="utf-8") == "1\n"
+    assert (tmp_path / "two.txt").read_text(encoding="utf-8") == "2\n"
+
+
+async def test_one_batch_may_use_a_source_view_on_one_path_and_direct_evidence_on_another(tmp_path, monkeypatch):
+    s = yolo_session(tmp_path, monkeypatch)
+    (tmp_path / "viewed.txt").write_text("a\nb\n", encoding="utf-8")
+    (tmp_path / "direct.txt").write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "viewed.txt")
+
+    await runner(s).run(
+        [
+            ToolCall("v", "Edit", ["viewed.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "A\n"}]]),
+            direct_call("d", "direct.txt", [{"op": "replace", "old": "b\n", "content": "B\n"}]),
+        ]
+    )
+
+    assert s.tool_errors == []
+    assert (tmp_path / "viewed.txt").read_text(encoding="utf-8") == "A\nb\n"
+    assert (tmp_path / "direct.txt").read_text(encoding="utf-8") == "a\nB\n"
+
+
+@pytest.mark.parametrize("direct_first", [True, False], ids=("direct-then-view", "view-then-direct"))
+async def test_one_path_may_not_change_evidence_mode_inside_one_batch(tmp_path, monkeypatch, direct_first):
+    s = yolo_session(tmp_path, monkeypatch)
+    (tmp_path / "code.txt").write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    sourced = ToolCall("v", "Edit", ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "A\n"}]])
+    direct = direct_call("d", "code.txt", [{"op": "replace", "old": "b\n", "content": "B\n"}])
+
+    await runner(s).run([direct, sourced] if direct_first else [sourced, direct])
+
+    # The first call still lands; the second is refused before any transaction, not reordered.
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == ("a\nB\n" if direct_first else "A\nb\n")
+    assert s.tool_errors and "mixed edit evidence modes" in s.tool_errors[0].error
+    assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
+
+
+async def test_a_refused_direct_call_leaves_the_other_planned_calls_alone(tmp_path, monkeypatch):
+    s = yolo_session(tmp_path, monkeypatch)
+    (tmp_path / "good.txt").write_text("a\n", encoding="utf-8")
+    (tmp_path / "bad.txt").write_text("a\na\n", encoding="utf-8")
+
+    await runner(s).run(
+        [
+            direct_call("bad", "bad.txt", [{"op": "replace", "old": "a\n", "content": "A\n"}]),
+            direct_call("good", "good.txt", [{"op": "replace", "old": "a\n", "content": "A\n"}]),
+        ]
+    )
+
+    assert (tmp_path / "bad.txt").read_text(encoding="utf-8") == "a\na\n"
+    assert (tmp_path / "good.txt").read_text(encoding="utf-8") == "A\n"
+    assert len(s.tool_errors) == 1 and "direct target ambiguous" in s.tool_errors[0].error
+
+
+async def test_every_direct_call_in_a_batch_gets_exactly_one_result(tmp_path, monkeypatch):
+    s = yolo_session(tmp_path, monkeypatch)
+    (tmp_path / "code.txt").write_text("a\nb\n", encoding="utf-8")
+    calls = [
+        direct_call("ok", "code.txt", [{"op": "replace", "old": "a\n", "content": "A\n"}]),
+        direct_call("missing", "code.txt", [{"op": "replace", "old": "zzz\n", "content": "Z\n"}]),
+        direct_call("malformed", "code.txt", [{"op": "replace", "old": ""}]),
+    ]
+
+    messages = await runner(s).run(calls)
+
+    assert [message["tool_call_id"] for message in messages] == ["ok", "missing", "malformed"]
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "A\nb\n"
+
+
+@pytest.mark.parametrize(
+    ("disturb", "leftover"),
+    [
+        (lambda path: path.write_text("external\n", encoding="utf-8"), "external\n"),
+        (lambda path: path.unlink(), None),
+    ],
+    ids=("rewritten", "deleted"),
+)
+async def test_a_planned_direct_edit_never_overwrites_a_file_that_changed_after_planning(tmp_path, disturb, leftover):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    call = direct_call("edit", "code.txt", [{"op": "replace", "old": "b\n", "content": "B\n"}])
+    plan = await EditBatchPlan(s).build([call])
+    disturb(path)
+
+    with pytest.raises(ToolError, match="planned edit is stale"):
+        await plan.planned[call.id].apply(EditTool(s, call.args))
+
+    assert (path.read_text(encoding="utf-8") if leftover else None) == leftover
+
+
+async def test_cancelling_a_direct_edit_settles_its_write_rather_than_abandoning_it(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    call = direct_call("edit", "code.txt", [{"op": "replace", "old": "b\n", "content": "B\n"}])
+    planned = (await EditBatchPlan(s).build([call])).planned[call.id]
+    written, release = threading.Event(), threading.Event()
+    original = EditBatchPlan.PlannedEdit.transact
+
+    def blocked(receipt):
+        result = original(receipt)
+        written.set()
+        release.wait()
+        return result
+
+    monkeypatch.setattr(EditBatchPlan.PlannedEdit, "transact", blocked)
+    task = asyncio.create_task(planned.apply(EditTool(s, call.args)))
+    while not written.is_set():
+        await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert path.read_text(encoding="utf-8") == "a\nB\n"
+
+
+async def test_a_direct_edit_updates_the_symbol_index_like_any_other(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    (tmp_path / "code.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    updated = []
+
+    async def record_update(_index, paths):
+        updated.append(tuple(paths))
+        return ""
+
+    monkeypatch.setattr(CodeIndex, "update", record_update)
+    await runner(s).run([direct_call("e", "code.py", [{"op": "replace", "old": "return 1\n", "content": "return 2\n"}])])
+
+    assert updated and any("code.py" in paths for paths in updated)
+
+
+# --- deterministic generated coverage against a reference splice ---------------------------------
+
+
+def reference_splice(original, targets):
+    """The obvious implementation: replace each disjoint target by scanning from the left."""
+    result, cursor = "", 0
+    for start, end, content in sorted(targets):
+        result += original[cursor:start] + content
+        cursor = end
+    return result + original[cursor:]
+
+
+def generated_case(seed, count=None):
+    """A file and some unique targets in it, reproducible from `seed`."""
+    rng = random.Random(seed)
+    words = [f"tok{index}{'x' * rng.randrange(0, 4)}" for index in range(40)]
+    rng.shuffle(words)
+    lines, cursor = [], 0
+    while cursor < len(words):
+        width = rng.randrange(1, 4)
+        lines.append(" ".join(words[cursor : cursor + width]) + "\n")
+        cursor += width
+    if rng.random() < 0.5 and lines:
+        lines[-1] = lines[-1].rstrip("\n")  # a file with no final newline
+    original = "".join(lines)
+    unique = [word for word in words if original.count(word) == 1 and not any(word != other and word in other for other in words)]
+    rng.shuffle(unique)
+    chosen = unique[: count or rng.randrange(1, 4)]
+    return original, [(original.index(word), original.index(word) + len(word), word) for word in chosen]
+
+
+SEEDS = tuple(range(60))
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_generated_unique_replacements_match_a_reference_splice(seed):
+    original, targets = generated_case(seed)
+    rng = random.Random(seed + 10_000)
+    contents = {word: word.upper() + ("\n" if rng.random() < 0.3 else "") for _, _, word in targets}
+    edits = [replace(word, contents[word]) for _, _, word in targets]
+    rng.shuffle(edits)  # the order the operations are listed in must not matter
+
+    expected = reference_splice(original, [(start, end, contents[word]) for start, end, word in targets])
+
+    assert splice(original, edits) == expected, f"seed {seed}: {original!r}"
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_generated_line_splices_reproduce_the_character_splice(seed):
+    original, targets = generated_case(seed)
+    edits = [replace(word, "Z" * len(word)) for _, _, word in targets]
+    lines = split_lines(original)
+
+    rebuilt = list(lines)
+    for start, end, replacement in sorted(direct_line_replacements(lines, resolve_direct(original, edits)), reverse=True):
+        rebuilt[start:end] = replacement
+
+    assert "".join(rebuilt) == splice(original, edits), f"seed {seed}"
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_generated_adjacent_replacements_apply_together(seed):
+    """Two targets that touch at one offset: neither range may swallow or shift the other."""
+    original, targets = generated_case(seed, count=2)
+    first, second = sorted(targets)
+    # The second target is extended backwards to meet the first, which keeps it unique because it
+    # still contains the whole unique word it was built from.
+    head = original[first[0] : first[1]]
+    tail = original[first[1] : second[1]]
+
+    assert splice(original, [replace(head, "<"), replace(tail, ">")]) == original[: first[0]] + "<>" + original[second[1] :], f"seed {seed}"
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_generated_duplicate_overlap_and_stale_targets_never_write(tmp_path, seed):
+    original, targets = generated_case(seed)
+    _, _, word = targets[0]
+    (tmp_path / "code.txt").write_text(original, encoding="utf-8")
+    s = session(tmp_path)
+    stale = word[:-1] + ("z" if word[-1] != "z" else "y")
+    cases = [
+        [{"op": "replace", "old": word, "content": "A"}, {"op": "replace", "old": word, "content": "B"}],  # one target twice
+        [{"op": "replace", "old": stale, "content": "A"}, {"op": "replace", "old": word, "content": "B"}],  # one stale character
+    ]
+    if original.count(word[1:]) == 1:  # a nested target inside the outer one
+        cases.append([{"op": "replace", "old": word, "content": "A"}, {"op": "replace", "old": word[1:], "content": "B"}])
+
+    for edits in cases:
+        with pytest.raises(ToolError, match="direct target"):
+            edit(s, "code.txt", edits)
+        assert (tmp_path / "code.txt").read_text(encoding="utf-8") == original, f"seed {seed}: {edits}"
+
+
+# --- session compatibility ------------------------------------------------------------------------
+
+
+FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "session_pre_direct_replace.json"
+
+
+def legacy_session(tmp_path):
+    """A session restored from a snapshot written before direct mode existed.
+
+    The fixture was produced by the pre-feature code and holds a Read view, the fresh view a
+    completed source-view Edit returned, and that Edit's stored call -- none of which carry an
+    `old` field, because nothing could write one.
+    """
+    fixture = json.loads(FIXTURE.read_text())
+    config = Config(data_dir=str(tmp_path))
+    path = SessionSnapshotStore.session_path(config.data_dir, str(tmp_path), fixture["uid"])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file:
+        for line in fixture["lines"]:
+            file.write(json.dumps(line).replace("{CWD}", str(tmp_path)) + "\n")
+    (tmp_path / "code.txt").write_text("alpha\nBETA\ngamma\n", encoding="utf-8")
+    return Session.load_snapshot(fixture["uid"], config=config, cwd=str(tmp_path))
+
+
+def test_a_pre_feature_session_needs_no_migration_and_still_edits_through_its_views(tmp_path):
+    s = legacy_session(tmp_path)
+
+    assert sorted(s.source_views) == ["view.1", "view.2"]
+    stored = next(record for record in s.tool_records if record.name == "Edit")
+    assert stored.args == ["code.txt", "view.1", [{"op": "replace", "start": 2, "end": 2, "content": "BETA\n"}]]
+    assert "old" not in json.dumps(stored.args)  # no default was written in on load
+
+    EditTool(s, ["code.txt", "view.2", [{"op": "replace", "start": 3, "end": 3, "content": "GAMMA\n"}]]).call()
+
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "alpha\nBETA\nGAMMA\n"
+
+
+def test_a_pre_feature_session_can_continue_with_a_direct_edit(tmp_path):
+    s = legacy_session(tmp_path)
+
+    out = edit(s, "code.txt", [{"op": "replace", "old": "gamma\n", "content": "GAMMA\n"}])
+
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "alpha\nBETA\nGAMMA\n"
+    # The new view continues the same counter the restored session was already using.
+    assert s.register_source_drafts(list(out.drafts)) == ["view.3"]
+
+
+async def test_direct_edit_arguments_survive_a_snapshot_and_resume(tmp_path, monkeypatch):
+    config = Config(data_dir=str(tmp_path))
+    s = Session(cwd=str(tmp_path), config=config)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", ignore_index_update)
+    (tmp_path / "code.txt").write_text("a\nb\n", encoding="utf-8")
+    edits = [{"op": "replace", "old": "b\n", "content": "B\n"}]
+    await runner(s).run([direct_call("e0", "code.txt", edits)])
+    await s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=config, cwd=str(tmp_path))
+
+    stored = next(record for record in restored.tool_records if record.name == "Edit")
+    assert stored.args == ["code.txt", "", edits]
+    # Resuming replays no write: the edit already landed and the file is left exactly as it was.
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "a\nB\n"
+
+
+def test_compaction_keeps_a_direct_call_paired_with_its_result(tmp_path):
+    context = ContextManager(session(tmp_path))
+    arguments = json.dumps({"path": "code.txt", "edits": [{"op": "replace", "old": "b\n", "content": "B\n"}]})
+    messages = [
+        *({"role": "user", "content": f"old {index}"} for index in range(3)),
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "tc.1", "type": "function", "function": {"name": "Edit", "arguments": arguments}}]},
+        {"role": "tool", "tool_call_id": "tc.1", "content": "done"},
+        *({"role": "user", "content": f"recent {index}"} for index in range(6)),
+    ]
+
+    _, keep = compaction.Compactor(context, _StubModel()).parts_for(messages)
+
+    assert keep[0]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert keep[1]["tool_call_id"] == "tc.1"
+
+
+def test_view_numbering_stays_stable_across_mixed_evidence_modes(tmp_path):
+    s = session(tmp_path)
+    (tmp_path / "code.txt").write_text("a\nb\nc\n", encoding="utf-8")
+
+    first = view(s, "code.txt")  # view.1
+    direct = edit(s, "code.txt", [{"op": "replace", "old": "a\n", "content": "A\n"}])
+    fresh = s.register_source_drafts(list(direct.drafts))[0]  # view.2
+    sourced = EditTool(s, ["code.txt", fresh, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]]).call()
+
+    assert [first, fresh, s.register_source_drafts(list(sourced.drafts))[0]] == ["view.1", "view.2", "view.3"]
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == "A\nB\nc\n"
