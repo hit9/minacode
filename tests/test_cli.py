@@ -79,7 +79,7 @@ def test_cli_runs_session_and_closes_resources(monkeypatch):
 
 
 def test_interactive_banner_precedes_session_and_ui_imports(monkeypatch):
-    """A large worktree or a cold render import must not leave the terminal blank."""
+    """The early banner stays immediate and leaves one row before the first user message."""
 
     class Tty(StringIO):
         def isatty(self):
@@ -118,7 +118,7 @@ def test_interactive_banner_precedes_session_and_ui_imports(monkeypatch):
     monkeypatch.setattr(cli, "CommandLoop", FakeLoop)
 
     assert cli.main([]) == 0
-    banner = f"wizolt {cli.__version__}. /help for commands.\n"
+    banner = f"wizolt {cli.__version__}. /help for commands.\n\n"
     assert calls == [("configure", banner), ("run", False)]
     assert stdout.getvalue() == banner
 

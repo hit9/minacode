@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     # selected later through /resume prints its own banner normally.
     banner_preprinted = sys.stdin.isatty() and sys.stdout.isatty()
     if banner_preprinted:
-        print(f"wizolt {_cli.__version__}. /help for commands.", flush=True)
+        print(f"wizolt {_cli.__version__}. /help for commands.\n", flush=True)
 
     _cli.configure_logging()
     try:

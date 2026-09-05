@@ -23,6 +23,8 @@
 
 ### Fixed
 
+- The early startup banner now leaves one blank row before the first user message instead of
+  running the two lines together.
 - Force exit now keeps its one-second emergency deadline armed until graceful shutdown actually
   finishes, so a stuck cleanup cannot disable the escape hatch that is meant to end it.
 - Terminal output, piped input, and Bash process cleanup now finish even when a rare terminal write
