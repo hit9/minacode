@@ -389,6 +389,29 @@ async def test_bash_coroutine_cancellation_kills_and_reaps_process(tmp_path):
     assert tool._process is None
 
 
+async def test_bash_reader_registration_failure_kills_and_reaps_process(tmp_path, monkeypatch):
+    """A loop that cannot watch a pipe must not leave the already-started command behind."""
+    proc = subprocess.Popen(  # noqa: ASYNC220 - constructing the Popen handle is the boundary under test.
+        ["bash", "-lc", "sleep 30"],
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    event_loop = asyncio.get_running_loop()
+
+    def fail_add_reader(*_args):
+        raise RuntimeError("pipe readers unsupported")
+
+    monkeypatch.setattr(event_loop, "add_reader", fail_add_reader)
+
+    with pytest.raises(RuntimeError, match="pipe readers unsupported"):
+        await BashTool(session(tmp_path), ["unused"]).stream_process(proc)
+
+    assert proc.poll() is not None
+
+
 async def test_bash_fast_command_does_not_promote(tmp_path):
     s = session(tmp_path)
     s.settings.bash_wait_timeout = 5

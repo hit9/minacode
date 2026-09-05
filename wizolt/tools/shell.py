@@ -262,10 +262,6 @@ class BashTool(Tool):
                     self.live_output(stream, text)
             changed.set()
 
-        for stream, pipe in pipes.items():
-            os.set_blocking(pipe.fileno(), False)
-            loop.add_reader(pipe.fileno(), read_ready, stream)
-
         timed_out = False
         promoted = False
         started = time.monotonic()
@@ -277,6 +273,9 @@ class BashTool(Tool):
         # >= shell_timeout (in which case we would kill on the same deadline anyway).
         promote_deadline = started + wait_budget if wait_budget and wait_budget < self.session.settings.shell_timeout else None
         try:
+            for stream, pipe in pipes.items():
+                os.set_blocking(pipe.fileno(), False)
+                loop.add_reader(pipe.fileno(), read_ready, stream)
             while pipes or proc.poll() is None:
                 now = time.monotonic()
                 if promote_deadline is not None and now >= promote_deadline and proc.poll() is None:
@@ -301,7 +300,7 @@ class BashTool(Tool):
                     await asyncio.wait_for(changed.wait(), timeout=max(0.0, wait))
                 except TimeoutError:
                     pass
-        except asyncio.CancelledError:
+        except BaseException:
             self.kill_process_group(proc)
             while proc.poll() is None:
                 await asyncio.sleep(0.01)
