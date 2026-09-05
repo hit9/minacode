@@ -4,7 +4,7 @@ import os
 import time
 
 import pytest
-from test_session_persistence import log_path, project_dir, read_jsonl, read_lines, session_with_data_dir, visible_contents
+from test_session_persistence import log_path, project_dir, read_jsonl, read_lines, session_with_data_dir, visible_contents, write_log
 
 from wizolt.base import SESSION_EVENT_KEY, WizoltError
 from wizolt.config import (
@@ -301,8 +301,8 @@ def test_load_discards_persisted_resume_markers(tmp_path):
     path = log_path(s)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     marker = {"role": "system", "content": f"[Session resumed: uid={s.uid}]"}
-    SessionSnapshotStore.write_jsonl(path, SessionSnapshotStore.header(s), mode="w")
-    SessionSnapshotStore.write_jsonl(
+    write_log(path, SessionSnapshotStore.header(s), mode="w")
+    write_log(
         path,
         {
             "uid": s.uid,
@@ -344,12 +344,12 @@ def test_real_legacy_snapshot_without_layout_field_converts_numeric_local_time(t
     path = log_path(s)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     legacy_created_at = 1_700_000_000.0
-    SessionSnapshotStore.write_jsonl(
+    write_log(
         path,
         {"v": SessionSnapshotStore.FORMAT_VERSION, "uid": s.uid, "cwd": s.cwd, "created_at": legacy_created_at},
         mode="w",
     )
-    SessionSnapshotStore.write_jsonl(
+    write_log(
         path,
         {
             "uid": s.uid,

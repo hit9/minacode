@@ -30,6 +30,12 @@ def project_dir(s):
     return SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd)
 
 
+def write_log(path, data, *, mode):
+    """Write one JSON record to a log fixture, in the store's own log format."""
+    with open(path, mode, encoding="utf-8") as file:
+        file.write(json.dumps(data, ensure_ascii=False) + "\n")
+
+
 def read_jsonl(path) -> list[dict]:
     """Snapshot and delta lines, with the header line dropped."""
     return read_lines(path)[1:]

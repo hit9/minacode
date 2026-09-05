@@ -261,11 +261,6 @@ class SessionSnapshotStore:
     def header(cls, session: Session) -> Json:
         return {"v": cls.FORMAT_VERSION, "uid": session.uid, "cwd": session.cwd, "created_at": session.created_at}
 
-    @staticmethod
-    def write_jsonl(path: str, data: Json, *, mode: str) -> None:
-        with open(path, mode, encoding="utf-8") as file:
-            file.write(json.dumps(data, ensure_ascii=False) + "\n")
-
     @classmethod
     def project_slug(cls, cwd: str) -> str:
         """Readable basename plus a hash of the real path: browsable, and still unique across

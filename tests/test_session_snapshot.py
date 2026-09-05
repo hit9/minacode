@@ -3,7 +3,7 @@ import itertools
 import json
 
 import pytest
-from test_session_persistence import log_path, read_jsonl, read_lines, session_with_data_dir
+from test_session_persistence import log_path, read_jsonl, read_lines, session_with_data_dir, write_log
 
 from wizolt.base import SESSION_EVENT_KEY
 from wizolt.session import Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
@@ -126,7 +126,7 @@ async def test_old_version_write_after_transcript_sync_is_detected(tmp_path):
     s.transcript_messages.append({"role": "user", "content": "first"})
     await s.save_snapshot()
 
-    SessionSnapshotStore.write_jsonl(
+    write_log(
         log_path(s),
         {"messages": [{"role": "assistant", "content": "written by old version"}]},
         mode="a",
