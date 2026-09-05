@@ -59,6 +59,8 @@
   phase rules use, instead of a short run of `-` capped at 52 columns: a wide terminal no longer
   leaves most of the row blank. Its highlight passes behind the status label instead of jumping
   across it, without making wider panes costlier to animate.
+- The working divider's light now sweeps both ways on a smooth curve: each pass enters gently,
+  accelerates toward its destination edge, and reverses only while fully outside the visible rule.
 - `Ask` now keeps choices and the selected preview in one bounded column. Long questions,
   choices, and key hints wrap by terminal-cell width, so wide panes and Chinese text no longer
   make a selected row collide with its preview or stretch across the whole screen. Its preview

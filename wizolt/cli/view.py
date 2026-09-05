@@ -279,12 +279,19 @@ class View:
     )
     WAITING_PULSE_PERIOD: ClassVar[float] = 1.6
 
-    # One cell per frame. A head that advances further than its own glow between redraws stops
-    # reading as motion and starts reading as a dash blinking at scattered positions.
+    # The divider's light averages one cell per frame. It enters gently and accelerates toward the
+    # right edge, but stays well inside its four-cell glow between redraws so it still reads as
+    # motion rather than a dash blinking at scattered positions.
     QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 1.0 / TuiApp.ANIMATION_INTERVAL
+    # Symmetric speed range around the average. The integrated smoothstep below moves from 0.6x to
+    # 1.4x with acceleration easing to zero at both ends, avoiding a mechanical gear change.
+    SWEEP_SPEED_RANGE: ClassVar[float] = 0.4
+    # One fully dark cell beyond the four-cell glow gives the reset a real invisible window; ending
+    # exactly at the fade radius can still light the dimmest shade on the last frame before wrap.
+    SWEEP_OFFSCREEN_MARGIN: ClassVar[float] = 1.0
     # A comet: a soft head with a tail fading into the dim rule, by distance from the head. The ramp
     # is finer than one shade per cell, so a head between two cells lights both partially instead of
-    # snapping onto the nearer one. The divider is only drawn while working; there is no idle look.
+    # snapping onto the nearer one. The divider is only drawn while a turn is running.
     GLOW_REACH: ClassVar[float] = 4.0
     GLOW_STEPS: ClassVar[int] = 12
 
@@ -314,6 +321,12 @@ class View:
         idx = min(len(self.WAITING_PULSE_STYLES) - 1, int(intensity * len(self.WAITING_PULSE_STYLES)))
         return [(self.WAITING_PULSE_STYLES[idx], "● ")]
 
+    @classmethod
+    def _sweep_progress(cls, phase: float) -> float:
+        """Integrated smoothstep velocity: continuous acceleration from slow to fast."""
+        speed_range = cls.SWEEP_SPEED_RANGE
+        return (1.0 - speed_range) * phase + 2.0 * speed_range * phase**3 - speed_range * phase**4
+
     def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: StyleAndTextTuples | None = None) -> StyleAndTextTuples:
         prefix = prefix or []
         prefix_len = sum(get_cwidth(fragment[1]) for fragment in prefix)
@@ -332,13 +345,23 @@ class View:
         # passes behind the label; removing that width would make it teleport from the short lead
         # rule to the trail.
         span = max(1, width - 1)
-        # A short track (a narrow terminal squeezing the trail) must not make the head bounce
-        # faster than the eye can follow: hold each round trip to at least a second by lowering
-        # the sweep rate as the span shrinks; normal-length tracks keep the full frame-per-cell
-        # rate.
-        sweep = min(self.QUEUE_SWEEP_CELLS_PER_SEC, 2 * span / 1.0)
-        phase = time.monotonic() * sweep % (2 * span)
-        head = phase if phase <= span else 2 * span - phase
+        # Each pass starts and finishes beyond the glow radius. Direction changes therefore happen
+        # while the light is invisible, without a hard turn on the rule. A narrow track keeps each
+        # pass at least a second; normal tracks average one cell per animation frame.
+        outside = self.GLOW_REACH + self.SWEEP_OFFSCREEN_MARGIN
+        travel = span + 2 * outside
+        sweep = min(self.QUEUE_SWEEP_CELLS_PER_SEC, travel / 1.0)
+        now = time.monotonic()
+        started_at = self.loop.status_bar.started_at
+        elapsed = max(0.0, now - started_at) if started_at > 0 else now
+        cycle_phase = elapsed * sweep / travel % 2.0
+        returning = cycle_phase >= 1.0
+        phase = cycle_phase - 1.0 if returning else cycle_phase
+        # Integral of a smoothstep speed ramp, normalized to end at 1. The speed rises from
+        # 1-range to 1+range, while acceleration itself eases in and out rather than switching at
+        # an arbitrary point on the rule.
+        progress = self._sweep_progress(phase) * travel
+        head = span + outside - progress if returning else progress - outside
 
         def dashes(offset: int, count: int) -> StyleAndTextTuples:
             fragments: StyleAndTextTuples = []

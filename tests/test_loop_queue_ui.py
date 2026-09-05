@@ -3,6 +3,7 @@
 import asyncio
 import itertools
 import os
+import shutil
 import sys
 import threading
 import time
@@ -92,23 +93,48 @@ def divider_glow_steps(fragments):
     return steps
 
 
-def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
+def test_divider_sweep_accelerates_both_ways_and_reverses_offscreen(tmp_path, monkeypatch):
+    """Equal time slices cover progressively more cells, while direction changes stay dark."""
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 20)))
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-
-    # A head that outruns its own glow between frames stops reading as motion, so the sweep speed
-    # is tied to the frame rate rather than chosen independently of it.
-    assert loop.view.QUEUE_SWEEP_CELLS_PER_SEC * TuiApp.ANIMATION_INTERVAL == pytest.approx(1.0)
+    view = loop.view
+    assert view.QUEUE_SWEEP_CELLS_PER_SEC * TuiApp.ANIMATION_INTERVAL == pytest.approx(1.0)
 
     label = "working"
-    trail_start = 3 + len(label) + 2
+    span = (100 - 2) - 1  # cols - 2, then width - 1
+    outside = view.GLOW_REACH + view.SWEEP_OFFSCREEN_MARGIN
+    travel = span + 2 * outside
+    sweep = min(view.QUEUE_SWEEP_CELLS_PER_SEC, travel)
+    period = travel / sweep
+
     with pytest.MonkeyPatch.context() as mp:
         heads = []
-        for frame in range(6):
-            mp.setattr(time, "monotonic", lambda frame=frame: (trail_start + frame) / loop.view.QUEUE_SWEEP_CELLS_PER_SEC)
-            steps = divider_glow_steps(loop.view.sweep_divider_fragments(label))
+        for phase in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8):
+            mp.setattr(time, "monotonic", lambda phase=phase: phase * period)
+            steps = divider_glow_steps(view.sweep_divider_fragments(label))
             heads.append(min(range(len(steps)), key=lambda index: (steps[index] is None, steps[index])))
+        moves = [second - first for first, second in itertools.pairwise(heads)]
+        assert moves == sorted(moves)
+        assert moves[-1] > moves[0] > 0
 
-    assert [second - first for first, second in itertools.pairwise(heads)] == [1, 1, 1, 1, 1]
+        returning_heads = []
+        for phase in (1.3, 1.4, 1.5, 1.6, 1.7, 1.8):
+            mp.setattr(time, "monotonic", lambda phase=phase: phase * period)
+            steps = divider_glow_steps(view.sweep_divider_fragments(label))
+            returning_heads.append(min(range(len(steps)), key=lambda index: (steps[index] is None, steps[index])))
+        return_moves = [first - second for first, second in itertools.pairwise(returning_heads)]
+        assert return_moves == sorted(return_moves)
+        assert return_moves[-1] > return_moves[0] > 0
+
+        # Every direction change is a full radius off the rule, so it cannot flash across it.
+        for phase in (0.0, 1.0 - 1e-9, 1.0, 2.0 - 1e-9):
+            mp.setattr(time, "monotonic", lambda phase=phase: phase * period)
+            assert all(step is None for step in divider_glow_steps(view.sweep_divider_fragments(label)))
+
+        # A new turn is the animation's origin, rather than appearing at a random global phase.
+        view.loop.status_bar.started_at = 100.0
+        mp.setattr(time, "monotonic", lambda: 100.0)
+        assert all(step is None for step in divider_glow_steps(view.sweep_divider_fragments(label)))
 
 
 def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
@@ -128,11 +154,18 @@ def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
     label = "working"
     trail_start = 3 + len(label) + 2
     with pytest.MonkeyPatch.context() as mp:
-        span = loop.view.GLOW_STEPS / loop.view.GLOW_REACH
-        mp.setattr(time, "monotonic", lambda: (trail_start + 3.5) / loop.view.QUEUE_SWEEP_CELLS_PER_SEC)
+        cols = shutil.get_terminal_size((80, 20)).columns
+        rule_span = max(20, cols - 2) - 1
+        outside = loop.view.GLOW_REACH + loop.view.SWEEP_OFFSCREEN_MARGIN
+        travel = rule_span + 2 * outside
+        target = trail_start + 3.5
+        progress = (target + outside) / travel
+        mp.setattr(loop.view, "_sweep_progress", lambda _phase: progress)
+        mp.setattr(time, "monotonic", lambda: 0.0)
         steps = divider_glow_steps(loop.view.sweep_divider_fragments(label))
 
-    assert steps[trail_start + 3] == steps[trail_start + 4] == int(0.5 * span)
+    shades_per_cell = loop.view.GLOW_STEPS / loop.view.GLOW_REACH
+    assert steps[trail_start + 3] == steps[trail_start + 4] == int(0.5 * shades_per_cell)
     assert steps[trail_start + 3] > 0  # dimmer than a head sitting exactly on a cell
     assert steps[trail_start + 2] == steps[trail_start + 5] > steps[trail_start + 3]
 
