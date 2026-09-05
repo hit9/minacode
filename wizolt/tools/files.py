@@ -302,10 +302,11 @@ class DirectMatchError(ToolError):
     They are deliberately not a shortlist to choose from: nothing here ever picks one.
     """
 
-    def __init__(self, category: str, detail: str, offsets: tuple[int, ...] = ()):
+    def __init__(self, category: str, detail: str, offsets: tuple[int, ...] = (), target_length: int = 0):
         super().__init__(f"{category} {detail}")
         self.category = category
         self.offsets = offsets
+        self.target_length = target_length
 
 
 def direct_occurrences(text: str, needle: str) -> list[int]:
@@ -342,6 +343,7 @@ def resolve_direct(original: str, edits: list[Edit]) -> list[TextReplacement]:
                 DIRECT_TARGET_AMBIGUOUS,
                 f"old text occurs {counted} times; include more exact context or use a source view",
                 tuple(offsets[:DIRECT_OCCURRENCE_CAP]),
+                len(edit.old),
             )
         replacements.append(TextReplacement(offsets[0], offsets[0] + len(edit.old), edit.content))
     order = sorted(range(len(replacements)), key=lambda index: replacements[index].start)
@@ -526,7 +528,7 @@ class EditTool(Tool):
     def call(self) -> ToolOutput:
         path, source_name, edits = self.parse()
         mode = edit_mode(source_name, edits)
-        creating = mode is MODE_CREATE
+        creating = mode == MODE_CREATE
         view = self.resolve_view(path, source_name, mode, edits)
         if self._validate_target(path, creating):
             with open(path, encoding="utf-8") as file:
@@ -619,7 +621,7 @@ class EditTool(Tool):
     def preview(self) -> str:
         path, source_name, edits = self.parse()
         mode = edit_mode(source_name, edits)
-        creating = mode is MODE_CREATE
+        creating = mode == MODE_CREATE
         view = self.resolve_view(path, source_name, mode, edits)
         exists = self._validate_target(path, creating)
         if exists:
@@ -731,8 +733,8 @@ class EditTool(Tool):
             raise ToolError(f"{op} old must be non-empty; it is the exact text the edit replaces")
         content = item.get("content")
         if op == "delete":
-            if content:
-                raise ToolError("delete forbids content; use replace to write text in place of the target")
+            if "content" in item and content != "":
+                raise ToolError("delete content must be omitted or an empty string; use replace to write text in place of the target")
             return Edit(op=op, old=old)
         if not isinstance(content, str):
             raise ToolError("replace requires content as a string; use an explicit empty string to remove the matched text")
@@ -770,7 +772,7 @@ class EditTool(Tool):
         old view reconstructed -- it cannot be -- it is current evidence for the same intent, and
         it costs the model one retry instead of a Read plus a retry.
         """
-        if mode is not MODE_SOURCE_VIEW:
+        if mode != MODE_SOURCE_VIEW:
             return None  # create writes a whole file; direct mode carries its evidence in `old`
         view = self.session.get_source_view(source_name)
         if view is None:
@@ -899,17 +901,18 @@ class EditTool(Tool):
         try:
             replacements = resolve_direct(original, edits)
         except DirectMatchError as error:
-            recovery = self.ambiguity_recovery(original, error.offsets) if error.category == DIRECT_TARGET_AMBIGUOUS else None
+            recovery = self.ambiguity_recovery(original, error.offsets, error.target_length) if error.category == DIRECT_TARGET_AMBIGUOUS else None
             raise ToolError(str(error), recovery=recovery) from error
         lines = split_lines(original)
         return self.splice_lines(lines, direct_line_replacements(lines, replacements))
 
-    def ambiguity_recovery(self, original: str, offsets: tuple[int, ...]) -> ToolOutput | None:
+    def ambiguity_recovery(self, original: str, offsets: tuple[int, ...], target_length: int) -> ToolOutput | None:
         """A bounded view of the places an ambiguous target occurs, or None when none of them fit.
 
-        Occurrences are shown until the next one would push the view past the recovery budget: the
-        model needs enough of them to see what distinguishes the one it meant, not all of them, and
-        the count it was refused with already says how many there are.
+        Both boundaries are shown for a multi-line target: the differing context may follow its end,
+        and showing only a long repeated target's first lines would leave the model unable to widen
+        `old` without another Read. Occurrences are added until the next one's boundary windows would
+        push the view past the recovery budget.
 
         The view describes the content the targets were matched against, which inside a batch is
         the planned file rather than the one on disk -- the same content the no-op refusal shows,
@@ -918,8 +921,13 @@ class EditTool(Tool):
         lines = split_lines(original)
         ranges: list[tuple[int, int]] = []
         for offset in offsets:
-            line = original.count("\n", 0, offset) + 1
-            candidate = [*ranges, (max(1, line - self.RECOVERY_CONTEXT_LINES), min(len(lines), line + self.RECOVERY_CONTEXT_LINES))]
+            first = original.count("\n", 0, offset) + 1
+            last = original.count("\n", 0, offset + target_length - 1) + 1
+            candidate = [
+                *ranges,
+                (max(1, first - self.RECOVERY_CONTEXT_LINES), min(len(lines), first + self.RECOVERY_CONTEXT_LINES)),
+                (max(1, last - self.RECOVERY_CONTEXT_LINES), min(len(lines), last + self.RECOVERY_CONTEXT_LINES)),
+            ]
             spans = SourceSpan.build(lines, candidate)
             if ranges and sum(len(span.lines) for span in spans) > self.RECOVERY_MAX_LINES:
                 break

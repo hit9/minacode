@@ -584,6 +584,17 @@ class TestNestedEdit:
         assert "ToolScript ok" in content
         assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
 
+    async def test_nested_direct_edit_applies_without_a_read(self, tmp_path):
+        path = tmp_path / "code.txt"
+        path.write_text("a\nb\nc\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        code = 'call("Edit", {"path": "code.txt", "edits": [{"op": "replace", "old": "b\\n", "content": "B\\n"}]})\n'
+
+        content = await _run_script(s, code)
+
+        assert "ToolScript ok" in content
+        assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
+
     async def test_nested_edit_stale_anchor_reports_error(self, tmp_path):
         path = tmp_path / "code.txt"
         path.write_text("a\nb\nc\n", encoding="utf-8")

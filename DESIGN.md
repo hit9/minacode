@@ -229,9 +229,10 @@ cancellation reach all of it.
   a ToolScript body, and the bounded termination of a persistent background `Popen` handle —
   reached through the managed executor or `base.run_blocking`. Search, mention discovery, fzf, the
   external editor, and `Job` waits are native async operations; foreground Bash pipes are
-  event-loop readers. Edit prepares immutable snapshots, performs its checked batch transaction
-  through `run_blocking`, then installs receipts on the loop. A promoted Bash process moves both
-  pipes to one daemon drainer because it can outlive the loop that launched it. A thread never gets
+  event-loop readers. Edit prepares immutable snapshots, plans potentially material file changes,
+  and performs its checked batch transaction through `run_blocking`, then installs receipts on the
+  loop. A promoted Bash process moves both pipes to one daemon drainer because it can outlive the
+  loop that launched it. A thread never gets
   an exception injected into it and never owns an async client.
 - An injected synchronous input callback is an embedding boundary Python cannot cancel. It runs on
   a daemon adapter rather than the default executor, so cancelling its awaiter cannot make

@@ -9,11 +9,13 @@
   numbers, which saves the `Read` that used to sit between finding a line and changing it. The
   text must appear exactly once in the file; a target that is missing, repeated, or overlaps
   another target in the same call refuses the whole call and writes nothing, and a repeated one
-  comes back with a view of the places it occurs. Source views still work unchanged, are still
-  preferred when one is in hand, and one path cannot use both kinds of evidence in the same batch.
+  comes back with bounded context around its occurrences. Source views still work unchanged, are
+  still preferred when one is in hand, and one path cannot use both kinds of evidence in the same
+  batch.
 
 ### Fixed
 
+- Edit matching and batch planning no longer block the event loop on large files.
 - The status bar now keeps one static, semantically colored layout while work is running:
   `[yolo] model · level | mcp N · skills N | ctx N% · cache N% | index*`. Its facts still
   refresh, but it no longer sweeps, swaps to worker or compaction details, or starts a dedicated

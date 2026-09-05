@@ -57,9 +57,9 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     The second gives the exact original text of the target instead, with no view — so code found
     with `rg` or `cat` can be changed in the next tool call, without a `Read` in between. The text
     has to appear <span class="marker">exactly once</span> in the file. If it appears several
-    times, the edit is refused and comes back showing where each copy is, so the next attempt can
-    quote more of the surrounding lines; if it is not there at all, the edit is refused and nothing
-    is guessed. Matching is literal: spaces, tabs, and case all count.
+    times, the edit is refused and comes back showing bounded context around its occurrences, so the
+    next attempt can quote more of the surrounding lines; if it is not there at all, the edit is
+    refused and nothing is guessed. Matching is literal: spaces, tabs, and case all count.
 
     A successful edit returns a fresh source view for the region it changed, so consecutive edits
     to the same file keep going without re-reading it first. Successful edits appear in

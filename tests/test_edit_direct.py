@@ -52,18 +52,18 @@ def test_direct_replace_and_delete_parse_without_a_source(tmp_path):
 
     assert source == ""
     assert edits == [Edit(op="replace", old="a\n", content="A\n"), Edit(op="delete", old="b\n")]
-    assert edit_mode(source, edits) is MODE_DIRECT
+    assert edit_mode(source, edits) == MODE_DIRECT
 
 
 def test_mode_selection_covers_the_three_accepted_call_shapes(tmp_path):
     create = parse(tmp_path, "", [{"op": "create", "content": "x\n"}], path="new.txt")
-    assert edit_mode(create[1], create[2]) is MODE_CREATE
+    assert edit_mode(create[1], create[2]) == MODE_CREATE
 
     s = session(tmp_path)
     (tmp_path / "code.txt").write_text("a\nb\n", encoding="utf-8")
     key = view(s, "code.txt")
     _, source, edits = EditTool(s, ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "A\n"}]]).parse()
-    assert edit_mode(source, edits) is MODE_SOURCE_VIEW
+    assert edit_mode(source, edits) == MODE_SOURCE_VIEW
 
 
 def test_direct_replace_accepts_an_empty_content_string_as_a_removal(tmp_path):
@@ -131,7 +131,11 @@ def test_omitted_op_is_inferred_only_for_an_unambiguous_direct_replace(tmp_path)
         ("", [{"op": "replace", "old": "a\n"}], "replace requires content as a string"),
         ("", [{"op": "replace", "old": "a\n", "content": None}], "replace requires content as a string"),
         ("", [{"op": "replace", "old": "a\n", "content": 7}], "replace requires content as a string"),
-        ("", [{"op": "delete", "old": "a\n", "content": "A\n"}], "delete forbids content"),
+        ("", [{"op": "delete", "old": "a\n", "content": "A\n"}], "delete content must be omitted or an empty string"),
+        ("", [{"op": "delete", "old": "a\n", "content": 0}], "delete content must be omitted or an empty string"),
+        ("", [{"op": "delete", "old": "a\n", "content": False}], "delete content must be omitted or an empty string"),
+        ("", [{"op": "delete", "old": "a\n", "content": []}], "delete content must be omitted or an empty string"),
+        ("", [{"op": "delete", "old": "a\n", "content": {}}], "delete content must be omitted or an empty string"),
         # Neither the new mode nor the old one invents operations.
         ("", [{"op": "view", "old": "a\n", "content": "A\n"}], "Edit op must be create, replace, or delete"),
         ("", [{"op": "insert_after", "old": "a\n", "content": "A\n"}], "Edit op must be create, replace, or delete"),
@@ -300,6 +304,17 @@ def test_a_mix_of_direct_replace_and_direct_delete_applies():
     assert splice(original, edits) == "keep\nchanged\n"
 
 
+def test_operations_that_cancel_out_are_refused_without_writing(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("ab\n", encoding="utf-8")
+
+    with pytest.raises(ToolError, match="edit produced no changes"):
+        edit(s, "code.txt", [{"op": "delete", "old": "a"}, {"op": "replace", "old": "b", "content": "ab"}])
+
+    assert path.read_text(encoding="utf-8") == "ab\n"
+
+
 # --- character ranges rendered as line splices --------------------------------------------------
 
 
@@ -465,6 +480,21 @@ def test_ambiguity_recovery_stays_inside_the_existing_view_budget(tmp_path):
     assert 0 < len(body) <= EditTool.RECOVERY_MAX_LINES
 
 
+def test_multiline_ambiguity_recovery_shows_both_target_boundaries(tmp_path):
+    s = session(tmp_path)
+    repeated = "".join(f"same {line}\n" for line in range(10))
+    original = f"before first\n{repeated}after first\nseparator\nbefore second\n{repeated}after second\n"
+    (tmp_path / "code.txt").write_text(original, encoding="utf-8")
+
+    with pytest.raises(ToolError, match="direct target ambiguous") as error:
+        edit(s, "code.txt", [{"op": "replace", "old": repeated, "content": "short\n"}])
+
+    recovery = render(s, error.value.recovery)
+    assert "before first" in recovery and "after first" in recovery
+    assert "before second" in recovery and "after second" in recovery
+    assert (tmp_path / "code.txt").read_text(encoding="utf-8") == original
+
+
 @pytest.mark.parametrize(
     ("original", "edits", "message"),
     [
@@ -590,6 +620,30 @@ async def test_a_planned_direct_call_matches_the_standalone_one(tmp_path, monkey
     assert (tmp_path / "planned" / "code.txt").read_text(encoding="utf-8") == (tmp_path / "alone" / "code.txt").read_text(encoding="utf-8")
 
 
+async def test_direct_matching_and_planning_do_not_block_the_event_loop(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    call = direct_call("edit", "code.txt", [{"op": "replace", "old": "b\n", "content": "B\n"}])
+    entered, release = threading.Event(), threading.Event()
+    original = EditTool.apply
+
+    def blocked(tool, *args, **kwargs):
+        entered.set()
+        release.wait()
+        return original(tool, *args, **kwargs)
+
+    monkeypatch.setattr(EditTool, "apply", blocked)
+    task = asyncio.create_task(EditBatchPlan(s).build([call]))
+    while not entered.is_set():
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+
+    assert call.id in (await task).planned
+
+
 async def test_a_later_direct_call_observes_the_earlier_planned_result(tmp_path, monkeypatch):
     s = yolo_session(tmp_path, monkeypatch)
     (tmp_path / "code.txt").write_text("a\nb\nc\n", encoding="utf-8")
@@ -668,6 +722,29 @@ async def test_one_path_may_not_change_evidence_mode_inside_one_batch(tmp_path, 
     assert (tmp_path / "code.txt").read_text(encoding="utf-8") == ("a\nB\n" if direct_first else "A\nb\n")
     assert s.tool_errors and "mixed edit evidence modes" in s.tool_errors[0].error
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
+
+
+@pytest.mark.parametrize("direct_first", [True, False], ids=("failed-direct-then-view", "failed-view-then-direct"))
+async def test_a_failed_call_does_not_lock_the_paths_evidence_mode(tmp_path, monkeypatch, direct_first):
+    s = yolo_session(tmp_path, monkeypatch)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+    key = view(s, "code.txt")
+    if direct_first:
+        failed = direct_call("failed", "code.txt", [{"op": "replace", "old": "missing\n", "content": "X\n"}])
+        valid = ToolCall("valid", "Edit", ["code.txt", key, [{"op": "replace", "start": 2, "end": 2, "content": "B\n"}]])
+        expected = "a\nB\n"
+    else:
+        path.write_text("changed\nb\n", encoding="utf-8")
+        failed = ToolCall("failed", "Edit", ["code.txt", key, [{"op": "replace", "start": 1, "end": 1, "content": "A\n"}]])
+        valid = direct_call("valid", "code.txt", [{"op": "replace", "old": "b\n", "content": "B\n"}])
+        expected = "changed\nB\n"
+
+    messages = await runner(s).run([failed, valid])
+
+    assert "ToolError" in messages[0]["content"]
+    assert "mixed edit evidence modes" not in messages[1]["content"]
+    assert path.read_text(encoding="utf-8") == expected
 
 
 async def test_a_refused_direct_call_leaves_the_other_planned_calls_alone(tmp_path, monkeypatch):
@@ -880,8 +957,7 @@ def legacy_session(tmp_path):
     path = SessionSnapshotStore.session_path(config.data_dir, str(tmp_path), fixture["uid"])
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:
-        for line in fixture["lines"]:
-            file.write(json.dumps(line).replace("{CWD}", str(tmp_path)) + "\n")
+        file.writelines(json.dumps(line).replace("{CWD}", str(tmp_path)) + "\n" for line in fixture["lines"])
     (tmp_path / "code.txt").write_text("alpha\nBETA\ngamma\n", encoding="utf-8")
     return Session.load_snapshot(fixture["uid"], config=config, cwd=str(tmp_path))
 
@@ -1017,7 +1093,9 @@ def test_the_system_prompt_points_bash_output_at_direct_evidence():
 )
 def test_every_direct_refusal_names_a_concrete_next_step(tmp_path, edits, expected):
     s = session(tmp_path)
-    (tmp_path / "code.txt").write_text("a\nb\na\nb\n", encoding="utf-8") if len(edits) == 1 else (tmp_path / "code.txt").write_text("a\nb\na\n", encoding="utf-8")
+    (tmp_path / "code.txt").write_text("a\nb\na\nb\n", encoding="utf-8") if len(edits) == 1 else (tmp_path / "code.txt").write_text(
+        "a\nb\na\n", encoding="utf-8"
+    )
 
     with pytest.raises(ToolError, match=expected):
         edit(s, "code.txt", edits)

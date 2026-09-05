@@ -163,11 +163,19 @@ class EditBatchPlan:
             )
             hint = "use the fresh view below" if recovery else "Read or Search again to obtain a current view"
             self.errors[call.id] = (f"source missing {source_name} is unknown or expired; {hint}", recovery)
-        for call, tool, path, mode, view, edits in prepared:
-            try:
-                self.plan_call(call, tool, path, mode, view, edits, snapshots[path])
-            except ToolError as error:
-                self.errors[call.id] = (str(error), error.recovery)
+
+        def plan_prepared() -> None:
+            # Matching, line reconstruction, and diff inputs scale with file size and edit count.
+            # Keep that potentially material local work beside snapshot I/O on the managed worker;
+            # this plan is not observable until build returns, and it never writes a file.
+            for call, tool, path, mode, view, edits in prepared:
+                try:
+                    self.plan_call(call, tool, path, mode, view, edits, snapshots[path])
+                except ToolError as error:
+                    self.errors[call.id] = (str(error), error.recovery)
+
+        if prepared:
+            await run_blocking(plan_prepared)
         return self
 
     def plan_call(
@@ -180,7 +188,7 @@ class EditBatchPlan:
         edits: list[Edit],
         snapshot: FileSnapshot,
     ) -> None:
-        state = self.file_state(path, mode is MODE_CREATE, view, snapshot)
+        state = self.file_state(path, mode == MODE_CREATE, view, snapshot)
         self.check_evidence(state, mode)
         before, created = state.text(), not state.exists
         before_lines = [line.text for line in state.lines]
@@ -194,6 +202,8 @@ class EditBatchPlan:
         self.planned[call.id] = self.PlannedEdit(
             path, before, after, created, result.changes, tool.warnings_block(edits, result.seam_duplicates), result.relocations
         )
+        if mode != MODE_CREATE:
+            state.evidence = mode
         state.lines, state.exists, state.edited = result.lines, True, True
         state.consumed |= result.consumed
 
@@ -205,14 +215,13 @@ class EditBatchPlan:
         be claiming a provenance it no longer has. The call is refused rather than reordered: one
         more tool round costs a round trip, a fabricated origin map costs a correct edit.
         """
-        if mode is MODE_CREATE:
+        if mode == MODE_CREATE:
             return
         if state.evidence and state.evidence != mode:
             raise source_error(
                 MIXED_EDIT_EVIDENCE,
                 f"this path was already edited through {state.evidence} evidence in this batch; issue this Edit in a later tool round",
             )
-        state.evidence = mode
 
     def file_state(self, path: str, creating: bool, view: SourceView | None, snapshot: FileSnapshot) -> FileState:
         if path in self.files:
