@@ -46,8 +46,11 @@ class BashTool(Tool):
     _CONTROL_OPERATOR_RE: ClassVar[re.Pattern] = re.compile(r"&&|\|\||[|;\n]")
     LOG_LEXER = "bash"
     DESCRIPTION = (
-        "Run one shell invocation in the workspace with live stdout/stderr and an exit code. Combine dependent shell steps; bound noisy output. "
-        "Output is never source=view.N, but exact text seen here can be edited directly as Edit old without Read. Never expose secrets or `.env`."
+        "Run a quick shell invocation in the workspace with live stdout/stderr and an exit code. "
+        "Combine dependent steps with &&, ||, or |; emit unrelated work as separate tool calls in the same response. "
+        "Bound noisy output with available filters or command limits. Use InspectCode for symbols and call graphs, and Read/Search when editable numbered source is useful. "
+        "Write source with Edit, not shell redirection. Output is never source=view.N, but exact text seen here can be edited directly as Edit old without Read. "
+        "A long-running command continues as a Job; inspect, wait for, or kill it there. Never expose secrets or `.env`."
     )
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None

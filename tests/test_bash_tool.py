@@ -118,6 +118,18 @@ def test_job_wait_budget_is_always_capped_at_twenty_seconds(tmp_path):
     assert "capped at 20s" in JobTool.params_schema()["properties"]["timeout"]["description"]
 
 
+def test_bash_schema_guides_composition_and_tool_choice_without_assuming_ripgrep():
+    text = BashTool.DESCRIPTION
+
+    assert "dependent steps with &&, ||, or |" in text
+    assert "unrelated work as separate tool calls in the same response" in text
+    assert "Use InspectCode for symbols and call graphs" in text
+    assert "Read/Search when editable numbered source is useful" in text
+    assert "Write source with Edit, not shell redirection" in text
+    assert "continues as a Job" in text
+    assert "prefer rg" not in text.lower()
+
+
 async def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypatch):
     """Cancelling the turn abandons a Job wait and nothing else: the command keeps running and
     stays addressable, which is the whole point of having backgrounded it.
