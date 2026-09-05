@@ -678,8 +678,6 @@ class TuiRuntime:
 
         if self.shutdown is not None:
             self.shutdown.set()
-        if self.force_exit_timer is not None:
-            self.force_exit_timer.cancel()
         # Before anything is cancelled: an accepted submission is a keystroke the reader already
         # sent, and its save is bounded. Cancelling the consumer first would drop it.
         await settle(self._close_submissions())
@@ -708,5 +706,7 @@ class TuiRuntime:
             application.cancel()
         await settle(application)
         self.loop.tui = None
+        if self.force_exit_timer is not None:
+            self.force_exit_timer.cancel()
         if self.error is None and cleanup_errors:
             self.error = cleanup_errors[0]

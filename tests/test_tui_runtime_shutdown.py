@@ -11,6 +11,7 @@ import pytest
 from tui_harness import loop as command_loop_for
 from tui_harness import wait_for
 
+import wizolt.cli.runtime as runtime_module
 from wizolt.cli import TuiRuntime
 from wizolt.cli.runtime import ScrollbackWriter
 from wizolt.tools import Tool
@@ -342,15 +343,45 @@ async def test_force_exit_arms_a_bounded_deadline_that_shutdown_disarms(tmp_path
     cancel it, or a session that exited cleanly would still be SIGTERMed a second later."""
     runtime, command_loop, tui = runtime_for(tmp_path, monkeypatch)
     cancelled = []
-    monkeypatch.setattr(command_loop.agent, "cancel", lambda: cancelled.append(1))
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
 
-    assert await run_until(runtime, runtime.force_exit) == 0
+    class FakeTimer:
+        def __init__(self, interval, action):
+            self.interval = interval
+            self.action = action
+            self.daemon = False
+            self.started = False
+            self.cancelled = False
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    async def close_resources():
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    monkeypatch.setattr(runtime_module.threading, "Timer", FakeTimer)
+    monkeypatch.setattr(command_loop.agent, "cancel", lambda: cancelled.append(1))
+    monkeypatch.setattr(command_loop, "close_resources", close_resources)
+
+    session = asyncio.create_task(runtime.run())
+    await wait_for(lambda: runtime.scrollback is not None)
+    runtime.force_exit()
+    await cleanup_started.wait()
 
     timer = runtime.force_exit_timer
     assert timer is not None
-    # `finished`, not `is_alive`: cancel() sets that event, and the timer thread is only reaped
-    # once it wakes -- asserting on liveness would be racing the scheduler, not the disarm.
-    assert timer.finished.is_set()  # disarmed by the shutdown it asked for
+    assert timer.started
+    assert not timer.cancelled  # a cleanup hang still has the one-second escape hatch
+
+    release_cleanup.set()
+    assert await session == 0
+
+    assert timer.cancelled  # a completed shutdown disarms the otherwise pending signal
     assert cancelled  # and the turn was asked to stop before the deadline was armed
     assert tui.exited.is_set()
 
