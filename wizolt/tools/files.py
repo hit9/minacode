@@ -470,7 +470,7 @@ class EditTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         edit = cls.object_schema({
-            "op": {"type": "string", "enum": ["create", "replace", "delete"], "description": "Operation"},
+            "op": {"type": "string", "enum": ["create", "replace", "delete"], "description": "Required; never omit: create, replace, or delete"},
             "start": {"type": "integer", "minimum": 1, "description": "Inclusive first line; source-view mode only"},
             "end": {"type": "integer", "minimum": 1, "description": "Inclusive last line; source-view mode only"},
             "old": {"type": "string", "minLength": 1, "description": "Exact unique literal target; direct mode only, and may be a partial line"},
@@ -482,7 +482,7 @@ class EditTool(Tool):
         return cls.object_schema({
             "path": {"type": "string", "description": "File to create or patch"},
             "source": {"type": "string", "description": "view.N proving every start:end; omit for create or direct old mode"},
-            "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Operations validated and applied together"},
+            "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Atomic operation batch; every item requires op"},
         }, ["path", "edits"])
         # fmt: on
 

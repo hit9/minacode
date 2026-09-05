@@ -627,13 +627,20 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
 def test_tool_schemas_are_strict_for_high_risk_tools():
     bash_params = BashTool.schema()["function"]["parameters"]
     assert bash_params["required"] == ["command"]
-    assert bash_params["properties"]["command"]["pattern"] == r"^.*\S.*$"
+    assert bash_params["properties"]["command"]["pattern"] == r"^[\s\S]*\S[\s\S]*$"
+    bash_description = BashTool.schema()["function"]["description"]
+    assert "conditionals, loops, functions, pipelines, and multiline scripts" in bash_description
+    assert "if, loops, functions, and multiline scripts are valid" in bash_params["properties"]["command"]["description"]
 
     edit_params = EditTool.schema()["function"]["parameters"]
     assert edit_params["required"] == ["path", "edits"]
     assert set(edit_params["properties"]) == {"edits", "path", "source"}
     assert "source=view.N from Read, Search, or InspectCode" in EditTool.schema()["function"]["description"]
-    assert edit_params["properties"]["edits"]["items"]["properties"]["op"]["enum"] == ["create", "replace", "delete"]
+    edits_schema = edit_params["properties"]["edits"]
+    assert edits_schema["items"]["required"] == ["op"]
+    assert edits_schema["items"]["properties"]["op"]["enum"] == ["create", "replace", "delete"]
+    assert "never omit" in edits_schema["items"]["properties"]["op"]["description"]
+    assert "every item requires op" in edits_schema["description"]
 
     recall_keys = RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
     assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"
@@ -642,6 +649,8 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     assert {"path", "ranges", "files"} <= set(read_params["properties"])
 
     note_params = NoteTool.schema()["function"]["parameters"]
+    assert "across context compaction" in NoteTool.schema()["function"]["description"]
+    assert "non-trivial work" in NoteTool.schema()["function"]["description"]
     assert "minItems" not in note_params["properties"]["replace_plan"]
     assert note_params["properties"]["replace_plan"]["items"]["properties"]["status"]["enum"] == ["todo", "doing", "done", "blocked"]
     assert "minItems" not in note_params["properties"]["replace_known"]

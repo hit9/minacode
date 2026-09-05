@@ -38,13 +38,13 @@ class AskTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         question = cls.object_schema({
-            "question": {"type": "string", "description": "The question to ask the user"},
+            "question": {"type": "string", "minLength": 1, "description": "Required; never omit. Question shown to the user"},
             "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional concise, mutually exclusive labels the user can pick from"},
             "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional rich Markdown per choice: combine explanation with examples, diagrams, code, diffs, tables, or trees; use short sections and blank lines without redundant question text or controls"},
             "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
         }, ["question"])
         return cls.object_schema({
-            "questions": {"type": "array", "minItems": 1, "description": "Questions to ask, one after another", "items": question},
+            "questions": {"type": "array", "minItems": 1, "description": "One or more questions; every item requires question", "items": question},
         }, ["questions"])
         # fmt: on
 

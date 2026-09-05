@@ -46,11 +46,10 @@ class BashTool(Tool):
     _CONTROL_OPERATOR_RE: ClassVar[re.Pattern] = re.compile(r"&&|\|\||[|;\n]")
     LOG_LEXER = "bash"
     DESCRIPTION = (
-        "Run a quick shell invocation in the workspace with live stdout/stderr and an exit code. "
-        "Combine dependent steps with &&, ||, or |; emit unrelated work as separate tool calls in the same response. "
-        "Bound noisy output with available filters or command limits. Use InspectCode for symbols and call graphs, and Read/Search when editable numbered source is useful. "
-        "Write source with Edit, not shell redirection. Output is never source=view.N, but exact text seen here can be edited directly as Edit old without Read. "
-        "A long-running command continues as a Job; inspect, wait for, or kill it there. Never expose secrets or `.env`."
+        "Run any Bash program in the workspace with live output and an exit code; conditionals, loops, functions, pipelines, and multiline scripts are valid. "
+        "Combine dependent steps with &&, ||, or |; emit unrelated work as separate tool calls in the same response. Bound noisy output. "
+        "Use InspectCode for symbols and call graphs; use Read/Search when editable numbered source is useful. Write source with Edit, not shell redirection. "
+        "Exact output works as Edit old without Read, but is never source=view.N. A long command continues as a Job. Never expose secrets or `.env`."
     )
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
@@ -186,7 +185,7 @@ class BashTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         return cls.object_schema({
-            "command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run starting in the workspace; filter noisy output with head/tail/rg"},
+            "command": {"type": "string", "minLength": 1, "pattern": "^[\\s\\S]*\\S[\\s\\S]*$", "description": "Required Bash program; if, loops, functions, and multiline scripts are valid. Bound noisy output"},
         }, ["command"])
         # fmt: on
 

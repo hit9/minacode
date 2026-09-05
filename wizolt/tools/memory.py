@@ -270,7 +270,7 @@ class RecallContextTool(Tool):
 
 class NoteTool(Tool):
     NAME = "Note"
-    DESCRIPTION = "View or update durable goal, plan, facts, and verification notes. Replacement fields replace their whole value; append_known adds facts."
+    DESCRIPTION = "Durable goal, plan, facts, and checks across context compaction. Use early and keep current for non-trivial work. Replacement fields replace; append_known adds facts."
     STORES_RESULT = False
     MUTATES = True
 

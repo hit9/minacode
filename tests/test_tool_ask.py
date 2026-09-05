@@ -188,6 +188,9 @@ def test_ask_tool_schema():
     assert item["additionalProperties"] is False
     props = item["properties"]
     assert props["question"]["type"] == "string"
+    assert props["question"]["minLength"] == 1
+    assert "never omit" in props["question"]["description"]
+    assert "every item requires question" in questions["description"]
     assert props["choices"]["items"]["type"] == "string"
     assert props["previews"]["items"]["type"] == "string"
     assert "concise" in props["choices"]["description"]
