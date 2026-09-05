@@ -15,23 +15,17 @@ from wizolt.mcp.config import MCPServerConfig, has_header, parse_config
 from wizolt.mcp.rendering import (
     MCPResourceInfo,
     MCPToolInfo,
-    describe_properties,
     dump_object,
     extract_uris,
     format_resource_line,
     format_tool_line,
     index_body,
-    join_bounded,
     markdown_cell,
     normalize_resource,
     normalize_result,
     render_describe,
-    resources_block,
     resources_info,
-    schema_json,
-    schema_props_required,
     server_lines,
-    structured_content,
     tool_args_summary,
 )
 from wizolt.mcp.tokens import MCPFileTokenStore
@@ -115,9 +109,6 @@ class MCPManager:
         configs = [parse_config(str(name), raw) for name, raw in mcp_config.items() if isinstance(raw, dict)]
         return configs
 
-    def _parse_config(self, name: str, raw: Json) -> MCPServerConfig:
-        return parse_config(name, raw)
-
     @staticmethod
     def _has_header(headers: dict[str, str], name: str) -> bool:
         return has_header(headers, name)
@@ -151,12 +142,6 @@ class MCPManager:
 
     def discovering(self, name: str) -> bool:
         return name in self._discovering_servers
-
-    def discovery_progress(self) -> tuple[int, int]:
-        connected = self.tools.keys() | self.resources.keys()
-        pending = sum(name not in connected for name in self._discovering_servers)
-        automatic = sum(config.auto_connect for config in self.parse_configs())
-        return len(connected), max(automatic, len(connected) + pending)
 
     def _forget(self, name: str) -> None:
         self.tools.pop(name, None)
@@ -719,10 +704,6 @@ class MCPManager:
         body = "\n".join(blocks)
         return f'<MCPAutoResources note="docs referenced by {server}.{tool_name}; injected once">\n{body}\n</MCPAutoResources>\n'
 
-    @classmethod
-    def _structured_content(cls, result: Any) -> str:
-        return structured_content(result)
-
     @staticmethod
     def _dump_object(item: Any) -> str:
         return dump_object(item)
@@ -732,13 +713,6 @@ class MCPManager:
 
     def _format_resource_line(self, info: MCPResourceInfo) -> str:
         return format_resource_line(info)
-
-    def _join_bounded(self, parts: list[str]) -> str:
-        return join_bounded(parts, raw_output_limit=self.RAW_OUTPUT_LIMIT)
-
-    @staticmethod
-    def _schema_props_required(schema: Json) -> tuple[Json, list[Any]]:
-        return schema_props_required(schema)
 
     def normalize_result(self, result: Any) -> str:
         """Render a tool result as the text the model reads.
@@ -810,15 +784,6 @@ class MCPManager:
             argument_description_limit=self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT,
         )
 
-    def _describe_properties(self, schema: Json, label: str, bare: str = "") -> list[str]:
-        return describe_properties(
-            schema,
-            label,
-            bare,
-            argument_limit=self.DESCRIBE_ARGUMENT_LIMIT,
-            argument_description_limit=self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT,
-        )
-
     def render_tools_index(self) -> str:
         """Render the MCP tools block injected into every model turn (in the cached prefix).
 
@@ -872,9 +837,6 @@ class MCPManager:
         # not callable until the index fits (fewer servers, or consult /mcp tools).
         self.index_truncated = True
         return text[: self.INDEX_TOTAL_LIMIT - 10] + "\n... MCP tools truncated; use /mcp tools for full list."
-
-    def _resources_block(self, server: str, resources: list[MCPResourceInfo]) -> list[str]:
-        return resources_block(server, resources)
 
     def _server_lines(self, server: str, tools: list[MCPToolInfo], resources: list[MCPResourceInfo], *, include_schema: bool = True) -> list[str]:
         return server_lines(server, tools, resources, include_schema=include_schema, schema_limit=self.INDEX_SCHEMA_LIMIT)
@@ -963,10 +925,6 @@ class MCPManager:
     @classmethod
     def _extract_uris(cls, text: str, limit: int = 5) -> list[str]:
         return extract_uris(text, limit)
-
-    @staticmethod
-    def _schema_json(schema: Json, limit: int) -> str:
-        return schema_json(schema, limit)
 
     def _tool_args_summary(self, info: MCPToolInfo) -> str:
         return tool_args_summary(info)
