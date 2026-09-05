@@ -18,7 +18,6 @@ from wizolt.mcp.rendering import (
     dump_object,
     extract_uris,
     format_resource_line,
-    format_tool_line,
     index_body,
     markdown_cell,
     normalize_resource,
@@ -918,9 +917,6 @@ class MCPManager:
             available = ", ".join(t.name for t in tools) or "(none)"
             return f"[{server}] tool '{tool}' not found; available: {available}"
         return "\n".join(self._server_lines(server, tools, resources))
-
-    def _format_tool_line(self, server: str, info: MCPToolInfo, *, include_schema: bool = True) -> str:
-        return format_tool_line(server, info, include_schema=include_schema, schema_limit=self.INDEX_SCHEMA_LIMIT)
 
     @classmethod
     def _extract_uris(cls, text: str, limit: int = 5) -> list[str]:

@@ -8,6 +8,7 @@ from wizolt.config import (
     Config,
 )
 from wizolt.mcp import MCPManager, MCPToolInfo
+from wizolt.mcp.rendering import format_tool_line
 from wizolt.session import Session, bootstrap_features
 from wizolt.tools import Tool
 
@@ -19,7 +20,7 @@ class TestToolIndexRendering:
         assert s.mcp.render_tools_index() == ""
 
     def test_format_tool_line_with_type(self):
-        """_format_tool_line shows name: type."""
+        """format_tool_line shows name: type."""
         info = mcp_tool_info(
             "test",
             "echo",
@@ -29,8 +30,7 @@ class TestToolIndexRendering:
                 "required": ["text"],
             },
         )
-        s = session("/tmp")
-        line = s.mcp._format_tool_line("test", info)
+        line = format_tool_line("test", info, schema_limit=MCPManager.INDEX_SCHEMA_LIMIT)
         assert "text: string" in line
 
     def test_format_tool_line_requires_args(self):
@@ -47,8 +47,7 @@ class TestToolIndexRendering:
                 "required": ["a"],
             },
         )
-        s = session("/tmp")
-        line = s.mcp._format_tool_line("test", info)
+        line = format_tool_line("test", info, schema_limit=MCPManager.INDEX_SCHEMA_LIMIT)
         assert "a: string" in line
         assert "b: integer" in line
         # a is required, b is optional → semicolon
@@ -57,16 +56,14 @@ class TestToolIndexRendering:
     def test_format_tool_line_no_args(self):
         """Tools with no input_schema have empty parens."""
         info = mcp_tool_info("test", "ping", input_schema={})
-        s = session("/tmp")
-        line = s.mcp._format_tool_line("test", info)
+        line = format_tool_line("test", info, schema_limit=MCPManager.INDEX_SCHEMA_LIMIT)
         assert "ping()" in line
 
     def test_format_tool_line_description_truncation(self):
         """Long description is truncated."""
         long_desc = "x " * 50
         info = mcp_tool_info("test", "tool", description=long_desc)
-        s = session("/tmp")
-        line = s.mcp._format_tool_line("test", info)
+        line = format_tool_line("test", info, schema_limit=MCPManager.INDEX_SCHEMA_LIMIT)
         # Description lives on the first line; the schema is appended on a following line.
         summary = line.split("\n")[0]
         assert len(summary.split(" - ")[-1]) <= 83
@@ -285,6 +282,5 @@ class TestToolIndexTruncation:
                 "required": required,
             },
         )
-        s = session("/tmp")
-        line = s.mcp._format_tool_line("test", info)
+        line = format_tool_line("test", info, schema_limit=MCPManager.INDEX_SCHEMA_LIMIT)
         assert "..." in line
