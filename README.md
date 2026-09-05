@@ -36,7 +36,7 @@ Wizolt is the former minacode, which began as the single-file nanocode. The impl
 - **Prompt-cache aware:** stable request prefixes let supported providers reuse work and can reach 90–99% cache hit rates; `/status` shows the reported result.
 - **Code navigation:** jump to definitions, callers, and implementations with a searchable code index.
 - **Live follow-ups:** type while the agent works; `Enter` queues a message for the next model step, while `Ctrl-C` discards a draft or interrupts the task once the input is empty.
-- **Anchored edits:** structured edits use `line:hash` anchors and reject stale file content.
+- **Evidence-checked edits:** patch from a numbered source view or exact unique text; stale and ambiguous targets are refused.
 - **Resumable sessions:** conversation, tool calls, diffs, and working memory survive `-c` or `--resume`.
 - **Built-in diff viewer:** `/diff` shows the latest round and the net session result.
 - **MCP and skills:** connect Model Context Protocol servers and load Markdown instruction packs on demand.

@@ -23,6 +23,11 @@
 
 ### Fixed
 
+- Force exit now keeps its one-second emergency deadline armed until graceful shutdown actually
+  finishes, so a stuck cleanup cannot disable the escape hatch that is meant to end it.
+- Terminal output, piped input, and Bash process cleanup now finish even when a rare terminal write
+  or event-loop reader setup fails; errors are still reported after owned tasks and processes have
+  been released.
 - Agent guidance now prioritizes the shortest safe tool path: act on the first ready batch, wait
   only for true data dependencies, and keep durable notes for non-trivial work. Bash accepts full
   shell programs, while Edit and Ask schemas call out fields models commonly omitted.

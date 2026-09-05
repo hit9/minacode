@@ -571,11 +571,7 @@ Full documentation: https://wizolt.readthedocs.io
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def close_resources(self) -> None:
-        """Close what this session opened, on the loop that opened it.
-
-        MCP is the one exception left: it still owns a private loop of its own, so its synchronous
-        close runs on the managed executor rather than here.
-        """
+        """Close model and MCP work on the session loop that opened it."""
 
         with contextlib.suppress(Exception):
             await self.agent.model.close()

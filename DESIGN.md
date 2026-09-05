@@ -257,13 +257,12 @@ Six explicit thread construction sites remain, each for a reason the loop cannot
 1. `warm_provider_sdks` — pre-runtime import latency, started before any loop exists.
 2. ToolScript's single-worker executor — arbitrary synchronous Python, kept off the loop.
 3. the promoted-Bash drainer — its process and pipes may outlive the launching loop.
-4. the force-exit timer — it has to fire when the loop is the thing that is wedged.
-5. `StatusBar` — the simple colored CLI's status ticker.
-6. `BashLivePreview` — the simple colored CLI's live-output ticker. Their `start`/`stop`
-   are called from worker threads (`with_status_paused` inside `to_thread`, tool output callbacks),
-   so an asyncio ticker would need a cross-thread blocking bridge on every one of those call sites
-   to keep `stop` erasing the region only after the ticker has settled. They own no session state
-   and are not on the model/tool path, so they stay threads.
+4. the injected-input adapter — an embedding's synchronous callback may never return, so a daemon
+   lets the runtime cancel its wait without making `asyncio.run()` join the callback.
+5. the force-exit timer — it has to fire when the loop is the thing that is wedged.
+6. `BashLivePreview` — the simple colored CLI's live-output heartbeat. It owns only renderer state
+   and terminal writes, and `finish` joins it before erasing the live region; it never owns session
+   or model/tool state. The TUI renders the same facts on its event loop and starts no ticker thread.
 
 **Cancellation is a request, and quiescence is the answer.** The turn is one task; `Agent.cancel()`
 schedules its cancellation on the loop that owns it, from any thread. Cancelling the task that
