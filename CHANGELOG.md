@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- The final resume command now appears as a green saved-session notice with one blank row above it.
 - Slash-command completion now narrows within the same input event, so rapidly typing `/p` and
   pressing Tab no longer closes, reopens, or resets the menu.
 - The early startup banner now leaves one blank row before the first user message instead of

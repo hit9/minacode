@@ -896,6 +896,8 @@ class UiPrinter:
             return [(Theme.fg("muted"), text + "\n")]
         if text.startswith("wizolt "):
             return [(Theme.fg("accent"), text + "\n")]
+        if text.startswith("Resume "):
+            return [(Theme.fg("success"), line + "\n") for line in text.splitlines()]
         if text.startswith(("Error:", "ConfigError:", "Unknown command:")):
             return [(Theme.fg("error"), text + "\n")]
         return [(Theme.fg("text"), line + "\n") for line in text.splitlines() or [""]]

@@ -7,6 +7,7 @@ import threading
 import time
 
 from agent_harness import session
+from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.utils import get_cwidth
 
 import wizolt.cli.commands as commands_mod
@@ -26,6 +27,7 @@ from wizolt.config import (
     Config,
 )
 from wizolt.engine import Agent
+from wizolt.render import Theme
 from wizolt.session import Session, SessionEntry, SessionSnapshotStore
 from wizolt.tui import TuiApp
 
@@ -49,6 +51,37 @@ async def test_exit_command_prints_resume_command(tmp_path):
     # The session took its name from the opening message; the pasted line still carries the uid.
     assert output[-1] == f"Resume 'hello' with:\nwizolt --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+
+
+def test_resume_line_is_separated_and_colored_as_a_saved_session(tmp_path):
+    s = session(tmp_path)
+    s.rename("work")
+    loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    printed = []
+    loop.ui.color = True
+    loop.ui._scrollback_print = printed.append
+
+    loop.emit("previous output")
+    loop.emit_resume_line(s.uid)
+
+    fragments = [fragment for part in printed for fragment in to_formatted_text(part)]
+    assert "".join(text for _, text in fragments) == f"previous output\n\nResume 'work' with:\nwizolt --resume {s.uid}\n"
+    assert {style for style, text in fragments if text.startswith(("Resume ", "wizolt --resume "))} == {Theme.fg("success")}
+
+
+def test_resume_line_does_not_double_an_existing_gap(tmp_path):
+    s = session(tmp_path)
+    loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    printed = []
+    loop.ui.color = True
+    loop.ui._scrollback_print = printed.append
+
+    loop.emit("previous output")
+    loop.ui.separate()
+    loop.emit_resume_line(s.uid)
+
+    text = "".join(fragment for part in printed for _, fragment in to_formatted_text(part))
+    assert text == f"previous output\n\nResume with:\nwizolt --resume {s.uid}\n"
 
 
 async def stored_session(tmp_path, text, *, name=""):
@@ -445,6 +478,7 @@ async def test_session_preview_cache_uses_its_task_owner_for_load_failures(tmp_p
     target = await stored_session(tmp_path, "broken", name="broken")
     await target.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(target.config.data_dir, target.cwd)[0]
+
     def fail(_cls, _path, limit=5):
         del limit
         raise OSError("gone during preview")

@@ -895,6 +895,7 @@ Full documentation: https://wizolt.readthedocs.io
             # The name goes in the sentence, never in the command: the line below is meant to be
             # pasted, and only the uid is guaranteed to still mean this session tomorrow.
             name = self.session.name
+            self.ui.separate()
             self.emit(f"Resume {name!r} with:\nwizolt --resume {uid}" if name else f"Resume with:\nwizolt --resume {uid}")
 
     def read_input_sync(
