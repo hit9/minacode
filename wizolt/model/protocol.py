@@ -379,14 +379,6 @@ class AnthropicWire:
             payload["tools"] = request_tools
         return payload
 
-    def assistant_blocks(self, message: Json, origin: str = "") -> list[Json]:
-        return anthropic_module.anthropic_assistant_blocks(
-            message,
-            origin,
-            provider_origin=self._client.provider_origin,
-            replayable_echo=self._client.replayable_echo,
-        )
-
     def result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
         return anthropic_module.anthropic_result(
             result,
