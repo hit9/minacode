@@ -5,9 +5,11 @@ class _StubModel:
     """Compactor requires a model; planning-only tests never touch it."""
 
 
+import asyncio
 import json
 import os
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -574,10 +576,12 @@ async def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     """The engine half of the same rule: what run() appends around the request is not a request."""
     folder = os.path.join(tmp_path, ".wizolt", "skills", "triage")
     os.makedirs(folder, exist_ok=True)
-    with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
-        handle.write("---\nname: triage\ndescription: triage a bug\n---\nReproduce first.\n")
-    with open(os.path.join(tmp_path, "issue.py"), "w", encoding="utf-8") as handle:
-        handle.write("raise RuntimeError\n")
+    await asyncio.to_thread(
+        (Path(folder) / "SKILL.md").write_text,
+        "---\nname: triage\ndescription: triage a bug\n---\nReproduce first.\n",
+        encoding="utf-8",
+    )
+    await asyncio.to_thread((Path(tmp_path) / "issue.py").write_text, "raise RuntimeError\n", encoding="utf-8")
     s = session(tmp_path)  # discovers the skill written above
 
     async def mcp_mentions(_text):

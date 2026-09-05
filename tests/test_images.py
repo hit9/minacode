@@ -1,7 +1,9 @@
+import asyncio
 import base64
 import json
 import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -97,8 +99,7 @@ async def test_session_stores_content_addressed_image_and_persists_refs(tmp_path
     assert image is not None
     asset = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets", image.ref)
     assert os.path.isfile(asset)
-    with open(asset, "rb") as file:
-        assert file.read() == path.read_bytes()
+    assert await asyncio.to_thread(Path(asset).read_bytes) == path.read_bytes()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.messages[0] == message
@@ -159,10 +160,8 @@ async def test_garbage_collect_spares_dotfile_staging_and_drops_stray_files(tmp_
     assets = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
     staged = os.path.join(assets, ".image-93e8u1vn")
     stray = os.path.join(assets, "orphan-deadbeef")
-    with open(staged, "w") as file:
-        file.write("staging")
-    with open(stray, "w") as file:
-        file.write("stray")
+    await asyncio.to_thread(Path(staged).write_text, "staging")
+    await asyncio.to_thread(Path(stray).write_text, "stray")
 
     await s.save_snapshot()
 
@@ -183,10 +182,8 @@ async def test_garbage_collect_clears_stale_image_staging_and_spares_fresh(tmp_p
     assets = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
     stale = os.path.join(assets, ".image-93e8u1vn")
     fresh = os.path.join(assets, ".image-93e8u1vo")
-    with open(stale, "w") as file:
-        file.write("residue")
-    with open(fresh, "w") as file:
-        file.write("in flight")
+    await asyncio.to_thread(Path(stale).write_text, "residue")
+    await asyncio.to_thread(Path(fresh).write_text, "in flight")
     os.utime(stale, (time.time() - 3600, time.time() - 3600))
 
     await s.save_snapshot()
@@ -226,8 +223,8 @@ async def test_store_survives_snapshot_gc_between_mkstemp_and_replace(tmp_path, 
 
     assert intercepted["hit"] is True  # the race was actually exercised
     assert os.path.isfile(os.path.join(s.images.assets_dir(), stored.images[0].ref))
-    with open(os.path.join(s.images.assets_dir(), stored.images[0].ref), "rb") as file:
-        assert file.read() == racing.read_bytes()
+    asset = os.path.join(s.images.assets_dir(), stored.images[0].ref)
+    assert await asyncio.to_thread(Path(asset).read_bytes) == racing.read_bytes()
 
 
 async def test_recalling_image_follow_up_keeps_asset_until_resubmission(tmp_path):
@@ -668,8 +665,7 @@ async def test_load_payloads_rejects_corrupt_and_missing_assets(tmp_path):
     message = {"role": "user", "content": "x", IMAGE_REFS_KEY: [image.to_json()]}
     asset = os.path.join(s.images.assets_dir(), image.ref)
 
-    with open(asset, "wb") as file:
-        file.write(b"tampered")
+    await asyncio.to_thread(Path(asset).write_bytes, b"tampered")
     with pytest.raises(ModelError, match="corrupt"):
         await s.images.load_payloads([message])
 
@@ -691,7 +687,6 @@ async def test_load_payloads_skips_text_only_refs(tmp_path):
 async def test_admission_copy_blocked_still_lets_the_loop_advance(tmp_path, monkeypatch):
     """Admission runs the image copy on the executor, so a slow disk cannot stall the loop while a
     submitted image is being stored."""
-    import asyncio
     import shutil
     import threading
 
@@ -732,7 +727,6 @@ async def test_admission_copy_blocked_still_lets_the_loop_advance(tmp_path, monk
 async def test_cancelling_admission_quiesces_and_leaves_no_staging_residue(tmp_path, monkeypatch):
     """A cancelled admission waits for its copy worker (run_blocking) and leaves no `.image-*`
     staging file behind; the content-addressed asset either exists complete or not at all."""
-    import asyncio
     import shutil
     import threading
 

@@ -1,9 +1,9 @@
 """session snapshot (split from tests/test_session_persistence.py)."""
+import asyncio
 import itertools
-import json
 
 import pytest
-from test_session_persistence import log_path, read_jsonl, read_lines, session_with_data_dir, write_log
+from test_session_persistence import log_path, read_jsonl, read_lines, rewrite_log, session_with_data_dir, write_log
 
 from wizolt.base import SESSION_EVENT_KEY
 from wizolt.session import Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
@@ -33,9 +33,7 @@ async def test_loading_legacy_snapshot_migrates_surviving_history_before_later_c
         line.pop("transcript_sync", None)
         line.pop("transcript_tool_records", None)
         line.pop("transcript_turn_diffs", None)
-    with open(log_path(s), "w", encoding="utf-8") as file:
-        for line in lines:
-            file.write(json.dumps(line) + "\n")
+    await asyncio.to_thread(rewrite_log, log_path(s), lines)
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert [message["content"] for message in restored.transcript_messages] == ["legacy request", "legacy answer"]
@@ -323,8 +321,7 @@ async def test_loading_drops_a_view_whose_span_blob_is_gone(tmp_path):
     await s.save_snapshot()
 
     lines = [line for line in read_lines(log_path(s)) if "blob" not in line]  # drop every stored blob
-    with open(log_path(s), "w") as file:
-        file.write("\n".join(json.dumps(line) for line in lines) + "\n")
+    await asyncio.to_thread(rewrite_log, log_path(s), lines)
 
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert restored.get_source_view(key) is None

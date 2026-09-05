@@ -1,10 +1,10 @@
 """session meta (split from tests/test_session_persistence.py)."""
-import json
+import asyncio
 import os
 import time
 
 import pytest
-from test_session_persistence import session_with_data_dir
+from test_session_persistence import session_with_data_dir, write_log
 
 from wizolt.base import WizoltError
 from wizolt.config import (
@@ -176,8 +176,12 @@ async def test_listing_survives_a_malformed_sidecar(tmp_path):
     s.messages.append({"role": "user", "content": "labelled session"})
     await s.save_snapshot()
     # A hand-edited or torn sidecar: valid JSON, but the turn count is not a number.
-    with open(SessionSnapshotStore.meta_path(config.data_dir, s.cwd, s.uid), "w", encoding="utf-8") as file:
-        json.dump({"name": "kept", "opening": "labelled session", "rounds": "many", "cwd": s.cwd}, file)
+    await asyncio.to_thread(
+        write_log,
+        SessionSnapshotStore.meta_path(config.data_dir, s.cwd, s.uid),
+        {"name": "kept", "opening": "labelled session", "rounds": "many", "cwd": s.cwd},
+        mode="w",
+    )
 
     entry = SessionSnapshotStore.list_sessions(config.data_dir, s.cwd)[0]
 

@@ -1,8 +1,8 @@
 """session overrides (split from tests/test_session_persistence.py)."""
-import json
+import asyncio
 import os
 
-from test_session_persistence import log_path, read_jsonl, read_lines, session_with_data_dir
+from test_session_persistence import log_path, read_jsonl, read_lines, rewrite_log, session_with_data_dir
 
 from wizolt.cli import CommandLoop
 from wizolt.cli.commands import provider, set_model
@@ -64,9 +64,7 @@ async def test_legacy_snapshot_without_provider_overrides_loads(tmp_path):
     lines = read_lines(path)
     for line in lines:
         line.pop("provider_overrides", None)
-    with open(path, "w") as f:
-        for line in lines:
-            f.write(json.dumps(line) + "\n")
+    await asyncio.to_thread(rewrite_log, path, lines)
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.provider_overrides == {}

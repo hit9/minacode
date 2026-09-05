@@ -1,5 +1,7 @@
 """session delta (split from tests/test_session_persistence.py)."""
+import asyncio
 import os
+from pathlib import Path
 
 from test_session_persistence import log_path, project_dir, read_jsonl, session_with_data_dir
 
@@ -16,8 +18,8 @@ async def test_latest_pointer_created_on_first_save(tmp_path):
 
     latest_path = os.path.join(project_dir(s), "latest")
     assert os.path.exists(latest_path)
-    with open(latest_path) as file:
-        assert file.read().strip() == s.uid
+    latest = await asyncio.to_thread(Path(latest_path).read_text)
+    assert latest.strip() == s.uid
 
 async def test_second_save_writes_delta_with_only_new_data(tmp_path):
     """Second save appends a delta line containing only new messages and tool records."""
@@ -84,8 +86,7 @@ async def test_materialized_tool_output_survives_the_asset_collector(tmp_path):
     await s.save_snapshot()
     await s.save_snapshot()  # the collector runs on every save, not only the first
 
-    with open(path, encoding="utf-8") as file:
-        assert file.read() == large
+    assert await asyncio.to_thread(Path(path).read_text, encoding="utf-8") == large
 
 def test_owns_asset_covers_the_assets_directory_and_nothing_else(tmp_path):
     """The predicate that waives the out-of-workspace approval, so its edges are a permission

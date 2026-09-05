@@ -36,6 +36,12 @@ def write_log(path, data, *, mode):
         file.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
+def rewrite_log(path, lines):
+    """Rewrite a whole log fixture in place (tests tamper with stored lines before reloading)."""
+    with open(path, "w", encoding="utf-8") as file:
+        file.write("\n".join(json.dumps(line) for line in lines) + "\n")
+
+
 def read_jsonl(path) -> list[dict]:
     """Snapshot and delta lines, with the header line dropped."""
     return read_lines(path)[1:]

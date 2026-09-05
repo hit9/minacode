@@ -568,9 +568,7 @@ async def test_bash_slow_command_promotes_to_job(tmp_path):
     for _ in range(50):
         if "late" in job.tail(4096):
             break
-        import time as _t
-
-        _t.sleep(0.05)
+        await asyncio.sleep(0.05)
     assert "late" in job.tail(4096)
     job.update_status()
     assert job.status == "done"

@@ -7,13 +7,13 @@ from pathlib import Path
 import httpx2
 import pytest
 
+import wizolt.providers.sync as sync_module
 from wizolt.base import ConfigError
 from wizolt.config import Config, ConfigFile, ProviderConfig
 from wizolt.providers.catalog import CatalogCodec, decode_bundled
 from wizolt.providers.compat import ProviderPolicy
 from wizolt.providers.schema import CatalogFormatError, CatalogSyncError, CatalogVersionConflict
-import wizolt.providers.sync as sync_module
-from wizolt.providers.sync import CATALOG_URL, MAX_REMOTE_BYTES, CatalogRepository, CatalogRuntime
+from wizolt.providers.sync import MAX_REMOTE_BYTES, CatalogRepository, CatalogRuntime
 from wizolt.session import Session
 
 CATALOG_PATH = Path(__file__).parents[1] / "wizolt" / "providers" / "catalog.json"

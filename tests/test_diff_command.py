@@ -1,3 +1,4 @@
+import asyncio
 import shlex
 import shutil
 import subprocess
@@ -93,20 +94,27 @@ asyncio.run(app.run())
 """
     )
     try:
-        subprocess.run([*command, "new-session", "-d", "-s", "probe", "sleep 30"], check=True)
-        subprocess.run([*command, "set-option", "-g", "remain-on-exit", "on"], check=True)
-        subprocess.run([*command, "set-option", "-t", "probe", "alternate-screen", "off"], check=True)
+        await asyncio.to_thread(subprocess.run, [*command, "new-session", "-d", "-s", "probe", "sleep 30"], check=True)
+        await asyncio.to_thread(subprocess.run, [*command, "set-option", "-g", "remain-on-exit", "on"], check=True)
+        await asyncio.to_thread(subprocess.run, [*command, "set-option", "-t", "probe", "alternate-screen", "off"], check=True)
         pane_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))}"
-        subprocess.run([*command, "respawn-pane", "-k", "-t", "probe", pane_command], check=True)
+        await asyncio.to_thread(subprocess.run, [*command, "respawn-pane", "-k", "-t", "probe", pane_command], check=True)
         deadline = time.monotonic() + 2
         screen = ""
         while "### Latest · Round 1" not in screen and time.monotonic() < deadline:
-            time.sleep(0.01)
-            screen = subprocess.run([*command, "capture-pane", "-p", "-t", "probe", "-S", "-100"], check=True, capture_output=True, text=True).stdout
+            await asyncio.sleep(0.01)
+            captured = await asyncio.to_thread(
+                subprocess.run,
+                [*command, "capture-pane", "-p", "-t", "probe", "-S", "-100"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            screen = captured.stdout
         assert "HISTORY MARKER" in screen
         assert "### Latest · Round 1" in screen
     finally:
-        subprocess.run([*command, "kill-server"], check=False, capture_output=True)
+        await asyncio.to_thread(subprocess.run, [*command, "kill-server"], check=False, capture_output=True)
 
 
 async def test_alternate_screen_probe_reads_the_resolved_window_option(tmp_path):
@@ -145,12 +153,12 @@ print(asyncio.run(TuiApp.alternate_screen_available()))
         return []
 
     try:
-        subprocess.run([*command, "new-session", "-d", "-s", "holder", "sleep 60"], check=True, capture_output=True)
+        await asyncio.to_thread(subprocess.run, [*command, "new-session", "-d", "-s", "holder", "sleep 60"], check=True, capture_output=True)
         # The global window-option form is invisible to `show-options` without -g; all three
         # observations happen in one tmux client process so process startup does not dominate.
         assert probe_values() == ["True", "False", "True"]
     finally:
-        subprocess.run([*command, "kill-server"], check=False, capture_output=True)
+        await asyncio.to_thread(subprocess.run, [*command, "kill-server"], check=False, capture_output=True)
 
 
 async def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_path, monkeypatch):
@@ -229,8 +237,8 @@ async def test_diff_shows_latest_round_outside_git_repo(tmp_path):
 async def test_diff_ignores_git_worktree_changes(tmp_path):
     git_init(tmp_path)
     (tmp_path / "a.py").write_text("old\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
+    await asyncio.to_thread(subprocess.run, ["git", "-C", str(tmp_path), "add", "a.py"], check=True, capture_output=True)
+    await asyncio.to_thread(subprocess.run, ["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
     (tmp_path / "a.py").write_text("new\n", encoding="utf-8")
     (tmp_path / "untracked.py").write_text("hello\n", encoding="utf-8")
 

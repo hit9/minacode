@@ -1,10 +1,11 @@
 """session load (split from tests/test_session_persistence.py)."""
+import asyncio
 import json
 import os
 import time
 
 import pytest
-from test_session_persistence import log_path, project_dir, read_jsonl, read_lines, session_with_data_dir, visible_contents, write_log
+from test_session_persistence import log_path, project_dir, read_jsonl, read_lines, rewrite_log, session_with_data_dir, visible_contents, write_log
 
 from wizolt.base import SESSION_EVENT_KEY, WizoltError
 from wizolt.config import (
@@ -221,8 +222,7 @@ async def test_load_rejects_an_unknown_format_version(tmp_path):
     await s.save_snapshot()
     lines = read_lines(log_path(s))
     lines[0]["v"] = 99
-    with open(log_path(s), "w") as file:
-        file.write("\n".join(json.dumps(line) for line in lines) + "\n")
+    await asyncio.to_thread(rewrite_log, log_path(s), lines)
 
     with pytest.raises(WizoltError, match="Unsupported session format v99"):
         Session.load_snapshot(s.uid, config=s.config)

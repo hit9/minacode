@@ -1,6 +1,8 @@
 """bounded output (split from tests/test_context.py)."""
+import asyncio
 import os
 import re
+from pathlib import Path
 
 from agent_harness import call, session
 
@@ -88,8 +90,7 @@ async def test_bounded_output_materializes_full_output_to_asset_file(tmp_path):
     assert path == os.path.join(s.images.assets_dir(), "tr.1.txt")
     assert 'recall="tr.1"' in bounded
     assert f'file="{path}"' in bounded
-    with open(path, encoding="utf-8") as file:
-        assert file.read() == large
+    assert await asyncio.to_thread(Path(path).read_text, encoding="utf-8") == large
 
 async def test_bounded_output_marker_names_the_cheaper_way_to_read_the_rest(tmp_path):
     """`recall` and `file` say where the omitted middle went, not what to do about it, and the cheap

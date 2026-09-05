@@ -1,5 +1,6 @@
 """tool output browser (split from tests/test_command_ui.py)."""
 
+import asyncio
 import os
 import shutil
 import time
@@ -508,7 +509,7 @@ async def test_promoted_bash_job_view_includes_output_from_before_and_after_prom
         snapshot = job.log_snapshot(BackgroundJob.BUFFER_LIMIT)
         if snapshot is not None and "late" in snapshot[0]:
             break
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
     else:
         raise AssertionError("background drainer did not capture the completed output")
     command_loop.session.store_tool_result("Job", [{"action": "wait", "job": job.id}], status)
