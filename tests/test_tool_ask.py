@@ -190,6 +190,11 @@ def test_ask_tool_schema():
     assert props["question"]["type"] == "string"
     assert props["choices"]["items"]["type"] == "string"
     assert props["previews"]["items"]["type"] == "string"
+    assert "concise" in props["choices"]["description"]
+    assert "rich Markdown" in props["previews"]["description"]
+    assert "diagrams" in props["previews"]["description"]
+    assert "blank lines" in props["previews"]["description"]
+    assert "redundant question text" in props["previews"]["description"]
     assert props["recommended"]["type"] == "integer"
 
 

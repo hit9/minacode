@@ -259,10 +259,10 @@ async def choice_application(
 
 async def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[str]:
     """Entry point for Ask (the whole batch in one call). With a live TUI the batch runs in a
-    single selector modal -- one page per question, options left, the selected option's rich
-    markdown preview right (below the options on narrow terminals); a free-text page drops to
-    the shared input row mid-flow and the modal reopens for the rest. Headless runs keep the
-    plain per-question text prompts. The final tool log renders the returned answers."""
+    single selector modal -- one page per question, with the selected option's rich markdown
+    preview below its choices; a free-text page drops to the shared input row mid-flow and the
+    modal reopens for the rest. Headless runs keep the plain per-question text prompts. The final
+    tool log renders the returned answers."""
     if loop.tui is None or not loop.interactive_input:
         return [str(await loop.read_input("\n" + spec.question)) for spec in specs]
     state = AskViewState.build(specs)
@@ -288,7 +288,10 @@ async def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[
         if result is SELECTION_BACK or result is None:
             return [DISMISSED] * len(specs)
         if isinstance(result, KeyboardInterrupt):
-            raise result
+            # Ask runs inside Agent.run's dedicated task. Letting KeyboardInterrupt cross that
+            # task boundary makes asyncio treat a modal keypress like a process-level signal and
+            # tear down the CLI. Cancel the turn through its ordinary settlement path instead.
+            raise asyncio.CancelledError from None
         return [DISMISSED] * len(specs)
     answers: list[str] = []
     for index, spec in enumerate(specs):

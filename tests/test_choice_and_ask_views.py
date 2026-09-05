@@ -1,5 +1,7 @@
 """choice and ask views (split from tests/test_ui_render.py)."""
 
+from prompt_toolkit.utils import get_cwidth
+
 import wizolt.render as render_module
 from wizolt.base import (
     SELECTION_BACK,
@@ -150,20 +152,20 @@ def _rows(fragments):
     return "".join(text for _, text in fragments).splitlines()
 
 
-def test_ask_view_side_by_side_joins_option_and_preview_rows():
+def test_ask_view_keeps_preview_below_options_on_wide_terminals():
     state = _ask_state()
     rows = _rows(state.fragments(width=120, max_height=30))
     # The gap above the modal is the container's job (modal_region), not this view's.
     assert rows[0] == "(1/2) Which shape?"
     assert rows[1] == ""  # blank line under the title
     assert rows[-2] == ""  # blank line above the key legend
-    # The selected option's label and its rich preview land on the same rendered row.
-    pair = next(row for row in rows if "Flat" in row and "flat table" in row)
-    assert "1. Flat (recommended)" in pair
-    # The longest option row and the preview column keep a visible gutter of at least 3 cells.
-    before_preview = pair.split("bold")[0]
-    assert len(before_preview) - len(before_preview.rstrip()) >= 3
-    assert any("↑/↓ or j/k move" in row for row in rows)
+    option_index = next(index for index, row in enumerate(rows) if "Flat (recommended)" in row)
+    preview_index = next(index for index, row in enumerate(rows) if "flat table" in row)
+    assert preview_index > option_index
+    assert rows[preview_index].startswith("  │ ")
+    assert rows[preview_index - 1] == "  │"  # one quiet row inside the preview rail
+    assert not any("Flat" in row and "flat table" in row for row in rows)
+    assert any("↑↓/jk move" in row for row in rows)
     assert len(rows) <= 30
 
 
@@ -174,6 +176,18 @@ def test_ask_view_stacks_preview_below_options_on_narrow_terminals():
     preview_index = next(index for index, row in enumerate(rows) if "flat table" in row)
     assert preview_index > option_index  # stacked, not side-by-side
     assert rows[preview_index].startswith("  │ ")
+
+
+def test_ask_view_wraps_long_choices_and_caps_wide_terminal_rows():
+    choice = "把 @file: 移到菜单最后一行，先落在 mcp，再按一下到 skill，第三下才是 file:；" * 3
+    state = AskViewState.build([AskSpec("怎么调整裸 @ 菜单？", choices=[choice], previews=["预览保持独立，不和选项粘在一起"], recommended=0)])
+
+    for width, limit in ((60, 58), (190, 120)):
+        rows = _rows(state.fragments(width=width, max_height=80))
+        assert all(get_cwidth(row) <= limit for row in rows)
+        assert sum("@file:" in row for row in rows) >= 2  # the long selected row wrapped instead of overflowing
+        preview_index = next(index for index, row in enumerate(rows) if "预览保持独立" in row)
+        assert preview_index > max(index for index, row in enumerate(rows) if "@file:" in row)
 
 
 def test_ask_view_truncates_overflow_with_more_lines():
@@ -189,9 +203,10 @@ def test_ask_view_short_terminal_drops_rows_never_slices_from_the_end():
     body from the end (a negative budget sliced `body[:-n]` and rendered nearly every row)."""
     preview = "\n".join(f"line {i}" for i in range(40))
     state = AskViewState.build([AskSpec("Q?", choices=["A"], previews=[preview])])
-    for height in (3, 4, 5, 6):
-        rows = _rows(state.fragments(width=120, max_height=height))
-        assert len(rows) <= max(height, 4)
+    for width in (40, 120):
+        for height in (3, 4, 5, 6):
+            rows = _rows(state.fragments(width=width, max_height=height))
+            assert len(rows) <= max(height, 4)
     assert len(_rows(state.fragments(width=120, max_height=5))) == 5
 
 
@@ -203,7 +218,7 @@ def test_ask_view_no_matches_keeps_search_visible_and_obeys_height():
 
     rows = _rows(state.fragments(width=120, max_height=5))
 
-    assert rows == ["(1/1) Q?", "", "  no matches", "/missing", "↑/↓ or j/k move · Enter select/next · Tab switch · n notes · / search · Esc cancel · (1/1)"]
+    assert rows == ["(1/1) Q?", "", "  no matches", "/missing", "↑↓/jk move · Enter select · Tab page · n note · / search · Esc cancel"]
 
 
 def test_ask_view_search_uses_the_blank_row_above_footer_without_losing_capacity():

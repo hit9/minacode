@@ -8,9 +8,8 @@ from enum import Enum, auto
 from typing import Any, ClassVar, TypeVar
 
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
-from prompt_toolkit.utils import get_cwidth
 
-from wizolt.base import SELECTION_BACK, SELECTION_FREE_TEXT
+from wizolt.base import SELECTION_BACK, SELECTION_FREE_TEXT, Text
 from wizolt.render import UiPrinter, WizoltMarkdown, markdown_console
 from wizolt.tools.ask import AskSpec
 
@@ -365,12 +364,11 @@ ASK_FREE_TEXT = object()
 
 @dataclass
 class AskViewState:
-    """The Ask tool's multi-question modal: one ChoiceViewState page per question, options on the
-    left and a rich markdown preview of the selected option on the right (below the options on
-    narrow terminals). Enter advances to the next question and submits on the last; Tab cycles
-    pages; `n` edits a note appended to the answer; Esc cancels the whole batch. A question
-    without choices is a single "Type freely..." page that reports ASK_FREE_TEXT so the caller
-    drops to the shared input row."""
+    """The Ask tool's multi-question modal: one ChoiceViewState page per question, followed by
+    the selected option's rich markdown preview. Enter advances to the next question and submits
+    on the last; Tab cycles pages; `n` edits a note appended to the answer; Esc cancels the whole
+    batch. A question without choices is a single "Type freely..." page that reports
+    ASK_FREE_TEXT so the caller drops to the shared input row."""
 
     specs: list[AskSpec]
     pages: list[ChoiceViewState]
@@ -420,46 +418,54 @@ class AskViewState:
         return spec.previews[index] if index < len(spec.previews) else ""
 
     def fragments(self, width: int, max_height: int) -> StyleAndTextTuples:
-        """Render the active question. Options sit left with the selected option's rich markdown
-        preview right when the terminal is wide enough (>=100) and a preview exists; otherwise the
-        preview stacks below the options. The caller caps max_height to the terminal's rows minus
-        the reserved chrome (status bar, input row, gaps)."""
+        """Render one readable column bounded for wide terminals and wrapped by display width."""
         page = self.pages[self.active]
+        content_width = max(10, min(width - 2, 120))
+        title_prefix = f"({self.active + 1}/{len(self.specs)}) "
+        title_rows = Text.wrap_styled(
+            [("class:choice.title", title_prefix)],
+            [("class:choice.title", " " * len(title_prefix))],
+            [("class:choice.title", self.specs[self.active].question)],
+            content_width,
+        )
         # The gap between the modal and the activity region above it is the container's job
         # (TuiApp's modal_region), matching every other non-exclusive modal.
-        parts: StyleAndTextTuples = [
-            ("class:choice.title", f"({self.active + 1}/{len(self.specs)}) {self.specs[self.active].question}\n"),
-            ("", "\n"),
-        ]
+        parts: StyleAndTextTuples = []
+        for row in title_rows:
+            parts.extend((*row, ("", "\n")))
+        parts.append(("", "\n"))
+        note_rows: list[list[tuple[str, str]]] = []
         if self.notes_mode:
-            parts.append(("class:choice.disabled", "notes: " + self.note_buffer + "\n"))
+            note_rows = Text.wrap_styled(
+                [("class:choice.disabled", "notes: ")],
+                [("class:choice.disabled", "       ")],
+                [("class:choice.disabled", self.note_buffer)],
+                content_width,
+            )
         elif note := self.notes.get(self.active):
-            parts.append(("class:choice.disabled", "notes: " + note + "\n"))
+            note_rows = Text.wrap_styled(
+                [("class:choice.disabled", "notes: ")],
+                [("class:choice.disabled", "       ")],
+                [("class:choice.disabled", note)],
+                content_width,
+            )
+        for row in note_rows:
+            parts.extend((*row, ("", "\n")))
         if not page.enabled():
-            body: list[StyleAndTextTuples] = [[("class:choice.disabled", "  no matches")]]
+            body: list[list[tuple[str, str]]] = [[("class:choice.disabled", "  no matches")]]
         else:
-            option_rows = self._option_rows(page)
+            body = self._option_rows(page, content_width)
             preview = self.preview_text()
-            side_by_side = width >= 100 and bool(preview)
-            if side_by_side:
-                label_widths = [get_cwidth(page.labels.get(choice, choice)) for choice in page.visible()]
-                # The +9 covers the number prefix ("> " + "N. ", 6 cells) plus a 3-cell visible gutter
-                # between the longest option row and the preview column.
-                left_width = min(max(label_widths) + 9, width * 2 // 5)
-                right_width = max(10, width - left_width - 2)
-                preview_rows = self._preview_rows(preview, right_width)
-                body = self._join_rows(option_rows, preview_rows, left_width)
-            else:
-                body = list(option_rows)
-                if preview:
-                    preview_rows = self._preview_rows(preview, max(10, width - 4))
-                    body.append([("class:choice.disabled", "  " + "─" * max(10, width - 4))])
-                    body.extend([("class:choice.preview", "  │ "), *row] for row in preview_rows)
-        # The title's blank line, the footer's, and any notes row are fixed chrome; searching
-        # replaces the ordinary blank row above the footer, so it costs no extra row. A page that
-        # cannot fit the chrome leaves no room for body rows. Clamped at zero so a very short
-        # terminal drops the rows instead of slicing the list from the end.
-        fixed = 4 + (1 if self.notes_mode or self.notes.get(self.active) else 0)
+            if preview:
+                preview_rows = self._preview_rows(preview, max(10, content_width - 4))
+                body.append([("class:choice.disabled", "  " + "─" * min(34, content_width - 2))])
+                body.append([("class:choice.preview", "  │")])
+                body.extend([("class:choice.preview", "  │ "), *row] for row in preview_rows)
+        footer = self._footer_rows(content_width)
+        query_rows = Text.wrap_styled([("", "/")], [("", " ")], [("", page.query)], content_width) if page.searching else [[]]
+        # Title rows, its blank separator, the search/blank row above the footer, the footer, and
+        # any note row are fixed chrome. A page that cannot fit them leaves no room for body rows.
+        fixed = len(title_rows) + 1 + len(note_rows) + len(query_rows) + len(footer)
         budget = max(0, max_height - fixed)
         if len(body) > budget:
             if budget <= 0:
@@ -469,35 +475,47 @@ class AskViewState:
                 body = body[: budget - 1] + [[("class:choice.disabled", f"  … {overflow} more lines")]]
         for row in body:
             parts.extend((*row, ("", "\n")))
-        if page.searching:
-            parts.append(("", "/" + page.query))
-        parts.append(("", "\n"))
-        parts.extend(self._footer())
+        for row in query_rows:
+            parts.extend((*row, ("", "\n")))
+        for row in footer:
+            parts.extend((*row, ("", "\n")))
         return parts
 
     @staticmethod
-    def _option_rows(page: ChoiceViewState) -> list[StyleAndTextTuples]:
+    def _option_rows(page: ChoiceViewState, width: int) -> list[list[tuple[str, str]]]:
         """The page's option rows (one fragment list per row, no trailing newline), styled like
-        ChoiceViewState.fragments' option block."""
-        rows: list[StyleAndTextTuples] = []
+        ChoiceViewState.fragments' option block, wrapped by terminal-cell width."""
+        rows: list[list[tuple[str, str]]] = []
         number = 0
         for choice in page.visible():
             label = page.labels.get(choice, choice)
             if choice in page.disabled:
-                rows.append([("class:choice.disabled", "  " + label)])
+                rows.extend(
+                    Text.wrap_styled(
+                        [("class:choice.disabled", "  ")],
+                        [("class:choice.disabled", "  ")],
+                        [("class:choice.disabled", label)],
+                        width,
+                    )
+                )
                 continue
             number += 1
             selected = number - 1 == page.selected
-            row: StyleAndTextTuples = []
-            if selected:
-                row.append(("[SetCursorPosition]", ""))
             prefix = ("> " if selected else "  ") + f"{number:2d}. "
-            row.append(("class:choice.selected" if selected else "", prefix + label))
-            rows.append(row)
+            style = "class:choice.selected" if selected else ""
+            wrapped = Text.wrap_styled(
+                [(style, prefix)],
+                [(style, " " * len(prefix))],
+                [(style, label)],
+                width,
+            )
+            if selected:
+                wrapped[0].insert(0, ("[SetCursorPosition]", ""))
+            rows.extend(wrapped)
         return rows
 
     @staticmethod
-    def _preview_rows(markdown_text: str, panel_width: int) -> list[StyleAndTextTuples]:
+    def _preview_rows(markdown_text: str, panel_width: int) -> list[list[tuple[str, str]]]:
         """Render markdown to ANSI with Rich, split into physical rows, and carry styles across them.
 
         Preview snippets are ASCII layouts, diffs, and tables whose newlines are structural, so
@@ -507,16 +525,19 @@ class AskViewState:
         with console.capture() as capture:
             console.print(WizoltMarkdown(hard_breaks))
         cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))
-        return AskViewState._ansi_lines(cleaned)
+        rows = AskViewState._ansi_lines(cleaned)
+        while rows and not any(fragment[1] for fragment in rows[-1]):
+            rows.pop()
+        return rows
 
     @staticmethod
-    def _ansi_lines(text: str) -> list[StyleAndTextTuples]:
+    def _ansi_lines(text: str) -> list[list[tuple[str, str]]]:
         """Split an ANSI string into one (style, text) tuple list per line. prompt_toolkit's ANSI
         parser emits a fragment per character (it walks SGR state per char), so adjacent fragments
         with the same style are merged back into runs; SGR state across a newline carries exactly
         as Rich emitted it."""
-        lines: list[StyleAndTextTuples] = []
-        current: StyleAndTextTuples = []
+        lines: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] = []
         for fragment in to_formatted_text(ANSI(text)):
             style = fragment[0]
             chunk = fragment[1]
@@ -535,29 +556,9 @@ class AskViewState:
         lines.append(current)
         return lines
 
-    @staticmethod
-    def _join_rows(left: list[StyleAndTextTuples], right: list[StyleAndTextTuples], left_width: int) -> list[StyleAndTextTuples]:
-        """Merge the option rows and the preview rows column-wise: each left row is padded to
-        left_width (by visible width) and the preview row continues on the same line; rows with no
-        counterpart render alone."""
-        rows: list[StyleAndTextTuples] = []
-        for index in range(max(len(left), len(right))):
-            left_row = left[index] if index < len(left) else []
-            right_row = right[index] if index < len(right) else []
-            used = sum(get_cwidth(fragment[1]) for fragment in left_row if isinstance(fragment[1], str) and fragment[1])
-            row: StyleAndTextTuples = list(left_row)
-            row.append(("", " " * max(0, left_width - used)))
-            row.extend(right_row)
-            rows.append(row)
-        return rows
-
-    def _footer(self) -> StyleAndTextTuples:
-        return [
-            (
-                "class:choice.disabled",
-                f"↑/↓ or j/k move · Enter select/next · Tab switch · n notes · / search · Esc cancel · ({self.active + 1}/{len(self.specs)})\n",
-            )
-        ]
+    def _footer_rows(self, width: int) -> list[list[tuple[str, str]]]:
+        text = "↑↓/jk move · Enter select · Tab page · n note · / search · Esc cancel" if width >= 70 else "↑↓/jk · Enter · Tab · n · / · Esc"
+        return Text.wrap_styled([], [], [("class:choice.disabled", text)], width)
 
     def handle_key(self, key: str, data: str = "") -> Any:
         """The active page's keys plus the batch-level ones: Tab cycles pages, `n` edits a note,

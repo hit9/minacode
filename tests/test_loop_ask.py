@@ -1,9 +1,11 @@
 """loop ask (split from tests/test_loop_commands.py)."""
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
 
+import pytest
 from agent_harness import session
 
 import wizolt.cli.modals as modals_mod
@@ -185,6 +187,16 @@ async def test_ask_escape_cancels_the_whole_batch(tmp_path):
 
     result = await question_interaction(loop, [AskSpec("One?"), AskSpec("Two?")])
     assert result == [DISMISSED, DISMISSED]
+
+
+async def test_ask_ctrl_c_cancels_the_turn_without_leaking_keyboard_interrupt(tmp_path):
+    """Ctrl-C is a turn cancellation, not a process-level KeyboardInterrupt escaping asyncio."""
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    loop.interactive_input = True
+    loop.tui = SimpleNamespace(show_modal=_modals(lambda fragments_fn, key_fn: key_fn("c-c")))
+
+    with pytest.raises(asyncio.CancelledError):
+        await question_interaction(loop, [AskSpec("Pick?", choices=["A", "B"])])
 
 
 async def test_elapsed_since_uses_whole_seconds(monkeypatch):

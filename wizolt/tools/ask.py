@@ -22,8 +22,9 @@ class AskSpec:
 class AskTool(Tool):
     NAME = "Ask"
     DESCRIPTION = (
-        "Ask one or more material questions and wait. Use only when missing intent or a choice changes the result or public shape; "
-        "do not ask what tools or context can answer. Batch related questions and offer concise choices, previews, and a recommendation when useful."
+        "Ask and wait when missing intent or a choice changes the result; do not ask what tools or context can answer. Batch related questions "
+        "and keep labels short. Previews can mix explanation with visual Markdown examples; use sections and blank lines, not repeated question "
+        "text or controls."
     )
     EXAMPLE = ('Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"recommended":0}]}',)
     MUTATES = False
@@ -38,8 +39,8 @@ class AskTool(Tool):
         # fmt: off
         question = cls.object_schema({
             "question": {"type": "string", "description": "The question to ask the user"},
-            "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
-            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional concrete preview per choice, such as a snippet, diff, tree, or API shape"},
+            "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional concise, mutually exclusive labels the user can pick from"},
+            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional rich Markdown per choice: combine explanation with examples, diagrams, code, diffs, tables, or trees; use short sections and blank lines without redundant question text or controls"},
             "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
         }, ["question"])
         return cls.object_schema({

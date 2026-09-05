@@ -59,6 +59,12 @@
   phase rules use, instead of a short run of `-` capped at 52 columns: a wide terminal no longer
   leaves most of the row blank. Its highlight passes behind the status label instead of jumping
   across it, without making wider panes costlier to animate.
+- `Ask` now keeps choices and the selected preview in one bounded column. Long questions,
+  choices, and key hints wrap by terminal-cell width, so wide panes and Chinese text no longer
+  make a selected row collide with its preview or stretch across the whole screen. Its preview
+  gets breathing room while retaining rich Markdown explanations and visual examples.
+- Ctrl-C in an `Ask` choice modal now cancels and settles the active turn instead of letting a
+  `KeyboardInterrupt` escape the asyncio runtime and crash the CLI.
 
 ### Added
 
