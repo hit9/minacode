@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import bisect
 import difflib
+import itertools
 import json
 import os
 from collections.abc import Awaitable, Callable
@@ -253,7 +255,144 @@ class Edit:
     op: str
     start: int = 0  # 1-based inclusive first line of a replace/delete range
     end: int = 0  # 1-based inclusive last line of a replace/delete range
+    old: str = ""  # exact original text a direct replace/delete must match, "" in source-view mode
     content: str = ""
+
+
+# The evidence one Edit call rests on. A call is in exactly one mode: it creates a file, it names a
+# source view and line ranges, or it supplies the exact original text of every target. Ambiguous
+# combinations are rejected while parsing rather than resolved by precedence.
+MODE_CREATE = "create"
+MODE_SOURCE_VIEW = "source view"
+MODE_DIRECT = "direct"
+
+
+def edit_mode(source_name: str, edits: list[Edit]) -> str:
+    """Which evidence mode a parsed call uses. Only valid for edits that came out of `parse`."""
+    if edits[0].op == "create":
+        return MODE_CREATE
+    return MODE_SOURCE_VIEW if source_name else MODE_DIRECT
+
+
+# Stable error categories for direct mode, first line of the ToolError.
+DIRECT_TARGET_MISSING = "direct target missing"
+DIRECT_TARGET_AMBIGUOUS = "direct target ambiguous"
+DIRECT_TARGETS_OVERLAP = "direct targets overlap"
+MIXED_EDIT_EVIDENCE = "mixed edit evidence modes"
+
+# How many occurrences of an ambiguous target are counted before the scan stops. The number only
+# has to tell the model that its excerpt is not unique and roughly how far from unique it is;
+# counting every occurrence of a one-character target in a large file buys nothing for that.
+DIRECT_OCCURRENCE_CAP = 50
+
+
+@dataclass(frozen=True)
+class TextReplacement:
+    """One resolved direct target: a half-open character range and the text that replaces it."""
+
+    start: int  # character offset, inclusive
+    end: int  # character offset, exclusive
+    content: str
+
+
+class DirectMatchError(ToolError):
+    """A direct-mode resolution failure, carrying where an ambiguous target was found.
+
+    The offsets exist so the caller can answer ambiguity with a view of the actual occurrences.
+    They are deliberately not a shortlist to choose from: nothing here ever picks one.
+    """
+
+    def __init__(self, category: str, detail: str, offsets: tuple[int, ...] = ()):
+        super().__init__(f"{category} {detail}")
+        self.category = category
+        self.offsets = offsets
+
+
+def direct_occurrences(text: str, needle: str) -> list[int]:
+    """Every offset where `needle` occurs literally in `text`, overlapping included, capped.
+
+    Overlapping occurrences count: "aa" occurs twice in "aaa", and both are places the requested
+    text really is. Treating that as unique would let a model that meant the second one edit the
+    first. Matching is `str.find`, so regex metacharacters carry no meaning.
+    """
+    found: list[int] = []
+    index = text.find(needle)
+    while index != -1 and len(found) <= DIRECT_OCCURRENCE_CAP:
+        found.append(index)
+        index = text.find(needle, index + 1)
+    return found
+
+
+def resolve_direct(original: str, edits: list[Edit]) -> list[TextReplacement]:
+    """Resolve every direct edit's exact `old` against one immutable file content.
+
+    All matching happens against the content as the call entered, so no operation can match text
+    another operation in the same call wrote, and the order the operations were listed in does not
+    change the result. Zero matches, several matches, or targets that overlap each other refuse the
+    whole call: each of those is a case where writing would mean guessing which text was meant.
+    """
+    replacements: list[TextReplacement] = []
+    for edit in edits:
+        offsets = direct_occurrences(original, edit.old)
+        if not offsets:
+            raise DirectMatchError(DIRECT_TARGET_MISSING, "the file no longer contains the supplied old text; inspect the current file and retry")
+        if len(offsets) > 1:
+            counted = f"more than {DIRECT_OCCURRENCE_CAP}" if len(offsets) > DIRECT_OCCURRENCE_CAP else str(len(offsets))
+            raise DirectMatchError(
+                DIRECT_TARGET_AMBIGUOUS,
+                f"old text occurs {counted} times; include more exact context or use a source view",
+                tuple(offsets[:DIRECT_OCCURRENCE_CAP]),
+            )
+        replacements.append(TextReplacement(offsets[0], offsets[0] + len(edit.old), edit.content))
+    order = sorted(range(len(replacements)), key=lambda index: replacements[index].start)
+    for first, second in itertools.pairwise(order):
+        if replacements[second].start < replacements[first].end:
+            raise DirectMatchError(
+                DIRECT_TARGETS_OVERLAP,
+                f"edits {min(first, second) + 1} and {max(first, second) + 1} match text that overlaps or contains the other; edit them as one operation",
+            )
+    return replacements
+
+
+def direct_line_replacements(lines: list[str], replacements: list[TextReplacement]) -> list[tuple[int, int, list[str]]]:
+    """Rewrite resolved character replacements as whole-line splices with identical final text.
+
+    Character offsets decide what is replaced; this grouping only carries the result into the
+    line-based splice the rest of Edit already speaks, so a direct edit reaches the same change
+    receipts, boundary warnings, and fresh view as a source-view one. A partial-line target is not
+    rounded outwards: the text of its line on either side is copied into the replacement verbatim.
+    Replacements sharing a line become one group, because two line ranges cannot express them
+    apart, and separate groups are therefore always disjoint.
+    """
+    if not lines:
+        return []
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+    text = "".join(lines)
+
+    def line_of(offset: int) -> int:
+        return max(0, min(len(lines) - 1, bisect.bisect_right(starts, offset) - 1))
+
+    groups: list[list[TextReplacement]] = []
+    bounds: list[list[int]] = []
+    for item in sorted(replacements, key=lambda item: item.start):
+        first, last = line_of(item.start), line_of(item.end - 1)
+        if groups and first <= bounds[-1][1]:
+            groups[-1].append(item)
+            bounds[-1][1] = max(bounds[-1][1], last)
+        else:
+            groups.append([item])
+            bounds.append([first, last])
+    spliced = []
+    for group, (first, last) in zip(groups, bounds):
+        low, high = starts[first], starts[last + 1]
+        piece = text[low : group[0].start]
+        for index, item in enumerate(group):
+            piece += item.content
+            piece += text[item.end : group[index + 1].start if index + 1 < len(group) else high]
+        spliced.append((first, last + 1, split_lines(piece)))
+    return spliced
 
 
 @dataclass
@@ -520,13 +659,13 @@ class EditTool(Tool):
         for item in raw_edits:
             if not isinstance(item, dict):
                 raise ToolError("each edit must be an object")
-            if unexpected := sorted(set(item) - {"op", "start", "end", "content"}):
+            if unexpected := sorted(set(item) - {"op", "start", "end", "old", "content"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             raw_op = item.get("op")
             if raw_op is None and self._implicit_replace(item, source_name):
-                # A recurring provider omission: source + an exact range + explicit replacement
-                # text has only one useful interpretation. Never infer create or delete, and keep
-                # the public schema explicit so this remains tolerance rather than a second API.
+                # A recurring provider omission: exact evidence plus explicit replacement text has
+                # only one useful interpretation, in either mode. Never infer create or delete, and
+                # keep the public schema explicit so this remains tolerance rather than a second API.
                 op = "replace"
             else:
                 op = str(raw_op or "")
@@ -534,41 +673,74 @@ class EditTool(Tool):
                 raise ToolError("Edit op is required; valid operations: create, replace, delete")
             if op not in {"create", "replace", "delete"}:
                 raise ToolError(f"Edit op must be create, replace, or delete; got {op!r}")
-            if op == "create" and len(raw_edits) != 1:
-                raise ToolError("create cannot be mixed with other edits")
-            if op == "create" and source_name:
-                raise ToolError("source is forbidden for create")
-            if op != "create" and not source_name:
-                raise ToolError(f"{op} requires source=view.N for an existing file; Read, Search, or InspectCode first")
-            if op in {"replace", "delete"}:
-                start = self._int_arg(item, "start", op)
-                end = self._int_arg(item, "end", op)
-                if start < 1 or end < start:
-                    raise ToolError(f"{op} requires 1 <= start <= end")
-                edits.append(Edit(op=op, start=start, end=end, content=self.normalize_text(str(item.get("content") or ""))))
+            if op == "create":
+                edits.append(self._create_edit(item, len(raw_edits), source_name))
+            elif source_name and "old" in item:
+                raise source_error(MIXED_EDIT_EVIDENCE, "one call names a source view or supplies old text, never both")
+            elif source_name:
+                edits.append(self._range_edit(item, op))
+            elif "old" in item:
+                edits.append(self._direct_edit(item, op))
             else:
-                if "content" not in item or item["content"] is None:
-                    raise ToolError("create requires content; use an explicit empty string to create an empty file")
-                edits.append(Edit(op=op, content=self.normalize_text(str(item.get("content") or ""))))
+                raise ToolError(f"{op} needs evidence: source=view.N with start/end, or old set to the exact text it replaces")
         return path, source_name, edits
+
+    def _create_edit(self, item: Json, count: int, source_name: str) -> Edit:
+        if count != 1:
+            raise ToolError("create cannot be mixed with other edits")
+        if source_name:
+            raise ToolError("source is forbidden for create")
+        if forbidden := sorted({"old", "start", "end"} & set(item)):
+            raise ToolError("create forbids " + ", ".join(forbidden) + "; create writes a whole new file")
+        if "content" not in item or item["content"] is None:
+            raise ToolError("create requires content; use an explicit empty string to create an empty file")
+        return Edit(op="create", content=self.normalize_text(str(item.get("content") or "")))
+
+    def _range_edit(self, item: Json, op: str) -> Edit:
+        start = self._int_arg(item, "start", op)
+        end = self._int_arg(item, "end", op)
+        if start < 1 or end < start:
+            raise ToolError(f"{op} requires 1 <= start <= end")
+        return Edit(op=op, start=start, end=end, content=self.normalize_text(str(item.get("content") or "")))
+
+    def _direct_edit(self, item: Json, op: str) -> Edit:
+        """One replace/delete proved by the exact original text rather than by a source view.
+
+        `content` is required as an explicit string for replace so that a dropped field can never
+        read as a deletion, and refused for delete so that text a call meant to write is never
+        silently discarded.
+        """
+        if forbidden := sorted({"start", "end"} & set(item)):
+            raise ToolError(f"{op} with old forbids " + ", ".join(forbidden) + "; old and line ranges are separate evidence modes")
+        raw_old = item.get("old")
+        if not isinstance(raw_old, str):
+            raise ToolError(f"{op} old must be a string of the exact text to match")
+        old = self.normalize_text(raw_old)
+        if not old:
+            raise ToolError(f"{op} old must be non-empty; it is the exact text the edit replaces")
+        content = item.get("content")
+        if op == "delete":
+            if content:
+                raise ToolError("delete forbids content; use replace to write text in place of the target")
+            return Edit(op=op, old=old)
+        if not isinstance(content, str):
+            raise ToolError("replace requires content as a string; use an explicit empty string to remove the matched text")
+        return Edit(op=op, old=old, content=self.normalize_text(content))
 
     @staticmethod
     def _implicit_replace(item: Json, source_name: str) -> bool:
-        """Whether an omitted op has the complete, type-safe shape of a replace.
+        """Whether an omitted op has the complete, type-safe shape of a replace in either mode.
 
-        Requiring a source, both integer coordinates, and an explicit string keeps malformed
-        create/delete calls rejected. In particular, absence of content can never become an
-        accidental deletion.
+        Requiring exact evidence -- both integer coordinates under a source, or `old` under no
+        source -- plus an explicit string keeps malformed create/delete calls rejected. In
+        particular, absence of content can never become an accidental deletion.
         """
+        if not isinstance(item.get("content"), str):
+            return False
+        if not source_name:
+            return isinstance(item.get("old"), str) and not {"start", "end"} & set(item)
         start, end = item.get("start"), item.get("end")
-        return bool(
-            source_name
-            and isinstance(start, int)
-            and not isinstance(start, bool)
-            and isinstance(end, int)
-            and not isinstance(end, bool)
-            and isinstance(item.get("content"), str)
-        )
+        return isinstance(start, int) and not isinstance(start, bool) and isinstance(end, int) and not isinstance(end, bool)
 
     def resolve_view(
         self,
