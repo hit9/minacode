@@ -85,3 +85,37 @@ def test_tab_still_browses_an_auto_opened_command_menu(monkeypatch):
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
+
+
+def test_fast_slash_typing_keeps_a_current_menu_ready_for_tab():
+    """Every keystroke replaces the menu in the same edit, so `/`, `p`, Tab cannot hit a delayed
+    refresh that briefly closes or resets it."""
+    app = TuiApp(completer=CommandCompleter())
+
+    app.input_buffer.insert_text("/")
+    assert _completions(app) == list(CommandLoop.COMMANDS)
+
+    app.input_buffer.insert_text("p")
+    assert _completions(app) == ["/ps", "/provider"]
+    assert app._mention_transition_timer is None
+
+    app.tab_or_complete(app.input_buffer, reverse=False)
+    assert app.input_buffer.complete_state is not None
+    assert app.input_buffer.complete_state.complete_index == 0
+
+
+def test_complete_slash_command_submits_on_the_first_enter(monkeypatch):
+    received = []
+    app = TuiApp(completer=CommandCompleter(), on_chat_submit=received.append)
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("/effort")
+        wait_until(lambda: app.input_buffer.text == "/effort")
+        assert app.input_buffer.complete_state is None
+
+        pipe_input.send_text("\r")
+        wait_until(lambda: received == ["/effort"])
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)

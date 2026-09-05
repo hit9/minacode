@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 from prompt_toolkit import search as pt_search
 from prompt_toolkit.application import Application, create_app_session, run_in_terminal
 from prompt_toolkit.application.run_in_terminal import in_terminal
-from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.buffer import Buffer, CompletionState
 from prompt_toolkit.completion import CompleteEvent, Completer
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done, is_searching
@@ -292,6 +292,7 @@ class TuiApp:
             accept_handler=self._accept,
         )
         self.input_buffer.on_text_changed += self._on_input_text_changed
+        self.input_buffer.on_text_insert += self._offer_slash_completions
         self.search_toolbar = SearchToolbar()
         self.app: Application | None = None
         self.on_ready: Callable[[], None] = lambda: None
@@ -735,6 +736,11 @@ class TuiApp:
                 return
             if buffer.complete_state is None:
                 self._refresh_file_completions(buffer)
+        before = buffer.document.text_before_cursor
+        state = buffer.complete_state
+        if not reverse and before.startswith("/") and active_mention(before) is None and state is not None and len(state.completions) == 1:
+            buffer.apply_completion(state.completions[0])
+            return
         self.complete_input(buffer, reverse=reverse)
 
     def _pick_quick_hint(self, buffer: Buffer) -> bool:
@@ -781,7 +787,6 @@ class TuiApp:
         if delta.inserted and delta.inserted[-1].isspace() and self.input_mode in {"chat", "running"}:
             self._recognize_input()
         self._offer_mention_completions(buffer, delta)
-        self._offer_slash_completions(buffer, delta)
 
     def _offer_mention_completions(self, buffer: Buffer, delta: _EditDelta) -> None:
         self._cancel_mention_transition()
@@ -830,31 +835,31 @@ class TuiApp:
             buffer.complete_state = None
         buffer.start_completion(select_first=False)
 
-    def _offer_slash_completions(self, buffer: Buffer, delta: _EditDelta) -> None:
+    def _offer_slash_completions(self, buffer: Buffer) -> None:
         """A leading "/" is a command, so its completions open as it is typed, like @/$ mentions.
 
-        Only single-character, non-space edits schedule a refresh; the transition timer coalesces
-        a burst of typing into one recompute once the text settles, which is what keeps the menu
-        from fighting prompt-toolkit's own async completion task. Applying a completion (or
-        pasting) replaces the word at once and must not make the menu pop straight back."""
-        if self.input_mode not in {"chat", "running"} or not delta.inserted:
-            return
-        if len(delta.inserted) != 1 or delta.inserted[-1].isspace():
+        The insert event runs after prompt-toolkit has finished changing the document, so command
+        candidates can replace its cleared state before the edit is rendered. Delaying that refresh
+        makes fast typing visibly close and reopen the menu. Whitespace closes the menu instead of
+        immediately opening argument rows; an applied exact completion is filtered out below."""
+        if self.input_mode not in {"chat", "running"}:
             return
         before = buffer.document.text_before_cursor
-        if not before.startswith("/") or active_mention(before) is not None:
+        if not before.startswith("/") or before[-1].isspace() or active_mention(before) is not None:
             # An active @/$ span owns completion while it is being typed; a mention inside a
             # slash command must not fight the mention flow for the same keystroke.
             return
 
-        def show(current: Buffer) -> None:
-            if current.document.text_before_cursor.startswith("/") and active_mention(current.document.text_before_cursor) is None:
-                if current.complete_state is not None:
-                    current.complete_state = None
-                current.start_completion(select_first=False)
-
-        self._cancel_mention_transition()
-        self._schedule_mention_transition(buffer, show)
+        if buffer.completer is None:
+            return
+        event = CompleteEvent(completion_requested=True)
+        completions = list(buffer.completer.get_completions(buffer.document, event))
+        if len(completions) == 1:
+            completion = completions[0]
+            replaced = before[len(before) + completion.start_position :]
+            if replaced == completion.text:
+                completions = []
+        buffer.complete_state = CompletionState(buffer.document, completions) if completions else None
 
     def _cancel_mention_transition(self) -> None:
         timer = self._mention_transition_timer
