@@ -316,7 +316,7 @@ class View:
 
     def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: StyleAndTextTuples | None = None) -> StyleAndTextTuples:
         prefix = prefix or []
-        prefix_len = sum(len(fragment[1]) for fragment in prefix)
+        prefix_len = sum(get_cwidth(fragment[1]) for fragment in prefix)
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, cols - 2)
         lead = 3
@@ -328,10 +328,10 @@ class View:
         body_len = prefix_len + get_cwidth(label) + 2  # prefix + " label "
         width = min(max(cols - 2, 20), max(width, lead + body_len + min_trail))
         trail = max(3, width - lead - body_len)
-        dash_count = lead + trail
-        # The comet head bounces over the horizontal rule only. The label stays stable and readable
-        # while the glow appears to pass through the dash track on either side.
-        span = max(1, dash_count - 1)
+        # Keep the label in the animation's coordinate space. The highlight is hidden while it
+        # passes behind the label; removing that width would make it teleport from the short lead
+        # rule to the trail.
+        span = max(1, width - 1)
         # A short track (a narrow terminal squeezing the trail) must not make the head bounce
         # faster than the eye can follow: hold each round trip to at least a second by lowering
         # the sweep rate as the span shrinks; normal-length tracks keep the full frame-per-cell
@@ -344,7 +344,14 @@ class View:
             fragments: StyleAndTextTuples = []
             for i in range(count):
                 step = int(abs(offset + i - head) / self.GLOW_REACH * self.GLOW_STEPS)
-                fragments.append((f"class:divider.glow{step}" if step < self.GLOW_STEPS else "class:queue.rule", "─"))
+                style = f"class:divider.glow{step}" if step < self.GLOW_STEPS else "class:queue.rule"
+                # A full-width divider can contain hundreds of plain cells. Keep only style
+                # boundaries as fragments so widening the terminal does not multiply per-frame
+                # rendering work.
+                if fragments and fragments[-1][0] == style:
+                    fragments[-1] = (style, fragments[-1][1] + "─")
+                else:
+                    fragments.append((style, "─"))
             return fragments
 
         return [
@@ -353,7 +360,7 @@ class View:
             *prefix,
             ("class:divider.working", label),
             ("class:queue.rule", " "),
-            *dashes(lead, trail),
+            *dashes(lead + body_len, trail),
         ]
 
     def queue_divider_fragments(self, queued: int = 0) -> StyleAndTextTuples:

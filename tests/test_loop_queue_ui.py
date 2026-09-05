@@ -69,9 +69,9 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
         for tick in range(200):
             mp.setattr(time, "monotonic", lambda tick=tick: tick * 0.1)
             fragments = loop.view.queue_divider_fragments()
-            seen_head = seen_head or any(style == "class:divider.glow0" and text == "─" for style, text in fragments)
+            seen_head = seen_head or any(style == "class:divider.glow0" and "─" in text for style, text in fragments)
             assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
-            assert all(not style.startswith("class:divider.glow") or text == "─" for style, text in fragments)
+            assert all(not style.startswith("class:divider.glow") or set(text) == {"─"} for style, text in fragments)
         assert seen_head
 
     s.pending_user_inputs = []
@@ -81,8 +81,15 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
 
 
 def divider_glow_steps(fragments):
-    """The comet's glow step per dash, None where the dash fell back to the plain rule."""
-    return [int(style.removeprefix("class:divider.glow")) if style.startswith("class:divider.glow") else None for style, text in fragments if text == "─"]
+    """The comet's glow step at each rendered cell, including its hidden label span."""
+    steps = []
+    for style, text in fragments:
+        if text and set(text) == {"─"} and (style == "class:queue.rule" or style.startswith("class:divider.glow")):
+            step = int(style.removeprefix("class:divider.glow")) if style.startswith("class:divider.glow") else None
+            steps.extend([step] * len(text))
+        else:
+            steps.extend([None] * len(text))
+    return steps
 
 
 def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
@@ -92,11 +99,13 @@ def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
     # is tied to the frame rate rather than chosen independently of it.
     assert loop.view.QUEUE_SWEEP_CELLS_PER_SEC * TuiApp.ANIMATION_INTERVAL == pytest.approx(1.0)
 
+    label = "working"
+    trail_start = 3 + len(label) + 2
     with pytest.MonkeyPatch.context() as mp:
         heads = []
         for frame in range(6):
-            mp.setattr(time, "monotonic", lambda frame=frame: 1000.0 + frame * TuiApp.ANIMATION_INTERVAL)
-            steps = divider_glow_steps(loop.view.queue_divider_fragments())
+            mp.setattr(time, "monotonic", lambda frame=frame: (trail_start + frame) / loop.view.QUEUE_SWEEP_CELLS_PER_SEC)
+            steps = divider_glow_steps(loop.view.sweep_divider_fragments(label))
             heads.append(min(range(len(steps)), key=lambda index: (steps[index] is None, steps[index])))
 
     assert [second - first for first, second in itertools.pairwise(heads)] == [1, 1, 1, 1, 1]
@@ -116,14 +125,16 @@ def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
     assert seen and all(f"divider.glow{step}" in styled for step in seen)
     # A head resting between two cells lights both at the same reduced shade instead of snapping
     # onto the nearer one, which is what keeps the motion smooth when a frame arrives late.
+    label = "working"
+    trail_start = 3 + len(label) + 2
     with pytest.MonkeyPatch.context() as mp:
         span = loop.view.GLOW_STEPS / loop.view.GLOW_REACH
-        mp.setattr(time, "monotonic", lambda: (3 + 0.5) / loop.view.QUEUE_SWEEP_CELLS_PER_SEC)
-        steps = divider_glow_steps(loop.view.queue_divider_fragments())
+        mp.setattr(time, "monotonic", lambda: (trail_start + 3.5) / loop.view.QUEUE_SWEEP_CELLS_PER_SEC)
+        steps = divider_glow_steps(loop.view.sweep_divider_fragments(label))
 
-    assert steps[3] == steps[4] == int(0.5 * span)
-    assert steps[3] > 0  # dimmer than a head sitting exactly on a cell
-    assert steps[2] == steps[5] > steps[3]
+    assert steps[trail_start + 3] == steps[trail_start + 4] == int(0.5 * span)
+    assert steps[trail_start + 3] > 0  # dimmer than a head sitting exactly on a cell
+    assert steps[trail_start + 2] == steps[trail_start + 5] > steps[trail_start + 3]
 
 
 def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):

@@ -27,9 +27,9 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer, HSplit, Window
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.layout.menus import CompletionsMenu, CompletionsMenuControl
 from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
@@ -134,6 +134,38 @@ class CallbackPlaceholder(Processor):
         if not text or buffer is None or buffer.text or ti.lineno != ti.document.line_count - 1:
             return Transformation(ti.fragments)
         return Transformation([*ti.fragments, ("class:queue.hint", text)])
+
+
+class _AlignedCompletionsMenuControl(CompletionsMenuControl):
+    """Render candidates at the replacement column instead of one padded cell later."""
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        content = super().create_content(width, height)
+
+        def get_line(index: int) -> StyleAndTextTuples:
+            fragments = list(content.get_line(index))
+            if fragments and fragments[0][1].startswith(" "):
+                fragment = fragments[0]
+                if len(fragment) == 2:
+                    fragments[0] = (fragment[0], fragment[1][1:])
+                else:
+                    fragments[0] = (fragment[0], fragment[1][1:], fragment[2])
+            return fragments
+
+        return UIContent(
+            get_line=get_line,
+            line_count=content.line_count,
+            cursor_position=content.cursor_position,
+            menu_position=content.menu_position,
+            show_cursor=content.show_cursor,
+        )
+
+
+class _AlignedCompletionsMenu(CompletionsMenu):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        assert isinstance(self.content, Window)
+        self.content.content = _AlignedCompletionsMenuControl()
 
 
 class ImageLabelProcessor(Processor):
@@ -1138,6 +1170,14 @@ class TuiApp:
             else:
                 buffer.start_completion(select_first=False)
 
+    def _completion_menu_position(self) -> int | None:
+        """Anchor the menu at the text it will replace, not after the cursor."""
+        state = self.input_buffer.complete_state
+        if state is None or not state.completions:
+            return None
+        start = min(completion.start_position for completion in state.completions)
+        return max(0, state.original_document.cursor_position + start)
+
     def _status_bar_window(self, *, dont_extend_height: bool) -> Window:
         return Window(
             FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
@@ -1159,6 +1199,7 @@ class TuiApp:
                 input_processors=input_processors,
                 search_buffer_control=self.search_toolbar.control,
                 preview_search=True,
+                menu_position=self._completion_menu_position,
             ),
             height=Dimension(min=1),
             dont_extend_height=True,
@@ -1255,7 +1296,7 @@ class TuiApp:
                     ConditionalContainer(HSplit([self.exclusive_modal_window, exclusive_status]), filter=exclusive_active),
                 ]
             ),
-            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True)],
+            [Float(_AlignedCompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True)],
         )
         return Layout(root, focused_element=self.input_window)
 
