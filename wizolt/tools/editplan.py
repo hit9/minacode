@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from wizolt.base import ToolCall, ToolError, run_blocking, split_lines
 from wizolt.source import SOURCE_TARGET_CONSUMED, SourceView, ToolOutput, source_error
-from wizolt.tools.files import Edit, EditTool
+from wizolt.tools.files import MIXED_EDIT_EVIDENCE, MODE_CREATE, Edit, EditTool, edit_mode
 
 if TYPE_CHECKING:
     from wizolt.session import Session
@@ -43,6 +43,7 @@ class EditBatchPlan:
         base_key: str | None = None  # view key whose 1-based lines index the original file
         consumed: set[tuple[str, int]] = field(default_factory=set)  # origins an earlier edit in this batch replaced or deleted
         edited: bool = False  # an earlier call in this batch already applied an edit to this file
+        evidence: str = ""  # the non-create evidence mode an earlier call in this batch used
 
         def text(self) -> str:
             return "".join(line.text for line in self.lines)
@@ -131,7 +132,7 @@ class EditBatchPlan:
         self.errors: dict[str, tuple[str, object | None]] = {}
 
     async def build(self, calls: list[ToolCall]) -> EditBatchPlan:
-        prepared: list[tuple[ToolCall, EditTool, str, bool, SourceView | None, list[Edit]]] = []
+        prepared: list[tuple[ToolCall, EditTool, str, str, SourceView | None, list[Edit]]] = []
         missing: list[tuple[ToolCall, EditTool, str, str, list[Edit]]] = []
         for call in calls:
             if call.name != "Edit":
@@ -139,15 +140,15 @@ class EditBatchPlan:
             try:
                 tool = EditTool(self.session, call.args)
                 path, source_name, edits = tool.parse()
-                creating = edits[0].op == "create"
+                mode = edit_mode(source_name, edits)
                 try:
-                    view = tool.resolve_view(path, source_name, creating, edits, recover_missing=False)
+                    view = tool.resolve_view(path, source_name, mode, edits, recover_missing=False)
                 except ToolError as error:
                     if str(error).startswith("source missing"):
                         missing.append((call, tool, path, source_name, edits))
                         continue
                     raise
-                prepared.append((call, tool, path, creating, view, edits))
+                prepared.append((call, tool, path, mode, view, edits))
             except ToolError as error:
                 self.errors[call.id] = (str(error), error.recovery)
         recoverable_missing_paths = (path for _, _, path, _, _ in missing if self.session.in_cwd(path) or self.session.owns_asset(path))
@@ -162,9 +163,9 @@ class EditBatchPlan:
             )
             hint = "use the fresh view below" if recovery else "Read or Search again to obtain a current view"
             self.errors[call.id] = (f"source missing {source_name} is unknown or expired; {hint}", recovery)
-        for call, tool, path, creating, view, edits in prepared:
+        for call, tool, path, mode, view, edits in prepared:
             try:
-                self.plan_call(call, tool, path, creating, view, edits, snapshots[path])
+                self.plan_call(call, tool, path, mode, view, edits, snapshots[path])
             except ToolError as error:
                 self.errors[call.id] = (str(error), error.recovery)
         return self
@@ -174,12 +175,13 @@ class EditBatchPlan:
         call: ToolCall,
         tool: EditTool,
         path: str,
-        creating: bool,
+        mode: str,
         view: SourceView | None,
         edits: list[Edit],
         snapshot: FileSnapshot,
     ) -> None:
-        state = self.file_state(path, creating, view, snapshot)
+        state = self.file_state(path, mode is MODE_CREATE, view, snapshot)
+        self.check_evidence(state, mode)
         before, created = state.text(), not state.exists
         before_lines = [line.text for line in state.lines]
         result = self.apply(tool, state, edits, view)
@@ -194,6 +196,23 @@ class EditBatchPlan:
         )
         state.lines, state.exists, state.edited = result.lines, True, True
         state.consumed |= result.consumed
+
+    def check_evidence(self, state: FileState, mode: str) -> None:
+        """Refuse a planned call that changes evidence modes on a path another call already edited.
+
+        Source-view resolution tracks each planned line back to the view line it came from;
+        character replacements have no such origin to carry, so a batch that mixed the two would
+        be claiming a provenance it no longer has. The call is refused rather than reordered: one
+        more tool round costs a round trip, a fabricated origin map costs a correct edit.
+        """
+        if mode is MODE_CREATE:
+            return
+        if state.evidence and state.evidence != mode:
+            raise source_error(
+                MIXED_EDIT_EVIDENCE,
+                f"this path was already edited through {state.evidence} evidence in this batch; issue this Edit in a later tool round",
+            )
+        state.evidence = mode
 
     def file_state(self, path: str, creating: bool, view: SourceView | None, snapshot: FileSnapshot) -> FileState:
         if path in self.files:
@@ -254,14 +273,18 @@ class EditBatchPlan:
         if edits[0].op == "create":
             lines = tool.content_lines(edits[0].content, False)
             return self.ApplyResult(self.new_lines(lines), [(0, 0, 0, len(lines))], [], relocations=[])
-        assert view is not None
-        result = tool.apply(
-            state.text(),
-            edits,
-            view,
-            locate=lambda edit, first, last: self.planned_start(state, view, edit, first, last),
-            recover=lambda _edit: tool.current_view_recovery_from_lines(view.path, edits, state.original),
-        )
+        if view is None:
+            # Direct mode carries no view lines to relocate against, so the planned text is the
+            # whole of what this call is resolved against, exactly as a standalone call would be.
+            result = tool.apply(state.text(), edits, None)
+        else:
+            result = tool.apply(
+                state.text(),
+                edits,
+                view,
+                locate=lambda edit, first, last: self.planned_start(state, view, edit, first, last),
+                recover=lambda _edit: tool.current_view_recovery_from_lines(view.path, edits, state.original),
+            )
         lines = list(state.lines)
         consumed: set[tuple[str, int]] = set()
         for start, end, replacement in sorted(result.replacements, reverse=True):

@@ -516,8 +516,9 @@ class EditTool(Tool):
 
     def call(self) -> ToolOutput:
         path, source_name, edits = self.parse()
-        creating = edits[0].op == "create"
-        view = self.resolve_view(path, source_name, creating, edits)
+        mode = edit_mode(source_name, edits)
+        creating = mode is MODE_CREATE
+        view = self.resolve_view(path, source_name, mode, edits)
         if self._validate_target(path, creating):
             with open(path, encoding="utf-8") as file:
                 original = file.read()
@@ -608,8 +609,9 @@ class EditTool(Tool):
 
     def preview(self) -> str:
         path, source_name, edits = self.parse()
-        creating = edits[0].op == "create"
-        view = self.resolve_view(path, source_name, creating, edits)
+        mode = edit_mode(source_name, edits)
+        creating = mode is MODE_CREATE
+        view = self.resolve_view(path, source_name, mode, edits)
         exists = self._validate_target(path, creating)
         if exists:
             with open(path, encoding="utf-8") as file:
@@ -746,12 +748,12 @@ class EditTool(Tool):
         self,
         path: str,
         source_name: str,
-        creating: bool,
+        mode: str,
         edits: list[Edit],
         *,
         recover_missing: bool = True,
     ) -> SourceView | None:
-        """Load and validate the named view for an existing-file call, or None for create.
+        """Load and validate the named view for a source-view call, or None for the other modes.
 
         An expired id is the one failure the model cannot fix by thinking harder: the view left
         active context, and nothing about `view.12` says what it held. So the refusal carries the
@@ -759,12 +761,8 @@ class EditTool(Tool):
         old view reconstructed -- it cannot be -- it is current evidence for the same intent, and
         it costs the model one retry instead of a Read plus a retry.
         """
-        if creating:
-            if source_name:
-                raise ToolError("source is forbidden for create; create writes a new file")
-            return None
-        if not source_name:
-            raise ToolError("Edit requires source=view.N for an existing file; Read, Search, or InspectCode first")
+        if mode is not MODE_SOURCE_VIEW:
+            return None  # create writes a whole file; direct mode carries its evidence in `old`
         view = self.session.get_source_view(source_name)
         if view is None:
             recovery = self.current_view_recovery(path, edits) if recover_missing else None
@@ -846,6 +844,10 @@ class EditTool(Tool):
         exactly within MAX_VIEW_DRIFT when the exact text merely moved. All resolutions happen
         before any splice runs; splices then apply in reverse index order.
 
+        A call with no view resolves in direct mode instead, matching each edit's exact `old`
+        against this same content. Both modes converge here on one splice, so a direct edit reaches
+        the same change receipts, boundary warnings, no-op check, and fresh view.
+
         This is the only edit resolution loop. The batch plan applies the same call to its planned
         in-memory file rather than to disk, and injects the two things that differ there:
         `locate`, which maps a range of view lines to the index those lines now sit at after
@@ -857,7 +859,8 @@ class EditTool(Tool):
         if edits[0].op == "create":
             lines = self.content_lines(edits[0].content, False)
             return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [], relocations=[])
-        assert view is not None
+        if view is None:
+            return self.apply_direct(original, edits)
         lines = split_lines(original)
         replacements: list[tuple[int, int, list[str]]] = []
         relocations: list[str] = []
@@ -874,6 +877,50 @@ class EditTool(Tool):
                 recovery = recover(edit) if recover else self.current_view_recovery_from_lines(view.path, edits, lines)
                 raise ToolError(str(error), recovery=recovery) from error
         return self.splice_lines(lines, replacements, relocations)
+
+    def apply_direct(self, original: str, edits: list[Edit]) -> EditApplyResult:
+        """Resolve a direct call's exact targets against `original` and splice them.
+
+        Preview and execution both come through here, so approval can never show a diff that a
+        weaker rule produced than the one the write obeys. A refusal answers with the current file
+        only where the file can settle the question: an ambiguous target gets a view of the places
+        it actually occurs, while a missing one gets none -- there is no exact location to show,
+        and a nearby approximation is the guess this mode exists to refuse.
+        """
+        try:
+            replacements = resolve_direct(original, edits)
+        except DirectMatchError as error:
+            recovery = self.ambiguity_recovery(original, error.offsets) if error.category == DIRECT_TARGET_AMBIGUOUS else None
+            raise ToolError(str(error), recovery=recovery) from error
+        lines = split_lines(original)
+        return self.splice_lines(lines, direct_line_replacements(lines, replacements))
+
+    def ambiguity_recovery(self, original: str, offsets: tuple[int, ...]) -> ToolOutput | None:
+        """A bounded view of the places an ambiguous target occurs, or None when none of them fit.
+
+        Occurrences are shown until the next one would push the view past the recovery budget: the
+        model needs enough of them to see what distinguishes the one it meant, not all of them, and
+        the count it was refused with already says how many there are.
+
+        The view describes the content the targets were matched against, which inside a batch is
+        the planned file rather than the one on disk -- the same content the no-op refusal shows,
+        and the content this call was actually judged against.
+        """
+        lines = split_lines(original)
+        ranges: list[tuple[int, int]] = []
+        for offset in offsets:
+            line = original.count("\n", 0, offset) + 1
+            candidate = [*ranges, (max(1, line - self.RECOVERY_CONTEXT_LINES), min(len(lines), line + self.RECOVERY_CONTEXT_LINES))]
+            spans = SourceSpan.build(lines, candidate)
+            if ranges and sum(len(span.lines) for span in spans) > self.RECOVERY_MAX_LINES:
+                break
+            ranges = candidate
+        spans = SourceSpan.build(lines, ranges)
+        if not spans:
+            return None
+        path = self.parse()[0]
+        block = SourceBlock.plain(SourceViewDraft(path, self.session.relpath(path), len(lines), spans, EDIT))
+        return ToolOutput(block.render(), (block,))
 
     @staticmethod
     def locate_range(lines: list[str], view: SourceView, edit: Edit, planned: int | None, target: tuple[str, ...]) -> tuple[int, str]:
