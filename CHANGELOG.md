@@ -4,6 +4,11 @@
 
 ### Added
 
+- The compatibility catalog (now version 2026090501) documents GPT-6 Astra: `api=auto` on
+  `api.openai.com` routes the `gpt-5*` and `gpt-6*` families to the Responses API, GPT-6's
+  reasoning is always on across `low`-`max` (no `none`/`minimal`; `reasoning = off` sends
+  `low`), and temperature is suppressed for both families. Explicit `api`/endpoint settings
+  still win.
 - `Edit` can now patch a file straight from exact text seen anywhere -- `Bash` output included --
   by giving `old` (the exact original text) and `content` instead of `source=view.N` and line
   numbers, which saves the `Read` that used to sit between finding a line and changing it. The

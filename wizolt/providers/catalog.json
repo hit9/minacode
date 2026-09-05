@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "version": 2026082902,
-  "updated_at": "2026-08-29",
+  "version": 2026090501,
+  "updated_at": "2026-09-05",
   "maintenance_scope": "well_known_and_necessary_specializations_only",
   "defaults": {
     "effort_order": [
@@ -574,6 +574,33 @@
     }
   },
   "model_rules": [
+    {
+      "id": "model.trait-gpt-6",
+      "match": {
+        "pattern": "gpt-6(?:-|$)"
+      },
+      "set": {
+        "reasoning.recipe": "reasoning.effort",
+        "reasoning.dialect": "reasoning_effort",
+        "reasoning.levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "reasoning.off": "low",
+        "reasoning.mandatory": true
+      },
+      "why": "GPT-6 always reasons from low to max, with no none effort",
+      "evidence": [
+        "https://developers.openai.com/api/docs/guides/latest-model",
+        "https://developers.openai.com/api/docs/guides/reasoning"
+      ],
+      "notes": [
+        "GPT-6 drops none and minimal; low is the floor and thinking cannot be disabled."
+      ]
+    },
     {
       "id": "model.trait-00",
       "match": {
@@ -1579,14 +1606,33 @@
         "strict.tools": true,
         "temperature.suppress_models": [
           "o",
-          "gpt-5"
+          "gpt-5",
+          "gpt-6"
         ],
         "responses.reasoning_models": [
           "o",
-          "gpt-5"
+          "gpt-5",
+          "gpt-6"
         ]
       },
       "model_rules": [
+        {
+          "id": "provider-rule.api-0.gpt-5-6",
+          "match": {
+            "prefixes": [
+              "gpt-5",
+              "gpt-6"
+            ]
+          },
+          "set": {
+            "api": "responses"
+          },
+          "why": "OpenAI documents gpt-5.x and gpt-6 tool calling on the Responses API",
+          "evidence": [
+            "https://developers.openai.com/api/docs/guides/latest-model",
+            "https://developers.openai.com/api/docs/guides/migrate-to-responses"
+          ]
+        },
         {
           "id": "provider-rule.reasoning-0.o-gpt-5",
           "match": {

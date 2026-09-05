@@ -29,11 +29,11 @@ async def sent_body(model: ModelClient, factory, monkeypatch, attribute: str = "
 async def test_a_named_field_never_reaches_the_chat_request(tmp_path, monkeypatch):
     """The reason the setting exists: a gateway answers 400 for a field wizolt sends, and
     `extra_body` can only add fields."""
-    s = _session(tmp_path, url="https://api.openai.com/v1", model="gpt-5.5", stream=False, reasoning="high")
+    s = _session(tmp_path, url="https://api.openai.com/v1", api="chat", model="gpt-5.5", stream=False, reasoning="high")
     body = await sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
     assert body["reasoning_effort"] == "high"
 
-    s = _session(tmp_path, url="https://api.openai.com/v1", model="gpt-5.5", stream=False, reasoning="high", omit_body=("reasoning_effort",))
+    s = _session(tmp_path, url="https://api.openai.com/v1", api="chat", model="gpt-5.5", stream=False, reasoning="high", omit_body=("reasoning_effort",))
     body = await sent_body(ModelClient(s), _MockClientFactory([(200, CHAT_BODY)]), monkeypatch)
     assert "reasoning_effort" not in body
     assert body["messages"] and body["model"] == "gpt-5.5"

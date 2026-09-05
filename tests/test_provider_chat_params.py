@@ -81,7 +81,12 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
 
     params = {}
     client.apply_provider_params(params, ProviderConfig(url="https://api.openai.com/v1", model="gpt-5-mini", reasoning="low"))
-    assert params["reasoning_effort"] == "low"
+    # gpt-5.x now defaults to the Responses wire, whose fold carries the reasoning object.
+    assert params == {"reasoning": {"effort": "low"}}
+
+    params = {}
+    client.apply_provider_params(params, ProviderConfig(url="https://api.openai.com/v1", model="gpt-5-mini", reasoning="low", api="chat"))
+    assert params == {"reasoning_effort": "low"}
 
     params = {}
     client.apply_provider_params(params, ProviderConfig(url="https://api.deepseek.com/v1", model="deepseek-chat", reasoning="off"))
@@ -112,7 +117,7 @@ def test_every_resolvable_chat_reasoning_mode_is_configurable_by_hand():
 def test_openai_suppresses_temperature_only_for_reasoning_families(tmp_path):
     """Reasoning models reject temperature outright, while sibling chat models still take it."""
     client = ModelClient(session(tmp_path))
-    reasoning = ProviderConfig(url="https://api.openai.com/v1", model="gpt-5", reasoning="medium", temperature=0.7)
+    reasoning = ProviderConfig(url="https://api.openai.com/v1", model="gpt-5", reasoning="medium", temperature=0.7, api="chat")
     assert resolve(reasoning).suppress_temperature is True
     params = {}
     client.apply_provider_params(params, reasoning)

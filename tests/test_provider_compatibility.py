@@ -9,7 +9,7 @@ from wizolt.config import (
 from wizolt.model import ModelClient
 
 
-@pytest.mark.parametrize("model", ("o3", "o4-mini", "gpt-5.6"))
+@pytest.mark.parametrize("model", ("o3", "o4-mini", "gpt-5.6", "gpt-6-astra"))
 def test_openai_compatibility_recognizes_reasoning_model_families(model):
     provider = ProviderConfig(url="https://api.openai.com/v1", model=model)
     assert resolve(provider).chat_reasoning == "reasoning_effort"
@@ -30,6 +30,8 @@ def test_openai_compatibility_limits_responses_reasoning_to_reasoning_models():
     (
         ("https://api.openai.com/v1", "gpt-5.6-sol", "max", "max"),
         ("https://api.openai.com/v1", "gpt-5.6-terra", "minimal", "low"),
+        ("https://api.openai.com/v1", "gpt-6-astra", "minimal", "low"),
+        ("https://api.openai.com/v1", "gpt-6-astra", "max", "max"),
         ("https://api.openai.com/v1", "gpt-5.5", "minimal", "low"),
         ("https://api.openai.com/v1", "gpt-5.5", "max", "xhigh"),
         ("https://api.openai.com/v1", "gpt-5.5-pro", "low", "medium"),
@@ -56,12 +58,36 @@ def test_openai_effort_uses_each_models_nearest_supported_level(url, model, reas
 
 @pytest.mark.parametrize(
     ("model", "expected"),
-    (("gpt-5.6-sol", "none"), ("gpt-5.5-pro", "medium"), ("gpt-5.3-codex", "low")),
+    (("gpt-5.6-sol", "none"), ("gpt-5.5-pro", "medium"), ("gpt-5.3-codex", "low"), ("gpt-6-astra", "low")),
 )
 def test_openai_reasoning_off_uses_the_models_lowest_supported_level(model, expected):
     provider = ProviderConfig(url="https://api.openai.com/v1", model=model, api="responses", reasoning="off")
 
     assert resolve(provider).reasoning_effort == expected
+
+def test_openai_gpt5_and_gpt6_families_default_to_responses():
+    """OpenAI documents gpt-5.x and gpt-6 tool calling and reasoning on the Responses API, so
+    api=auto routes them there; explicit config and endpoint suffixes still win."""
+    for model in ("gpt-5.6-sol", "gpt-5-mini", "gpt-6-astra"):
+        assert resolve(ProviderConfig(url="https://api.openai.com/v1", model=model)).api == "responses"
+    assert resolve(ProviderConfig(url="https://api.openai.com/v1", model="gpt-6-astra", api="chat")).api == "chat"
+    assert resolve(ProviderConfig(url="https://api.openai.com/v1/chat/completions", model="gpt-6-astra")).api == "chat"
+    # Sibling families without a documented Responses contract are untouched.
+    assert resolve(ProviderConfig(url="https://api.openai.com/v1", model="gpt-4.1")).api == "chat"
+    assert resolve(ProviderConfig(url="https://api.openai.com/v1", model="o3")).api == "chat"
+
+
+def test_gpt6_reasoning_is_mandatory_across_low_to_max():
+    provider = ProviderConfig(url="https://api.openai.com/v1", model="gpt-6-astra")
+    resolved = resolve(provider)
+    assert resolved.reasoning_mandatory is True
+    assert resolved.suppress_temperature is True
+    assert reasoning_choices(provider) == ("low", "medium", "high", "xhigh", "max")
+    # No none/minimal on GPT-6: off and minimal both land on the lowest real level.
+    for reasoning, expected in (("off", "low"), ("minimal", "low"), ("max", "max")):
+        provider.reasoning = reasoning
+        assert resolve(provider).reasoning_effort == expected
+
 
 def test_opencode_routes_grok_through_responses_and_uses_its_documented_levels():
     """Routing is OpenCode's; the effort scale is Grok's, and it reaches OpenCode without OpenCode
