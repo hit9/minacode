@@ -19,10 +19,13 @@ from prompt_toolkit.application import get_app_or_none
 from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.output import create_output
 from prompt_toolkit.utils import get_cwidth
-from rich.console import Console
-from rich.markdown import Markdown
+from rich import box
+from rich.console import Console, ConsoleOptions, RenderResult
+from rich.markdown import CodeBlock, Heading, Markdown, MarkdownElement, TableElement
 from rich.padding import Padding
 from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text as RichText
 from rich.theme import Theme as RichTheme
 
@@ -165,53 +168,69 @@ class ThemePalette:
 THEME_ROLES: tuple[str, ...] = tuple(field.name for field in fields(ThemePalette) if field.name not in {"appearance", "pygments_style"})
 
 
+# Two appearances, one shape. The tuning goals are the same in both: body text is the terminal's
+# own, supporting detail is clearly weaker than body text without the interface going grey, one
+# accent carries attention (with a second for the model's own voice), and state colors — success,
+# warning, error — are told apart by hue rather than by shouting.
 DARK_PALETTE = ThemePalette(
     appearance="dark",
     text=TERMINAL_DEFAULT,
-    muted="#8b949e",
-    subtle="#4b5563",
-    accent="#67e8f9",
-    accent_secondary="#a5b4fc",
+    # A step brighter than the old bright-black: supporting detail has to stay readable, and the
+    # transcript is mostly supporting detail.
+    muted="#98a2b0",
+    # Structure, not text: rails, gutters, bullets. Below muted, above the background.
+    subtle="#5b6472",
+    # Calmer than the old near-neon cyan, and now worn by far fewer things, so the interface stops
+    # reading as blue-on-blue.
+    accent="#74b9e7",
+    # The model's own voice: interim narration, thinking, the working divider.
+    accent_secondary="#b3a4e8",
     user="#e0a96d",
-    tool="#3fb950",
-    success="#3fb950",
-    warning="#d29922",
-    error="#fb7185",
-    rule="#4b5563",
-    selection_fg="#0d1117",
-    selection_bg="#67e8f9",
+    tool="#63c174",
+    success="#63c174",
+    warning="#d9a441",
+    error="#f4767e",
+    # Neutral and quiet: a rule parts blocks, it does not announce one.
+    rule="#464e58",
+    # A slate band rather than the accent: a selected row is a large area of color, and the accent
+    # at that size takes over the screen.
+    selection_fg="#eef2f6",
+    selection_bg="#2f3742",
     syntax_assign="#79c0ff",
     syntax_string="#a5d6ff",
     syntax_number="#d2a8ff",
     syntax_ident="#a5d6ff",
     syntax_builtin="#79c0ff",
     syntax_default="#e6edf3",
-    status_base="#cbd5e1",
-    status_provider="#60a5fa",
-    status_reason="#a5b4fc",
-    status_mcp="#93c5fd",
-    status_context="#facc15",
-    status_index="#94a3b8",
-    status_yolo="#c084fc",
-    status_worker="#fbbf24",
+    # The status row is a footer: its plain tone stays below full white, and each field carries
+    # just enough color to be picked out without competing with the transcript above it.
+    status_base="#c3ccd6",
+    status_provider="#74b9e7",
+    status_reason="#b3a4e8",
+    status_mcp="#8fb8d8",
+    status_context="#dcb35a",
+    status_index="#98a2ae",
+    status_yolo="#c99ae0",
+    status_worker="#e2b25f",
     pygments_style="github-dark",
 )
 
 LIGHT_PALETTE = ThemePalette(
     appearance="light",
     text=TERMINAL_DEFAULT,
-    muted="#6b7280",
-    subtle="#9ca3af",
-    accent="#0e7490",
-    accent_secondary="#5b21b6",
+    muted="#697586",
+    subtle="#a3acb9",
+    accent="#1f6f8b",
+    accent_secondary="#6d3fa8",
     user="#9a5b2e",
-    tool="#15803d",
-    success="#15803d",
-    warning="#b45309",
-    error="#b91c1c",
-    rule="#9ca3af",
-    selection_fg="#f8fafc",
-    selection_bg="#0e7490",
+    tool="#217a3c",
+    success="#217a3c",
+    warning="#a2620a",
+    error="#b3261e",
+    # Lighter than the text it parts: on a white terminal a mid-grey rule reads as a bar.
+    rule="#c3c9d1",
+    selection_fg="#1f2937",
+    selection_bg="#dde5ef",
     syntax_assign="#005cc5",
     syntax_string="#032f62",
     syntax_number="#6f42c1",
@@ -219,13 +238,13 @@ LIGHT_PALETTE = ThemePalette(
     syntax_builtin="#005cc5",
     syntax_default="#24292e",
     status_base="#4b5563",
-    status_provider="#1d4ed8",
-    status_reason="#5b21b6",
-    status_mcp="#1e40af",
+    status_provider="#1f5fc0",
+    status_reason="#6d3fa8",
+    status_mcp="#2c5fa8",
     status_context="#a16207",
-    status_index="#475569",
+    status_index="#5b6675",
     status_yolo="#7e22ce",
-    status_worker="#b45309",
+    status_worker="#a2620a",
     pygments_style="default",
 )
 
@@ -308,7 +327,47 @@ class Theme:
         # anything wearing a weight on top of a role is named here rather than spelled at the call.
         styles["wizolt.role.user"] = f"bold {cls.color('accent')}"
         styles["wizolt.role.assistant"] = f"bold {cls.color('accent_secondary')}"
-        return RichTheme(styles, inherit=True)
+        return RichTheme({**styles, **cls.markdown_styles()}, inherit=True)
+
+    @classmethod
+    def markdown_styles(cls) -> dict[str, str]:
+        """Rich's Markdown element styles, restated in the palette.
+
+        Rich's own defaults are a second color scheme: cyan inline code on a black band, magenta
+        headings and block quotes, blue links, a cyan table. Left alone they win every argument with
+        the palette and turn an answer into a page of blue and cyan.
+
+        The replacements say hierarchy with weight and tone instead of with color. Headings step
+        down in emphasis rather than each taking a hue; body text, list text, and table cells stay
+        the terminal's own foreground; inline code is the one accent prose carries; a link is
+        underlined rather than colored, with its URL beside it in the supporting tone.
+        """
+        muted, subtle, accent = cls.color("muted"), cls.color("subtle"), cls.color("accent")
+        return {
+            "markdown.h1": "bold",
+            "markdown.h2": f"bold {accent}",
+            "markdown.h3": "bold",
+            "markdown.h4": f"bold {muted}",
+            "markdown.h5": f"italic {muted}",
+            "markdown.h6": muted,
+            "markdown.h7": f"italic {muted}",
+            "markdown.paragraph": "none",
+            "markdown.text": "none",
+            "markdown.item": "none",
+            # No background band: the block is read as code by its highlighting, and a filled band
+            # is the single loudest thing a theme can put on a terminal.
+            "markdown.code": accent,
+            "markdown.code_block": "none",
+            "markdown.block_quote": muted,
+            "markdown.hr": cls.color("rule"),
+            "markdown.item.bullet": f"bold {subtle}",
+            "markdown.item.number": subtle,
+            "markdown.list": "none",
+            "markdown.link": "underline",
+            "markdown.link_url": muted,
+            "markdown.table.border": subtle,
+            "markdown.table.header": "bold",
+        }
 
     @classmethod
     def ramp(cls, start_role: str, end_role: str, steps: int) -> list[str]:
@@ -357,6 +416,76 @@ class Theme:
             except Exception:  # noqa: BLE001 - optional Pygments styles must degrade to plain rendering.
                 cls._pygments_cache[name] = None
         return cls._pygments_cache[name]
+
+
+class _Heading(Heading):
+    """Headings that read as headings, not as banners.
+
+    Rich centers `h1`, which in a transcript reads as a title page rather than as the top of a
+    section: the text drifts away from the left edge every other line is on. Every level is left
+    aligned here, and the levels differ by weight and tone (see `Theme.markdown_styles`).
+    """
+
+    LEVEL_ALIGN: ClassVar[dict[str, Any]] = dict.fromkeys(Heading.LEVEL_ALIGN, "left")
+
+
+class _CodeBlock(CodeBlock):
+    """A fenced block highlighted on the terminal's own background.
+
+    Rich pads the block and fills it with the Pygments theme's background, which on a terminal that
+    is not exactly that color reads as a misplaced rectangle. Dropping the fill and the padding
+    leaves the highlighting, which is what the fence was for, and matches how the transcript
+    renders the code it prints itself.
+    """
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        del console, options
+        yield Syntax(str(self.text).rstrip(), self.lexer_name, theme=self.theme, word_wrap=True, padding=0, background_color="default")
+
+
+class _Table(TableElement):
+    """A table with no outer edge, so it does not arrive wrapped in blank rows.
+
+    Rich's `show_edge` draws an empty row above and below the table; with the blank line Markdown
+    already puts between blocks, a table ends up floating two rows away from its own paragraph.
+    The header underline is enough to bound it.
+    """
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        del console, options
+        table = Table(box=box.SIMPLE, pad_edge=False, style="markdown.table.border", show_edge=False, collapse_padding=True)
+        if self.header is not None and self.header.row is not None:
+            for column in self.header.row.cells:
+                heading = column.content.copy()
+                heading.stylize("markdown.table.header")
+                table.add_column(heading)
+        if self.body is not None:
+            for row in self.body.rows:
+                table.add_row(*[element.content for element in row.cells])
+        yield table
+
+
+class WizoltMarkdown(Markdown):
+    """The one Markdown renderable in the app, so every surface lays a document out the same way.
+
+    Hyperlinks stay off: prompt-toolkit cannot parse the OSC 8 escapes Rich emits for them, and
+    `UiPrinter` strips those before they reach the terminal, so a hyperlink would only cost the URL.
+    """
+
+    elements: ClassVar[dict[str, type[MarkdownElement]]] = {
+        **Markdown.elements,
+        "heading_open": _Heading,
+        "fence": _CodeBlock,
+        "code_block": _CodeBlock,
+        "table_open": _Table,
+    }
+
+    def __init__(self, markup: str) -> None:
+        # The theme's own Pygments style, so a fenced block is colored like the code the transcript
+        # prints. `Theme.pygments_style` returning None means the name did not load; Rich falls back
+        # to plain ANSI rather than raising on it.
+        style = Theme.palette().pygments_style if Theme.pygments_style() is not None else "ansi_dark"
+        super().__init__(markup, code_theme=style, hyperlinks=False)
 
 
 def markdown_console(width: int) -> Console:
@@ -433,6 +562,46 @@ class UiPrinter:
         # Rendered rows since the last full-width rule was drawn. Read by the loop to decide
         # whether a new rule would land too close to the one above it to be worth drawing.
         self.rows_since_rule = 0
+        # Blank rows currently sitting at the end of what has been printed. This is what makes the
+        # gaps between blocks stable: a caller says "part this from what came before" through
+        # `separate`, and saying it twice, or saying it under a rule that already left a gap, still
+        # leaves one blank row. Starts at one, so the first block of a session does not open with a
+        # blank row it has nothing to be parted from.
+        self.trailing_blanks = 1
+
+    def track_layout(self, text: str) -> None:
+        """Record what one emit left on screen: rows drawn, and blank rows left at the end.
+
+        Everything printed goes through here, so the two spacing questions -- how far the last rule
+        is, and whether a gap is already there -- are answered from what actually reached the
+        terminal rather than from each caller's guess about it.
+        """
+        self.rows_since_rule += text.count("\n")
+        rows = text.split("\n")
+        if rows and rows[-1] == "":
+            rows.pop()  # the newline that ended the last row, not a row of its own
+        blanks = 0
+        for row in reversed(rows):
+            if self.SGR_RE.sub("", row).strip():
+                break
+            blanks += 1
+        # A wholly blank emit extends the run above it; anything with content restarts the count.
+        self.trailing_blanks = self.trailing_blanks + blanks if blanks == len(rows) else blanks
+
+    def separate(self, rows: int = 1) -> None:
+        """Ensure `rows` blank rows part what comes next from what is already on screen.
+
+        The one way a gap is opened. Callers state the separation they want rather than counting
+        newlines, so a block cannot arrive glued to the one above it, and two callers each asking
+        for room cannot stack two blank rows between the same pair of blocks.
+
+        Uncolored output is left alone: it is a transcript for another program to read, and its
+        spacing is the caller's exact text.
+        """
+        if not self.color:
+            return
+        for _ in range(max(0, rows - self.trailing_blanks)):
+            self.emit()
 
     def write_direct(self, callback: Callable[[], None]) -> None:
         """Run one write with no application to print above, draining anything queued first.
@@ -557,7 +726,7 @@ class UiPrinter:
         # Counted in rendered rows, not in blocks or calls: what decides whether two rules sit too
         # close is how far apart they are on screen, and one Bash call with its output goes further
         # than four Reads. A block that wrapped counts the rows it actually took.
-        self.rows_since_rule += sum(fragment.count("\n") for _, fragment in segments)
+        self.track_layout("".join(fragment for _, fragment in segments))
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(segments))
             return
@@ -664,7 +833,7 @@ class UiPrinter:
             # output does not butt straight against the transcript above it or the prompt below.
             lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
             cleaned = "\n" + "\n".join(lines) + "\n"
-        self.rows_since_rule += cleaned.count("\n")
+        self.track_layout(cleaned)
         if self._batch_parts is not None:
             self._batch_parts.append(ANSI(cleaned))
             return
@@ -688,18 +857,19 @@ class UiPrinter:
         """
         if not self.color:
             return
-        # Keep this at zero even though the rule owns a blank row below itself: zero also means
-        # "the next block sits directly under a rule", preventing that block from adding a second
-        # leading blank. Once content is emitted, the counter resumes measuring rendered rows.
-        self.rows_since_rule = 0
+        # The rule owns both of its seams: a blank row above parts it from the block it closes, and
+        # one below keeps whatever follows off it. Neither is the caller's to draw, and neither
+        # doubles up when the block above already ended in a gap.
+        self.separate()
         width = shutil.get_terminal_size((80, 20)).columns
-        # A blank row below keeps the rule off whatever follows it (narration, tool output); the
-        # callers already draw the blank row above, so the two seams land once each.
         fragments = FormattedText([(Theme.fg("rule"), "─" * width + "\n"), ("", "\n")])
         if self._batch_parts is not None:
             self._batch_parts.append(fragments)
-            return
-        self._scrollback_print(fragments)
+        else:
+            self._scrollback_print(fragments)
+        self.track_layout("─" * width + "\n\n")
+        # Distance to the next rule is measured from here, so the rule's own rows do not count.
+        self.rows_since_rule = 0
 
     def rule_due(self, min_rows: int) -> bool:
         """Whether a phase rule would land at least `min_rows` rendered rows below the last one
@@ -721,8 +891,7 @@ class UiPrinter:
         if not self.color:
             self.output_fn(label)
             return
-        self.emit()
-        self.rows_since_rule = 0
+        self.separate()
         width = shutil.get_terminal_size((80, 20)).columns
         lead = "─" * self.TURN_END_LEAD + " "
         trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)
@@ -733,8 +902,11 @@ class UiPrinter:
         ]
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(fragments))
-            return
-        self._scrollback_print(FormattedText(fragments))
+        else:
+            self._scrollback_print(FormattedText(fragments))
+        self.track_layout("".join(fragment for _, fragment in fragments))
+        # Distance to the next rule is measured from here, so the rule's own row does not count.
+        self.rows_since_rule = 0
 
     def emit_worker_rule(self, label: str) -> None:
         """Open or close a delegation with a full-width rule whose yellow label names the worker.
@@ -748,7 +920,7 @@ class UiPrinter:
         if not self.color:
             self.output_fn(label)
             return
-        self.emit()
+        self.separate()
         width = shutil.get_terminal_size((80, 20)).columns
         limit = max(1, width - 6)
         if get_cwidth(label) > limit:
@@ -771,9 +943,10 @@ class UiPrinter:
         ]
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(fragments))
-            return
-        self._scrollback_print(FormattedText(fragments))
-        self.emit()
+        else:
+            self._scrollback_print(FormattedText(fragments))
+        self.track_layout("".join(fragment for _, fragment in fragments))
+        self.separate()
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
@@ -794,13 +967,13 @@ class UiPrinter:
             console.print("")
             console.print(Padding(RichText(UiPrinter.USER_LOG_PREFIX + text, style="wizolt.user"), (0, 0, 0, len(margin))))
         elif role == "assistant":
-            content = RichText(styled_text, style="wizolt.error") if error else Markdown(styled_text, hyperlinks=False)
+            content = RichText(styled_text, style="wizolt.error") if error else WizoltMarkdown(styled_text)
             console.print(Padding(content, (0, 0, 0, len(margin))))
         else:
             if role:
                 label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "wizolt.muted"))
                 console.print(Padding(label, (0, 0, 0, len(margin))))
-            content = RichText(styled_text, style="wizolt.error") if error else Markdown(styled_text, hyperlinks=False)
+            content = RichText(styled_text, style="wizolt.error") if error else WizoltMarkdown(styled_text)
             console.print(Padding(content, (0, 0, 0, len(margin))))
 
     def emit_markdown(self, text: str) -> None:
@@ -812,7 +985,7 @@ class UiPrinter:
             return
         console = markdown_console(shutil.get_terminal_size().columns)
         with console.capture() as capture:
-            console.print(Markdown(text, hyperlinks=False))
+            console.print(WizoltMarkdown(text))
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
         if self._batch_parts is not None:
             self._batch_parts.append(ANSI(cleaned))

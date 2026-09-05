@@ -501,8 +501,7 @@ class TuiRuntime:
                 # The engine publishes its own final answer through output_fn now; only errors it
                 # raised before publishing land here.
                 if not answered:
-                    if self.loop.ui.color:
-                        self.loop.emit()
+                    self.loop.ui.separate()
                     self.loop.ui.emit_answer(answer, rule=False, indent=TurnBox.CONTENT_LEVEL)
                 # Emitted outside the promotion check: a promoted answer is already in scrollback
                 # without its sources, so skipping the footer there would drop them exactly when a

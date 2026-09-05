@@ -606,7 +606,6 @@ Full documentation: https://wizolt.readthedocs.io
                 return 0
             if handled:
                 continue
-            self.emit("")
             self.user_turn_rule()
             started = time.monotonic()
             malformed_tool_call = False
@@ -630,8 +629,8 @@ Full documentation: https://wizolt.readthedocs.io
             # Same rule as TuiRuntime.run_agent_turn: the engine publishes its own final answer
             # through output_fn, so only an error it raised before publishing prints here.
             if not answered:
-                if self.ui.color and answer.strip():
-                    self.emit()
+                if answer.strip():
+                    self.ui.separate()
                 self.ui.emit_answer(answer, rule=False, indent=TurnBox.CONTENT_LEVEL)
             if footer := search_sources_footer(self.agent.turn_sources):
                 self.ui.emit_answer(footer, rule=False, indent=TurnBox.CONTENT_LEVEL)
@@ -766,8 +765,7 @@ Full documentation: https://wizolt.readthedocs.io
             # Every assistant message sits in the content column, final answer included, so a
             # resumed session reads exactly like the live one. The turn's own text all shares that
             # column with the user's message, whose `• ` bullet hangs in the same two-space margin.
-            if self.ui.color and self.ui.rows_since_rule > 0:
-                self.emit()  # the blank line the live narration and answer open with
+            self.ui.separate()  # the same gap the live narration and answer open with
             # An assistant message that carries tool calls is interim narration, not the answer:
             # the resumed session draws the same phase rule above it the live turn did (the rule
             # opens the text), skipping it only when it would land too close to the rule above.
@@ -785,8 +783,6 @@ Full documentation: https://wizolt.readthedocs.io
                 else:
                     self._silent_batches += 1
                     if self._silent_batches >= self.TOOL_RUN_RULE_BATCHES:
-                        if self.ui.color:
-                            self.emit("")
                         self.ui.emit_phase_rule()
                         self._silent_batches = 0
             return tool_record_index
@@ -797,8 +793,6 @@ Full documentation: https://wizolt.readthedocs.io
             # The user's message opens its turn with the same rule the live turn opened with: a
             # blank line, then the rule under the message, and the silent-batch count restarts.
             self._silent_batches = 0
-            if self.ui.color:
-                self.emit("")
             self.ui.emit_phase_rule()
         return tool_record_index
 
@@ -1061,8 +1055,8 @@ Full documentation: https://wizolt.readthedocs.io
             # The blank line parts each block from the one above; it is skipped when the block
             # sits directly under a rule just drawn (the turn's opening rule, or a batch rule),
             # which already provides the seam.
-            if self.ui.color and self.ui.rows_since_rule > 0 and (isinstance(text, str) or (text.items and isinstance(text.items[0], LogLine))):
-                self.emit()
+            if isinstance(text, str) or (text.items and isinstance(text.items[0], LogLine)):
+                self.ui.separate()
             self.emit(text)
 
         self.with_status_paused(output)
@@ -1212,8 +1206,8 @@ Full documentation: https://wizolt.readthedocs.io
         # over (the batch itself is reported voiced through on_tool_batch, not by this flag). The
         # blank line above parts it from the previous block unless it sits directly under a rule
         # just drawn, which already provides the seam.
-        if self.ui.color and text.strip() and self.ui.rows_since_rule > 0:
-            self.emit()
+        if text.strip():
+            self.ui.separate()
         self._silent_batches = 0
         # The rule opens the text, so the distance check runs before it is drawn; the blank line
         # above already counts, the text's own rows count toward the next rule.
@@ -1224,8 +1218,8 @@ Full documentation: https://wizolt.readthedocs.io
     def emit_agent_answer(self, text: str) -> None:
         """The turn's final answer: the one block of model text the turn-end rule closes, so it
         takes no phase rule of its own."""
-        if self.ui.color and text.strip() and self.ui.rows_since_rule > 0:
-            self.emit()
+        if text.strip():
+            self.ui.separate()
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
     def user_turn_rule(self) -> None:
@@ -1249,8 +1243,6 @@ Full documentation: https://wizolt.readthedocs.io
                 return
             self._silent_batches += 1
             if self._silent_batches >= self.TOOL_RUN_RULE_BATCHES:
-                if self.ui.color:
-                    self.emit("")
                 self.ui.emit_phase_rule()
                 self._silent_batches = 0
 

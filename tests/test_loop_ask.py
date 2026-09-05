@@ -226,9 +226,9 @@ async def test_colored_assistant_and_tool_blocks_each_start_with_one_blank_line(
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     loop.ui.color = True
     loop.ui.emit_phase_rule = lambda: None  # the narration's opening rule is this test's noise
-    loop.ui.rows_since_rule = 1  # not sitting directly under a rule: the blocks need their blank line
+    loop.ui.trailing_blanks = 0  # content above with no gap after it: the blocks need their blank line
     events = []
-    loop.emit = lambda text="", indent=0: events.append(text)
+    loop.ui.emit = lambda text="", indent=0: events.append(text)
     loop.ui.emit_answer = lambda text, **_kwargs: events.append(text)
     first = LogBlock.hierarchy(LogLine("Bash", "first"), [])
     first_result = LogBlock.hierarchy(None, [LogLine("stored", "tr.1")])
@@ -258,8 +258,10 @@ async def test_interim_narration_closes_with_a_phase_rule_when_far_from_last_rul
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
     # A rule has already been drawn this turn, so distance applies; one row short of the
-    # threshold before the blank line and the narration itself count.
+    # threshold before the blank line and the narration itself count. The block above ends without
+    # a gap, so the narration does open one, and that row counts.
     loop.ui.rows_since_rule = loop.MIN_ROWS_BETWEEN_RULES - 1
+    loop.ui.trailing_blanks = 0
 
     loop.emit_agent_output("Working on it.")
 
@@ -422,6 +424,7 @@ async def test_worker_interim_output_gets_the_same_phase_rule(tmp_path):
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
     loop.ui.rows_since_rule = loop.MIN_ROWS_BETWEEN_RULES - 1
+    loop.ui.trailing_blanks = 0
 
     loop.worker_answer_output("working")
 

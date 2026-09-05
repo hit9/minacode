@@ -36,6 +36,7 @@ def test_emit_turn_end_renders_a_left_aligned_rule_under_a_blank_line(monkeypatc
 
     ui = UiPrinter()
     assert ui.color
+    ui.trailing_blanks = 0  # an answer sits above it, with no gap of its own
     ui.emit_turn_end(time.monotonic() - 65)
 
     text = "".join(fragment for _, fragment in emitted)
@@ -43,6 +44,22 @@ def test_emit_turn_end_renders_a_left_aligned_rule_under_a_blank_line(monkeypatc
     # not centered, not flush) with a long trail of dashes running to the full width.
     assert "\n── done in 1m05s " in text
     assert "──────" in text
+
+
+def test_emit_turn_end_does_not_add_a_gap_to_one_that_is_already_there(monkeypatch):
+    """Spacing is stated, not counted: a rule under a block that already ended in a blank row does
+    not open a second one."""
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    emitted = []
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
+
+    ui = UiPrinter()
+    ui.emit("an answer")
+    ui.emit("")
+    ui.emit_turn_end(time.monotonic())
+
+    text = "".join(fragment for _, fragment in emitted)
+    assert "\n\n\n" not in text
 
 def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
     monkeypatch.setattr(Theme, "_mode", "dark")
@@ -204,3 +221,89 @@ def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_
     preview.text = "new line"
     preview.render()
     assert len(recording_output.events) > 0
+
+
+MARKDOWN_SAMPLE = (
+    "# Title\n\nA paragraph with `code` and a [link](https://example.com).\n\n"
+    "## Section\n\n- first\n- second\n\n> quoted\n\n"
+    "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n```python\ndef f():\n    return 1\n```\n\nClosing.\n"
+)
+
+
+def rendered_answer(text, width, *, mode="dark", monkeypatch=None, **kwargs):
+    """One emit_answer, as the plain rows it puts into scrollback."""
+    printed = []
+    ui = UiPrinter(output_fn=lambda _text: None)
+    ui.color = True
+    ui._scrollback_print = lambda fragment: printed.append(fragment)
+    previous = Theme._mode
+    size = os.terminal_size((width, 24))
+    real_size = shutil.get_terminal_size
+    shutil.get_terminal_size = lambda *args, **kw: size
+    try:
+        Theme.set_mode(mode)
+        ui.emit_answer(text, **kwargs)
+    finally:
+        shutil.get_terminal_size = real_size
+        Theme.set_mode(previous)
+    plain = "".join(fragment for _, fragment in to_formatted_text(printed[0]))
+    return render_module.UiPrinter.SGR_RE.sub("", plain).split("\n")
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_markdown_blocks_are_parted_by_exactly_one_blank_row(width):
+    """Every block boundary in a document gets the same single blank row: no construct arrives
+    glued to the one above it, and none opens a two-row gap of its own."""
+    rows = rendered_answer(MARKDOWN_SAMPLE, width, role="assistant", rule=False)
+
+    blanks = {index for index, row in enumerate(rows) if row.strip() == ""}
+    assert not any(index + 1 in blanks for index in blanks), rows  # never two blank rows together
+    for opener in ("Title", "Section", "def f():", "▌ quoted", "• first"):
+        index = next(i for i, row in enumerate(rows) if opener in row)
+        assert index == 0 or rows[index - 1].strip() == "", (opener, rows[index - 2 : index + 1])
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_a_rendered_answer_leaves_no_trailing_whitespace_or_overlong_row(width):
+    """Scrollback is permanent: a padded row becomes a wrap artifact the moment the terminal is
+    narrowed, and an over-wide row wraps immediately."""
+    rows = rendered_answer(MARKDOWN_SAMPLE, width, role="assistant", rule=False)
+
+    assert all(row == row.rstrip() for row in rows), [row for row in rows if row != row.rstrip()]
+    assert all(get_cwidth(row) <= width for row in rows)
+    assert rows[-1] == "" and rows[-2].strip()  # ends with exactly one newline, not a blank run
+
+
+def test_repeated_output_never_accumulates_blank_rows():
+    """The gap between blocks is stated once through `separate`, so callers asking for room around
+    the same seam -- or asking twice -- still leave one blank row."""
+    printed = []
+    ui = UiPrinter(output_fn=lambda _text: None)
+    ui.color = True
+    ui._scrollback_print = lambda fragment: printed.append(fragment)
+
+    for _ in range(3):
+        ui.separate()
+        ui.separate()
+        ui.emit("a line")
+        ui.separate()
+
+    text = "".join(fragment for part in printed for _, fragment in to_formatted_text(part))
+    # Nothing above the first line to part it from, one blank row between the rest, one below.
+    assert text == "a line\n\na line\n\na line\n\n"
+    assert "\n\n\n" not in text
+
+
+def test_blank_rows_at_the_end_of_a_block_are_not_doubled_by_the_next_one():
+    ui = UiPrinter(output_fn=lambda _text: None)
+    ui.color = True
+    ui._scrollback_print = lambda _fragment: None
+
+    ui.emit("a line")
+    assert ui.trailing_blanks == 0
+    ui.emit("")
+    assert ui.trailing_blanks == 1
+    ui.emit("")
+    assert ui.trailing_blanks == 2
+    ui.emit("another")
+    assert ui.trailing_blanks == 0

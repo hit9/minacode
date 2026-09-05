@@ -464,9 +464,12 @@ async def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
     assert any("把这个仓库里的审批快捷键" in row for row in rows)  # the CJK text is still there, just wrapped
     # A fenced code block keeps its indentation, so code in an order stays readable.
-    assert any(row.lstrip().startswith("def nested():") for row in rows)
+    opener = [row for row in rows if row.rstrip().endswith("def nested():")]
     nested = [row for row in rows if "x = 1" in row]
-    assert len(nested) == 1 and nested[0].startswith("       ")
+    assert len(opener) == 1 and len(nested) == 1
+    # The body sits its own four columns in from the line that opened it, and the block is flush
+    # with the rest of the document rather than inset by a padding band of its own.
+    assert len(nested[0]) - len(nested[0].lstrip()) == len(opener[0]) - len(opener[0].lstrip()) + 4
 
 
 async def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):

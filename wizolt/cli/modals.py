@@ -17,10 +17,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.utils import get_cwidth
-from rich.markdown import Markdown
 
 from wizolt.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox, oneline
-from wizolt.render import UiPrinter, markdown_console
+from wizolt.render import UiPrinter, WizoltMarkdown, markdown_console
 from wizolt.session import BackgroundJob, ToolResultRecord
 from wizolt.tools import AskSpec, BashTool, DelegateTool, ToolScript, tooloutput
 from wizolt.tui import (
@@ -623,7 +622,7 @@ def _approval_text_view(
         content_width = max(1, width - 4)
         console = markdown_console(content_width)
         with console.capture() as capture:
-            console.print(Markdown(hard_breaks, hyperlinks=False))
+            console.print(WizoltMarkdown(hard_breaks))
         cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))
         rows: list[StyleAndTextTuples] = [[]]
         for style, fragment in cast(list[tuple[str, str]], list(to_formatted_text(ANSI(cleaned)))):

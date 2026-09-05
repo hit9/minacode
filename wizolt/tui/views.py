@@ -9,10 +9,9 @@ from typing import Any, ClassVar, TypeVar
 
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.utils import get_cwidth
-from rich.markdown import Markdown
 
 from wizolt.base import SELECTION_BACK, SELECTION_FREE_TEXT
-from wizolt.render import UiPrinter, markdown_console
+from wizolt.render import UiPrinter, WizoltMarkdown, markdown_console
 from wizolt.tools.ask import AskSpec
 
 TUI_MODAL_PENDING = object()
@@ -506,7 +505,7 @@ class AskViewState:
         hard_breaks = "\n".join(line.rstrip() + "  " for line in markdown_text.split("\n"))
         console = markdown_console(panel_width)
         with console.capture() as capture:
-            console.print(Markdown(hard_breaks, hyperlinks=False))
+            console.print(WizoltMarkdown(hard_breaks))
         cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))
         return AskViewState._ansi_lines(cleaned)
 

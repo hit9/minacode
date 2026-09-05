@@ -56,6 +56,18 @@
 
 ### Changed
 
+- Colors now come from one semantic palette per appearance instead of ANSI names scattered through
+  the renderer, and both built-in schemes were retuned around it. Supporting detail is a readable
+  grey rather than the terminal's bright black, rules and tree rails are quieter than the text they
+  frame, a single accent carries attention (so the interface no longer reads as blue on blue), and
+  selected rows paint a slate band instead of borrowing the terminal's reverse video. `theme` still
+  takes `auto`, `light`, and `dark`, and diff colors are unchanged.
+- Markdown in answers is laid out for a terminal rather than a web page: headings are left aligned
+  and step down by weight, fenced code keeps the terminal's own background instead of a filled
+  band, tables lose their empty outer edge, inline code takes the accent without a background, and
+  links are underlined instead of turning a sentence blue. Every block boundary is one blank row.
+- Blank rows between transcript blocks are decided in one place, so a block can no longer arrive
+  glued to the one above it or open a second gap where a rule already left one.
 - Starting wizolt loads less code before dispatch, and its banner appears before session/UI imports
   and terminal cursor probing. Cheap exits (`wizolt --version`, `--help`, `--init-config`) answer
   before the interactive CLI is loaded.

@@ -531,6 +531,11 @@ class View:
         palette, never in a branch here.
         """
         role = Theme.fg
+        # A selected row is a band of color, not a word of it. `reverse` hands that band to whatever
+        # the terminal happens to use for its foreground, which on many themes is a full-strength
+        # white or black block; the palette names a quieter one and keeps it the same in both
+        # appearances.
+        selected = f"fg:{Theme.color('selection_fg')} bg:{Theme.color('selection_bg')}"
         return Style.from_dict(
             {
                 **Theme.tui_styles(),
@@ -540,7 +545,7 @@ class View:
                 **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("accent", "rule", self.GLOW_STEPS))},
                 "queue.hint": role("muted"),
                 "quickhint": role("accent"),
-                "quickhint.focused": "reverse",
+                "quickhint.focused": selected,
                 "quickhint.sep": role("muted"),
                 "image.attachment": role("accent", "bold"),
                 "input.error": role("error"),
@@ -549,10 +554,10 @@ class View:
                 "approval": role("warning"),
                 "approval.wait": role("accent_secondary"),
                 "approval.action": role("warning"),
-                "approval.action.focused": role("warning", "reverse"),
+                "approval.action.focused": f"{selected} bold",
                 "approval.action.dim": role("muted"),
                 "choice.title": role("accent", "bold"),
-                "choice.selected": "reverse",
+                "choice.selected": selected,
                 "choice.disabled": role("muted"),
                 "choice.preview": role("success", "italic"),
                 "choice.explanation": role("accent_secondary"),
@@ -572,11 +577,11 @@ class View:
                 "choice.status.disconnecting": role("warning", "bold"),
                 "choice.status.error": role("error", "bold"),
                 "choice.status.skipped": role("muted"),
-                "tab.active": role("accent", "bold", "reverse"),
+                "tab.active": f"{selected} bold",
                 "tab.inactive": role("accent"),
                 "completion-menu": "noreverse bg:default",
                 "completion-menu.completion": f"noreverse bg:default {role('text')}",
-                "completion-menu.completion.current": f"noreverse bg:default {role('accent', 'bold')}",
+                "completion-menu.completion.current": f"noreverse {selected} bold",
                 "completion-menu.meta.completion": f"noreverse bg:default {role('muted')}",
                 "completion-menu.meta.completion.current": f"noreverse bg:default {role('accent')}",
                 "bottom-toolbar": "noreverse bg:default fg:default",

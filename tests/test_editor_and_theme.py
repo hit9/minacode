@@ -441,3 +441,36 @@ def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypat
 
     desert_text = "".join(text for style, text in emitted if style == "#e0a96d")
     assert "• sent message" in desert_text
+
+
+def luminance(color: str) -> float:
+    """Relative luminance (WCAG), for contrast ratios between two palette entries."""
+
+    def channel(value: int) -> float:
+        fraction = value / 255
+        return fraction / 12.92 if fraction <= 0.04045 else ((fraction + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = Theme.rgb(color)
+    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+
+
+def contrast(first: str, second: str) -> float:
+    lighter, darker = sorted((luminance(first), luminance(second)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+@pytest.mark.parametrize(
+    ("appearance", "background"),
+    [("dark", "#0d1117"), ("light", "#ffffff")],
+)
+def test_state_and_selection_colors_stay_readable_in_both_appearances(appearance, background):
+    """A warning nobody can read is not a warning. Each state color has to clear ordinary UI
+    contrast against the terminal ground it sits on, and a selected row has to stay legible in the
+    band it paints rather than relying on the terminal's own reverse video."""
+    palette = render_module.LIGHT_PALETTE if appearance == "light" else render_module.DARK_PALETTE
+    for role in ("muted", "accent", "accent_secondary", "user", "tool", "success", "warning", "error"):
+        assert contrast(palette.color(role), background) >= 3.0, (role, palette.color(role))
+    assert contrast(palette.selection_fg, palette.selection_bg) >= 4.5
+    # Supporting detail is weaker than body text, but never as weak as the structure it sits in.
+    assert luminance(palette.subtle) != luminance(palette.muted)
+    assert contrast(palette.muted, background) > contrast(palette.subtle, background)
