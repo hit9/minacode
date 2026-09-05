@@ -573,13 +573,6 @@ class WizoltMarkdown(Markdown):
         super().__init__(markup, code_theme=style, hyperlinks=False)
 
 
-# The widest a rendered document is allowed to get, however wide the terminal is. Prose stops being
-# readable well before the right edge of a full-screen terminal -- the eye loses the start of the
-# next line -- and a fixed measure also keeps an answer the same shape whatever window it lands in.
-# Wide enough for ordinary code and small tables, narrow enough to read in one sweep.
-MARKDOWN_MEASURE = 100
-
-
 def markdown_console(width: int) -> Console:
     """A Rich console for the capture-then-emit path, carrying the palette's named styles.
 
@@ -589,7 +582,7 @@ def markdown_console(width: int) -> Console:
 
     Colors come from the theme, so `wizolt.*` style names resolve here and nowhere else.
     """
-    return Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(10, min(width, MARKDOWN_MEASURE)), theme=Theme.rich_theme())
+    return Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(10, width), theme=Theme.rich_theme())
 
 
 class UiPrinter:

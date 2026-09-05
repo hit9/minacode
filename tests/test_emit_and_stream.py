@@ -331,9 +331,3 @@ def test_a_list_is_tight_until_an_item_wraps():
     assert len(bullets) == 2
     assert spaced[bullets[1] - 1].strip() == ""
 
-
-def test_prose_stops_at_a_readable_measure_however_wide_the_terminal():
-    rows = rendered_answer("word " * 200, 240, role="assistant", rule=False)
-
-    assert max(get_cwidth(row) for row in rows) <= render_module.MARKDOWN_MEASURE
-    assert max(get_cwidth(row) for row in rows) > render_module.MARKDOWN_MEASURE - 12  # and fills it
