@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
 from typing import Any, ClassVar
 
@@ -282,8 +281,3 @@ class Tool:
                 lines.extend([f"<{name}>", text.rstrip(), f"</{name}>"])
         lines.append(f"</{tag}>")
         return "\n".join(lines)
-
-    @staticmethod
-    def file_stat(path: str) -> str:
-        stat = os.stat(path)
-        return f'<file_stat mtime_ns="{stat.st_mtime_ns}" size="{stat.st_size}"/>'
