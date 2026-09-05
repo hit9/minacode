@@ -278,6 +278,40 @@ async def test_shutdown_closes_output_after_the_turn_and_before_the_application(
     assert turns == ["cancel"]
 
 
+async def test_scrollback_failure_during_shutdown_still_exits_the_application(tmp_path, monkeypatch):
+    """A terminal write error is reported only after the rest of runtime ownership is released."""
+    runtime, command_loop, tui = runtime_for(tmp_path, monkeypatch)
+    tui.write_error = OSError("terminal disappeared")
+
+    def fail_one_write_then_exit():
+        assert runtime.scrollback is not None
+        runtime.scrollback.submit(lambda: None)
+        runtime.request_shutdown()
+
+    with pytest.raises(OSError, match="terminal disappeared"):
+        await run_until(runtime, fail_one_write_then_exit)
+
+    assert tui.exited.is_set()
+    assert runtime.scrollback is None
+    assert command_loop.tui is None
+
+
+async def test_shutdown_cancels_the_application_when_exit_itself_fails(tmp_path, monkeypatch):
+    """A broken frontend exit hook cannot leave its application task parked forever."""
+    runtime, command_loop, tui = runtime_for(tmp_path, monkeypatch)
+
+    def fail_exit():
+        raise RuntimeError("exit failed")
+
+    monkeypatch.setattr(tui, "exit", fail_exit)
+
+    with pytest.raises(RuntimeError, match="exit failed"):
+        await asyncio.wait_for(run_until(runtime, runtime.request_shutdown), timeout=1)
+
+    assert runtime.scrollback is None
+    assert command_loop.tui is None
+
+
 async def test_shutdown_cancels_and_awaits_a_background_task_it_started(tmp_path, monkeypatch):
     """Exit during discovery: a task the runtime spawned is cancelled and awaited, not abandoned."""
     runtime, command_loop, tui = runtime_for(tmp_path, monkeypatch)

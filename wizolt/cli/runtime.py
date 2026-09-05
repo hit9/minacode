@@ -668,30 +668,45 @@ class TuiRuntime:
         then the accepted writes -- and only then exit the application and await it. The loop is
         closed by `asyncio.run` after this returns, which is why every close happens here."""
 
+        cleanup_errors: list[BaseException] = []
+
+        async def settle(awaitable: Awaitable[object]) -> None:
+            try:
+                await awaitable
+            except BaseException as error:  # noqa: BLE001 - shutdown must finish before reporting its first failure.
+                cleanup_errors.append(error)
+
         if self.shutdown is not None:
             self.shutdown.set()
         if self.force_exit_timer is not None:
             self.force_exit_timer.cancel()
         # Before anything is cancelled: an accepted submission is a keystroke the reader already
         # sent, and its save is bounded. Cancelling the consumer first would drop it.
-        await self._close_submissions()
+        await settle(self._close_submissions())
         self.loop.agent.cancel()
         owned = [task for task in self.tasks if task is not application]
         for task in owned:
             task.cancel()
         if owned:
             await asyncio.gather(*owned, return_exceptions=True)
-        await self.loop.close_background()
-        await self.loop.close_resources()
+        await settle(self.loop.close_background())
+        await settle(self.loop.close_resources())
         writer, self.scrollback = self.scrollback, None
         if writer is not None:
             # Admission and the drain are one step: the gate they share is this writer's lock, so a
             # background worker cannot pass it and then find the queue closed behind it.
             self.loop.close_background_output()
-            await writer.close()
+            await settle(writer.close())
         self.loop.scrollback = None
         self.loop.agent.output_barrier = None
-        self.tui.exit()
-        with contextlib.suppress(asyncio.CancelledError):
-            await application
+        try:
+            self.tui.exit()
+        except BaseException as error:  # noqa: BLE001 - still await the application and release references.
+            cleanup_errors.append(error)
+            if self.error is None:
+                self.error = error
+            application.cancel()
+        await settle(application)
         self.loop.tui = None
+        if self.error is None and cleanup_errors:
+            self.error = cleanup_errors[0]
