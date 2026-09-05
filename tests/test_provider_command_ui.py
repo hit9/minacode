@@ -101,6 +101,16 @@ async def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
     assert "Beta" in "".join(text for frame in modal.frames for _, text in frame)
 
 
+async def test_command_choice_uses_the_alternate_screen(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    modal = ModalHarness(["enter"])
+    command_loop.tui = modal
+
+    assert await select_choice(command_loop, "Pick", ("a", "b")) == "a"
+    assert modal.exclusive == [True]
+
+
 async def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True

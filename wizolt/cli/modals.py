@@ -243,7 +243,7 @@ async def choice_application(
     *,
     preview_fn: Callable[[str], StyleAndTextTuples | str] | None = None,
     label_fn: Callable[[str], StyleAndTextTuples] | None = None,
-    exclusive: bool = False,
+    exclusive: bool = True,
     max_rows: int = 0,
 ) -> str | object | None:
     state = ChoiceViewState(choices, labels, disabled, max_rows=max_rows)
