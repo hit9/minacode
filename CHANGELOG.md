@@ -4,6 +4,9 @@
 
 ### Added
 
+- A leading `/` in the input now opens the command list as you type it (no Tab needed) and
+  narrows as more characters arrive, matching how `@`/`$` mentions complete; Tab still
+  browses the menu.
 - The compatibility catalog (now version 2026090501) documents GPT-6 Astra: `api=auto` on
   `api.openai.com` routes the `gpt-5*` and `gpt-6*` families to the Responses API, GPT-6's
   reasoning is always on across `low`-`max` (no `none`/`minimal`; `reasoning = off` sends

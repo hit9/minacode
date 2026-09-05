@@ -785,6 +785,7 @@ class TuiApp:
         if delta.inserted and delta.inserted[-1].isspace() and self.input_mode in {"chat", "running"}:
             self._recognize_input()
         self._offer_mention_completions(buffer, delta)
+        self._offer_slash_completions(buffer, delta)
 
     def _offer_mention_completions(self, buffer: Buffer, delta: _EditDelta) -> None:
         self._cancel_mention_transition()
@@ -825,6 +826,32 @@ class TuiApp:
             # completion state is safe. cancel_completion() would restore its older document.
             buffer.complete_state = None
         buffer.start_completion(select_first=False)
+
+    def _offer_slash_completions(self, buffer: Buffer, delta: _EditDelta) -> None:
+        """A leading "/" is a command, so its completions open as it is typed, like @/$ mentions.
+
+        Only single-character, non-space edits schedule a refresh; the transition timer coalesces
+        a burst of typing into one recompute once the text settles, which is what keeps the menu
+        from fighting prompt-toolkit's own async completion task. Applying a completion (or
+        pasting) replaces the word at once and must not make the menu pop straight back."""
+        if self.input_mode not in {"chat", "running"} or not delta.inserted:
+            return
+        if len(delta.inserted) != 1 or delta.inserted[-1].isspace():
+            return
+        before = buffer.document.text_before_cursor
+        if not before.startswith("/") or active_mention(before) is not None:
+            # An active @/$ span owns completion while it is being typed; a mention inside a
+            # slash command must not fight the mention flow for the same keystroke.
+            return
+
+        def show(current: Buffer) -> None:
+            if current.document.text_before_cursor.startswith("/") and active_mention(current.document.text_before_cursor) is None:
+                if current.complete_state is not None:
+                    current.complete_state = None
+                current.start_completion(select_first=False)
+
+        self._cancel_mention_transition()
+        self._schedule_mention_transition(buffer, show)
 
     def _cancel_mention_transition(self) -> None:
         timer = self._mention_transition_timer
