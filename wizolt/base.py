@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import re
-import threading
 import time
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 __version__ = "0.37.1"
 
-_ResourceT = TypeVar("_ResourceT")
 _BlockingT = TypeVar("_BlockingT")
 _get_cwidth: Callable[[str], int] | None = None
 
@@ -638,28 +635,3 @@ class TurnBox:
         if current:
             boxes.append(cls(current))
         return boxes
-
-
-class ActiveResource(Generic[_ResourceT]):
-    """Thread-safe lifecycle for a resource that another thread may need to cancel."""
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.value: _ResourceT | None = None
-
-    @contextlib.contextmanager
-    def track(self, value: _ResourceT) -> Generator[None, None, None]:
-        with self.lock:
-            self.value = value
-        try:
-            yield
-        finally:
-            with self.lock:
-                if self.value is value:
-                    self.value = None
-
-    def apply(self, action: Callable[[_ResourceT], None]) -> None:
-        with self.lock:
-            value = self.value
-        if value is not None:
-            action(value)

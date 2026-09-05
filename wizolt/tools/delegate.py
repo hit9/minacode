@@ -361,13 +361,12 @@ class DelegateTool(Tool):
             )
         failure: Exception | None = None
         try:
-            with runner._active_worker.track(agent):
-                # Awaited directly: the worker's turn is a task of this one, so cancelling the
-                # parent cancels the worker's own model request and tool batch by propagation --
-                # no second cancellation channel, and no bridge back to the parent's loop.
-                # The engine publishes the final answer through the agent's output_fn, so a
-                # worker's report lands in the parent scrollback like its interim messages.
-                answer = await agent.run(order)
+            # Awaited directly: the worker's turn is a task of this one, so cancelling the
+            # parent cancels the worker's own model request and tool batch by propagation --
+            # no second cancellation channel, and no bridge back to the parent's loop.
+            # The engine publishes the final answer through the agent's output_fn, so a
+            # worker's report lands in the parent scrollback like its interim messages.
+            answer = await agent.run(order)
         except Exception as error:  # noqa: BLE001 - the worker's failure becomes a ToolError envelope below, after the finally block merged its diffs
             failure = error
         finally:

@@ -141,11 +141,17 @@ async def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, mo
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     await JobTool(s, [{"action": "start", "command": "sleep 60"}]).call()
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 900}])
+    waiting = asyncio.Event()
+    await_process = tool._await_process
+
+    async def mark_waiting(job, payload):
+        waiting.set()
+        return await await_process(job, payload)
+
+    monkeypatch.setattr(tool, "_await_process", mark_waiting)
 
     call = asyncio.ensure_future(runner.call_tool(tool))
-    deadline = time.monotonic() + 2
-    while runner._active_job.value is not tool and time.monotonic() < deadline:
-        await asyncio.sleep(0.01)
+    await asyncio.wait_for(waiting.wait(), timeout=2)
     started = time.monotonic()
     call.cancel()
     with pytest.raises(asyncio.CancelledError):

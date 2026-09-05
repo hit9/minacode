@@ -11,11 +11,10 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import Any, TypeVar
 
 from wizolt.base import (
     MAX_TOOL_OUTPUT_TOKENS,
-    ActiveResource,
     ApprovalView,
     Json,
     LogBlock,
@@ -53,9 +52,6 @@ from wizolt.tools.editplan import EditBatchPlan
 from wizolt.tools.toolblocks import ToolDisplay
 from wizolt.tools.toolscript import ScriptCancelled
 from wizolt.vision import VisionObserver
-
-if TYPE_CHECKING:
-    from wizolt.engine import Agent
 
 _ResultT = TypeVar("_ResultT")
 
@@ -221,12 +217,6 @@ class ToolRunner:
         # "working" for the whole batch. The source rides along so Ctrl-O can offer the script
         # while it runs. None degrades to no phase label (headless runners).
         self.script_status: Callable[[bool, str], None] | None = None
-        # Bash and Job are the tools that block on something outside the agent, so Ctrl-C has to
-        # reach them: Bash kills its process group, Job abandons a wait and leaves the job running.
-        self._active_bash: ActiveResource[BashTool] = ActiveResource()
-        self._active_job: ActiveResource[JobTool] = ActiveResource()
-        # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
-        self._active_worker: ActiveResource[Agent] = ActiveResource()
         # The client behind explicit ViewImage vision requests, owned
         # here so cancel() reaches the in-flight request. Created lazily -- most sessions never
         # bridge an image tool call -- and shared across calls, since tool calls never overlap a
@@ -383,13 +373,11 @@ class ToolRunner:
             tool.runner = self
             return await tool.call()
         if isinstance(tool, BashTool):
-            with self._active_bash.track(tool):
-                return await tool.call()
+            return await tool.call()
         if isinstance(tool, JobTool):
-            with self._active_job.track(tool):
-                # Waiting is native asyncio. The process handle itself remains Popen-backed so a
-                # background job can outlive the turn and the loop that started it.
-                return await tool.call()
+            # Waiting is native asyncio. The process handle itself remains Popen-backed so a
+            # background job can outlive the turn and the loop that started it.
+            return await tool.call()
         if isinstance(tool, AskTool):
             # The user is asked on the loop and may take as long as they like; the prompt stays
             # live and cancellable rather than parking a worker on them.
