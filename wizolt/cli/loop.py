@@ -1003,14 +1003,19 @@ Full documentation: https://wizolt.readthedocs.io
             elif not result.done():
                 result.set_exception(EOFError())
 
+        reader_added = False
         os.set_blocking(fd, False)
-        loop.add_reader(fd, readable)
-        readable()
         try:
+            loop.add_reader(fd, readable)
+            reader_added = True
+            readable()
             raw = await result
         finally:
-            loop.remove_reader(fd)
-            os.set_blocking(fd, was_blocking)
+            try:
+                if reader_added:
+                    loop.remove_reader(fd)
+            finally:
+                os.set_blocking(fd, was_blocking)
         return raw.decode(sys.stdin.encoding or "utf-8", errors=sys.stdin.errors or "strict")
 
     def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:

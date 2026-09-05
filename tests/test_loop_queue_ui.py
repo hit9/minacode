@@ -355,6 +355,51 @@ async def test_cancelling_default_pipe_input_removes_the_reader(tmp_path, monkey
         stdin.close()
 
 
+async def test_default_pipe_input_restores_blocking_when_reader_registration_fails(tmp_path, monkeypatch):
+    """Embedding failures must not leave the process stdin descriptor in non-blocking mode."""
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    event_loop = asyncio.get_running_loop()
+
+    def fail_add_reader(*_args):
+        raise RuntimeError("unsupported reader")
+
+    monkeypatch.setattr(event_loop, "add_reader", fail_add_reader)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    try:
+        with pytest.raises(RuntimeError, match="unsupported reader"):
+            await loop.read_input("")
+        assert os.get_blocking(read_fd)
+    finally:
+        os.close(write_fd)
+        stdin.close()
+
+
+async def test_default_pipe_input_restores_blocking_when_reader_removal_fails(tmp_path, monkeypatch):
+    """Reader cleanup errors may propagate, but restoration of the shared descriptor may not."""
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    event_loop = asyncio.get_running_loop()
+    remove_reader = event_loop.remove_reader
+
+    def fail_after_remove(fd):
+        remove_reader(fd)
+        raise RuntimeError("reader cleanup failed")
+
+    monkeypatch.setattr(event_loop, "remove_reader", fail_after_remove)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    try:
+        os.write(write_fd, b"answer\n")
+        with pytest.raises(RuntimeError, match="reader cleanup failed"):
+            await loop.read_input("")
+        assert os.get_blocking(read_fd)
+    finally:
+        os.close(write_fd)
+        stdin.close()
+
+
 async def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
     s = session(tmp_path)
     outputs = []
