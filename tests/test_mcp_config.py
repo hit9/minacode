@@ -573,7 +573,7 @@ class TestMCPManagerDiscovery:
 
 
 # ---------------------------------------------------------------------------
-# MCPManager render_tools_index & _format_tool_line
+# MCPManager server discovery
 # ---------------------------------------------------------------------------
 
 

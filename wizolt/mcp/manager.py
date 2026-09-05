@@ -626,7 +626,7 @@ class MCPManager:
 
         info = self.tool_info(server, tool_name)
         if info is not None and info.output_schema:
-            # Asked for by attribute, not through _structured_content: that helper renders "" both
+            # Asked for by attribute, not through rendering.structured_content: it returns "" both
             # for "no payload" and for an empty one, and a search that legitimately matched nothing
             # returns exactly `{}` or `[]`. Treating that as a missing payload would fail every
             # such call.
