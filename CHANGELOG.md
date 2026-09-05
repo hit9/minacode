@@ -49,6 +49,10 @@
   with a direct-retry hint, so recovery does not require reading the same lines again.
 - `Note` ignores a redundant `fields` projection on an otherwise explicit update instead of
   rejecting the working-state change.
+- Browsing the `@` kind menu no longer launches the file picker the moment `@file:` is
+  highlighted: arrow/Tab can move through `@file:`/`@mcp:`/`@skill:` freely, and the picker
+  opens only on an explicit Enter on `@file:` (or once a path is typed after it). `@mcp:` and
+  `@skill:` behave as before.
 
 ### Added
 

@@ -806,6 +806,13 @@ class TuiApp:
         )
         interactive_transition = len(delta.inserted) == 1 or selected_namespace
         if span.kind == "file":
+            # Bare-@ kind rows preview on arrow/Tab by rewriting one empty-payload kind row into
+            # another in a single edit; that is browsing, not a choice, so it must not launch the
+            # picker (or refresh candidates and drop the menu). Only an explicit Enter on @file:
+            # (Enter binding) or a real keystroke into the file payload opens the picker.
+            browsing_kinds = len(delta.inserted) > 1 and old_text in ("@", "@file:", "@mcp:", "@skill:") and buffer.text in ("@file:", "@mcp:", "@skill:")
+            if browsing_kinds:
+                return
             picker_available = self.file_picker_available_fn()
             if picker_available and self.app is not None and interactive_transition:
                 self._schedule_file_picker(buffer)
@@ -1283,7 +1290,12 @@ class TuiApp:
             # still sends there, exactly as it always did.
             state = buffer.complete_state
             if state is not None and state.current_completion is not None:
+                committed = state.current_completion.text
                 buffer.apply_completion(state.current_completion)
+                if committed == "@file:" and self.app is not None and self.file_picker_available_fn():
+                    # @file: is only previewed while the bare-@ kind menu is browsed; an explicit
+                    # Enter on the row is the commit that opens the file picker.
+                    self._schedule_file_picker(buffer)
                 return
             buffer.validate_and_handle()
 

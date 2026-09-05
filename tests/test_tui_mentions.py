@@ -1,4 +1,5 @@
 """tui mentions (split from tests/test_tui_app.py)."""
+
 import time
 
 import pytest
@@ -63,6 +64,7 @@ def test_mention_opens_completions_while_typing(monkeypatch):
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
+
 def test_selecting_mention_kind_opens_its_candidate_list(monkeypatch):
     app = TuiApp(completer=CommandCompleter(skills=lambda: ("release", "review")))
 
@@ -83,6 +85,7 @@ def test_selecting_mention_kind_opens_its_candidate_list(monkeypatch):
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
+
 
 @pytest.mark.parametrize(
     ("typed", "namespace", "expected"),
@@ -109,6 +112,7 @@ def test_selecting_partially_typed_name_kind_opens_its_candidate_list(monkeypatc
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
+
 def test_prose_and_email_do_not_open_completions(monkeypatch):
     """A menu on every keystroke would be noise: only a mention at the cursor opens one, and an
     address is not a mention because the `@` follows a word character."""
@@ -126,6 +130,7 @@ def test_prose_and_email_do_not_open_completions(monkeypatch):
 
     assert seen == [None]
 
+
 def test_mention_trigger_uses_canonical_scanner_spans():
     for text in (
         "use @file:tu",
@@ -137,6 +142,7 @@ def test_mention_trigger_uses_canonical_scanner_spans():
     assert active_mention("mail me at hit9@icloud") is None
     assert active_mention("use file:notes here") is None
     assert active_mention("profile:x") is None
+
 
 def test_file_picker_tab_replaces_only_active_span(monkeypatch):
     async def pick(query):
@@ -155,8 +161,10 @@ def test_file_picker_tab_replaces_only_active_span(monkeypatch):
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
+
 def test_file_picker_opens_after_typing_without_tab(monkeypatch):
     queries = []
+
     async def pick(query):
         queries.append(query)
         return FilePick("wizolt/tui.py")
@@ -172,6 +180,7 @@ def test_file_picker_opens_after_typing_without_tab(monkeypatch):
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert queries == [""]
+
 
 @pytest.mark.parametrize("typed", ["@f", "@fi"])
 def test_selecting_partially_typed_file_kind_opens_picker(monkeypatch, typed):
@@ -193,6 +202,68 @@ def test_selecting_partially_typed_file_kind_opens_picker(monkeypatch, typed):
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
+
+def test_browsing_bare_kind_menu_does_not_launch_file_picker(monkeypatch):
+    """Highlighting @file: in the bare-@ menu is a preview, not a choice: arrow/Tab through the
+    three kind rows without the file picker grabbing the terminal, and Enter on a later row
+    commits it (the picker only opens on an explicit Enter on @file:)."""
+    queries = []
+    app = TuiApp(
+        completer=CommandCompleter(mcp_servers=lambda: ("github",), skills=lambda: ("release", "review")),
+        file_picker_available_fn=lambda: True,
+        file_picker_fn=_recording_picker(queries),
+    )
+
+    def state():
+        current = app.input_buffer.complete_state
+        return None if current is None else (current.complete_index, [c.text for c in current.completions])
+
+    kinds = ["@file:", "@mcp:", "@skill:"]
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("@")
+        wait_until(lambda: state() is not None and state()[1] == kinds)
+
+        for expected_index, expected_text in ((0, "@file:"), (1, "@mcp:"), (2, "@skill:")):
+            pipe_input.send_text("\x1b[B")
+            wait_until(lambda text=expected_text, idx=expected_index: app.input_buffer.text == text and state() is not None and state()[0] == idx)
+            assert state()[1] == kinds  # still browsing the same three kind rows
+            assert queries == [] and not app._file_picker_active
+
+        pipe_input.send_text("\r")
+        wait_until(lambda: state() is None and app.input_buffer.text == "@skill:")
+        assert queries == [] and not app._file_picker_active
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
+def test_enter_on_at_file_kind_row_opens_the_file_picker(monkeypatch):
+    """Browsing to @file: is inert; an explicit Enter on the row commits the kind and opens the
+    picker with an empty query, exactly as typing the namespace does."""
+    queries = []
+    app = TuiApp(
+        completer=CommandCompleter(),
+        file_picker_available_fn=lambda: True,
+        file_picker_fn=_recording_picker(queries),
+    )
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("@")
+        wait_until(lambda: app.input_buffer.complete_state is not None)
+        pipe_input.send_text("\x1b[B")
+        wait_until(lambda: app.input_buffer.text == "@file:")
+        assert queries == [] and not app._file_picker_active  # preview alone must not open it
+        pipe_input.send_text("\r")
+        wait_until(lambda: queries == [""] and not app._file_picker_active)
+        assert app.input_buffer.text == "@file:"
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
 def test_pasting_file_namespace_does_not_open_picker(monkeypatch):
     queries = []
     app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=_recording_picker(queries))
@@ -206,6 +277,7 @@ def test_pasting_file_namespace_does_not_open_picker(monkeypatch):
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
+
 
 def test_file_picker_cancel_keeps_buffer(monkeypatch):
     queries = []
@@ -221,6 +293,7 @@ def test_file_picker_cancel_keeps_buffer(monkeypatch):
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
+
 
 def test_enter_commits_highlighted_completion_without_sending(monkeypatch):
     """Tab previews a mention row; Enter commits it into the input instead of sending the
@@ -250,6 +323,7 @@ def test_enter_commits_highlighted_completion_without_sending(monkeypatch):
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
+
 def test_enter_sends_when_completion_menu_has_no_highlighted_row(monkeypatch):
     """The menu opens while typing with no row highlighted; Enter there still sends, so a fully
     typed mention goes out in one press (only Tab-highlighted rows are committed by Enter)."""
@@ -262,9 +336,7 @@ def test_enter_sends_when_completion_menu_has_no_highlighted_row(monkeypatch):
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         pipe_input.send_text("use @skill:")
-        wait_until(
-            lambda: app.input_buffer.complete_state is not None and app.input_buffer.complete_state.current_completion is None
-        )
+        wait_until(lambda: app.input_buffer.complete_state is not None and app.input_buffer.complete_state.current_completion is None)
         pipe_input.send_text("\r")
         wait_until(lambda: submitted == ["use @skill:"])
         app.app.loop.call_soon_threadsafe(app.app.exit)
