@@ -15,6 +15,9 @@
 
 ### Fixed
 
+- Agent guidance now tells models to emit every ready tool call in one response and wait only for
+  true data dependencies. Shorter role, tool, and compaction prompts remove conflicting serial
+  instructions and stale claims that shell-located text requires another `Read` before `Edit`.
 - Edit matching and batch planning no longer block the event loop on large files.
 - The status bar now keeps one static, semantically colored layout while work is running:
   `[yolo] model · level | mcp N · skills N | ctx N% · cache N% | index*`. Its facts still

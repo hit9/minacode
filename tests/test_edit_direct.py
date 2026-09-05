@@ -1063,20 +1063,18 @@ def test_the_description_teaches_both_modes_and_prefers_a_view_when_one_exists()
     text = EditTool.DESCRIPTION
 
     assert "old" in text and "source=view.N" in text
-    assert "Bash output included" in text  # exact text seen there is usable evidence
-    assert "Prefer (1) when a current view for the path is already in hand" in text
+    assert "Bash output works directly" in text
+    assert "Prefer a current source view when already available" in text
+    assert "Batch all known non-overlapping operations" in text
     # And the description no longer claims a redundant Read is required first.
     assert "before editing" not in text
 
 
-def test_the_system_prompt_points_bash_output_at_direct_evidence():
-    from wizolt import prompts
+def test_tool_schemas_point_bash_output_at_direct_evidence():
+    from wizolt.tools import BashTool
 
-    source = pathlib.Path(prompts.__file__).read_text()
-
-    assert "its output is not a source view, but exact text seen there can be edited straight away" in source
-    # The old instruction to Read a file before editing what Bash already showed is gone.
-    assert "Read/Search/InspectCode a file before editing it" not in source
+    assert "Edit old without Read" in BashTool.DESCRIPTION
+    assert "Bash output works directly" in EditTool.DESCRIPTION
 
 
 @pytest.mark.parametrize(

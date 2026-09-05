@@ -70,7 +70,7 @@ def test_failure_recovery_is_bounded_fresh_view(tmp_path):
 def test_no_model_facing_text_teaches_the_removed_anchor_protocol():
     """The protocol is only as simple as the text that teaches it. Nothing the model reads --
     tool descriptions, argument schemas, examples, or the system prompt -- may still describe
-    line hashes or anchors, and Bash must say outright that its output cannot be edited from."""
+    line hashes or anchors, and Bash must explain its direct-evidence boundary."""
     from wizolt.prompts import SYSTEM_PROMPT
     from wizolt.tools import TOOL_REGISTRY, BashTool
 
@@ -81,8 +81,10 @@ def test_no_model_facing_text_teaches_the_removed_anchor_protocol():
         assert "anchor" not in text.lower(), tool.NAME
         assert "hashline" not in text.lower(), tool.NAME
     assert "anchor" not in SYSTEM_PROMPT.lower()
-    assert "never a source view" in BashTool.DESCRIPTION
-    assert "not a source view" in SYSTEM_PROMPT
+    assert "never source=view.N" in BashTool.DESCRIPTION
+    assert "Edit old without Read" in BashTool.DESCRIPTION
+    # Tool-specific protocol belongs to the schema, not the global prompt repeated on every turn.
+    assert "source=view.N" not in SYSTEM_PROMPT
 
 
 def test_success_fresh_block_is_immediately_editable(tmp_path):

@@ -37,15 +37,11 @@ def _csi() -> Any:
 class SearchTool(Tool):
     NAME = "Search"
     DESCRIPTION = (
-        "Search UTF-8 text files with case-insensitive regex, through ripgrep where it is installed; skips binary/hidden/gitignored "
-        "files and returns grouped source views. Prefer it over grep or rg in a shell: matches come back as editable numbered "
-        "source (source=view.N) you can Edit directly, where shell output carries none and costs you a re-read. The batch form "
-        "runs several unrelated queries -- each with its own pattern, path, and glob -- in one call, so a whole investigation is "
-        "one round trip."
+        "Search UTF-8 files with case-insensitive regex, skipping binary, hidden, and gitignored files. Results are editable "
+        "source=view.N blocks. Put every independent query in queries so one investigation takes one call."
     )
     EXAMPLE = (
-        'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
-        'A whole investigation in one call, each query labelled by its pattern in the result. Example: {"queries":[{"pattern":"class ChatBubble","glob":"*.tsx"},{"pattern":"ChatBubble","path":"src/views","context":2},{"pattern":"assistantName","glob":"*.ts"}]}',
+        'Batch an investigation. Example: {"queries":[{"pattern":"class ChatBubble","glob":"*.tsx"},{"pattern":"ChatBubble","path":"src/views","context":2}]}',
     )
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
@@ -638,14 +634,12 @@ class InspectCodeTool(Tool):
     CHAIN_MODES: ClassVar[frozenset[str]] = frozenset({"callers", "callees"})
     OPTION_KEYS: ClassVar[tuple[str, ...]] = ("limit", "kind", "path", "symbol", "exact_only", "depth", "offset", "all_kinds", "ref_kind", "loose")
     DESCRIPTION = (
-        "Use the code index: find returns symbols; inspect returns members/references plus a current source block; outline returns a file symbol tree; "
-        "refs lists classified references; impls lists implementors; callers/callees walk the call chain. Source shown is hydrated from the current file, "
-        "so an index with stale metadata falls back to a stale note instead of fake source."
+        "Query the code index: find symbols, inspect one symbol with current source, outline a file, classify refs, find impls, "
+        "or walk callers/callees. Returned source blocks are editable; stale index locations never fabricate source."
     )
     EXAMPLE = (
-        'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
-        'Inspect one symbol; path narrows candidates. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
-        'Outline one file; symbol narrows subtree. Example: {"mode":"outline","target":"src/app.py","symbol":"App","limit":300}',
+        'Find symbols. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
+        'Inspect one symbol. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
     )
 
     @classmethod

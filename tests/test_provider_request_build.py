@@ -124,6 +124,12 @@ def test_strict_tools_off_path_emits_non_strict_schema():
         assert "strict" not in tool.schema(False)["function"]
 
 
+def test_model_facing_tool_schemas_stay_concise():
+    rendered_chars = sum(len(json.dumps(tool.schema(False)["function"], ensure_ascii=False)) for tool in TOOL_REGISTRY.values())
+
+    assert rendered_chars < 18_500
+
+
 def test_strict_tools_gating_and_beta_routing():
     def resolved(url, strict=False):
         return resolve(ProviderConfig(url=url, strict_tools=strict))

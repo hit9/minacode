@@ -36,14 +36,10 @@ from wizolt.tools.base import Tool
 class ReadTool(Tool):
     NAME = "Read"
     DESCRIPTION = (
-        "Read UTF-8 file line ranges; returns a source view (source=view.N) with ordinary 1-based line numbers, and total lines. "
-        "Large outputs are bounded in conversation; use Recall(tr.N) for full stored output. Edit existing text only through a source id and "
-        "visible ordinary line numbers."
+        "Read UTF-8 file ranges. Each file returns editable 1-based lines and a source=view.N; "
+        "large output is bounded and remains available through Recall(tr.N). Batch independent files in one call."
     )
-    EXAMPLE = (
-        'Read ranges. Example: {"path":"src/app.py","ranges":[[1,80],[120,180]]}',
-        'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[1,80]]},{"path":"README.md","ranges":[[1,40]]}]}',
-    )
+    EXAMPLE = ('Batch files and ranges. Example: {"files":[{"path":"src/app.py","ranges":[[1,80],[120,180]]},{"path":"README.md","ranges":[[1,40]]}]}',)
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -450,30 +446,18 @@ class EditTool(Tool):
 
     NAME = "Edit"
     DESCRIPTION = (
-        "Create or patch one UTF-8 file. op=create writes a new file and is the only operation in its call. "
-        "An existing file is patched through exactly one kind of evidence per call, never both: "
-        "(1) source=view.N from Read, Search, or InspectCode, with replace/delete covering an inclusive 1-based start..end "
-        "range that appears in that view's lines= ranges; the newest view for a path may cover only a recent edit. Content is "
-        "the complete final text of the named range; lines outside the range are preserved automatically and must not be copied "
-        "in as context. An insertion is a replace over a single line: to add a line after line N, replace N:N with line N's text "
-        "followed by the new line; to add one before it, put the new line first. To append to the end, replace the last line N:N "
-        "with its text plus the new lines. "
-        "(2) no source, and old set to the exact original text of the target -- use this for text seen anywhere, Bash output "
-        "included, to skip a Read. old must occur exactly once in the file, so give the shortest complete excerpt that is still "
-        "unique; matching is literal, with no regex, no fuzzy or whitespace-insensitive matching, and content replaces it "
-        "character for character with nothing added for you. "
-        "Prefer (1) when a current view for the path is already in hand. To write into an existing empty file, use create. "
-        "Work in small steps: one call per cohesive change, and split a large rewrite across several "
-        "calls, because everything one call writes is generated inside a single assistant message "
-        "and a timeout partway through loses all of it."
+        "Create or patch one UTF-8 file; every operation is validated before anything is written. create writes a new or empty file "
+        "and must be the only operation. For an existing file choose one evidence mode for the whole call: "
+        "(1) source=view.N from Read, Search, or InspectCode plus inclusive visible start/end lines; content is the complete replacement "
+        "for that range, while outside lines stay untouched. Insert by replacing one visible line with that line plus the insertion. "
+        "(2) no source, with each old set to exact literal text that occurs once; content replaces it character for character. "
+        "Exact text from Bash output works directly, without Read. Prefer a current source view when already available. "
+        "Batch all known non-overlapping operations for this path in edits; do not mix evidence modes."
     )
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"replace","start":10,"end":12,"content":"new_value = 1\\n"}]}',
-        'add a line after line 10. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"replace","start":10,"end":10,"content":"line 10 text\\nnew_value = 1\\n"}]}',
-        'delete range. Example: {"path":"src/app.py","source":"view.12","edits":[{"op":"delete","start":10,"end":12}]}',
-        'replace exact text seen elsewhere, no source. Example: {"path":"src/app.py","edits":[{"op":"replace","old":"def old_name(value):","content":"def new_name(value):"}]}',
-        'delete exact text seen elsewhere, no source. Example: {"path":"src/app.py","edits":[{"op":"delete","old":"# obsolete note\\n"}]}',
+        'batch exact replacements, no source. Example: {"path":"src/app.py","edits":[{"op":"replace","old":"old_name","content":"new_name"},{"op":"delete","old":"# obsolete\\n"}]}',
     )
     MUTATES = True
     # A recovery view answers the edit that failed, so it spans the requested lines plus context
@@ -486,26 +470,19 @@ class EditTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         edit = cls.object_schema({
-            "op": {"type": "string", "enum": ["create", "replace", "delete"], "description": "create|replace|delete"},
-            "start": {"type": "integer", "minimum": 1, "description": "First line of an inclusive 1-based replace/delete range; must be visible in the named source view. Source-view calls only; forbidden beside old"},
-            "end": {"type": "integer", "minimum": 1, "description": "Last line of an inclusive 1-based replace/delete range; the line at end is itself replaced or deleted. Source-view calls only; forbidden beside old"},
-            "old": {"type": "string", "minLength": 1, "description": "The exact original text this replace/delete targets, for a call with no source. It must occur exactly once in the file, matched literally: give the shortest complete excerpt that is still unique, and add surrounding exact text when it is not. May start or end mid-line. Forbidden beside source, start, or end"},
+            "op": {"type": "string", "enum": ["create", "replace", "delete"], "description": "Operation"},
+            "start": {"type": "integer", "minimum": 1, "description": "Inclusive first line; source-view mode only"},
+            "end": {"type": "integer", "minimum": 1, "description": "Inclusive last line; source-view mode only"},
+            "old": {"type": "string", "minLength": 1, "description": "Exact unique literal target; direct mode only, and may be a partial line"},
             "content": {
                 "type": "string",
-                "description": (
-                    "New text for create/replace. For replace: the complete final text of the inclusive start..end range; "
-                    "lines before start and after end are preserved automatically and must not be copied into content merely as context. "
-                    "An insertion is a replace over a single line whose content is that line's final text plus what is added around it; "
-                    "an insertion point has two neighbours and either may serve as the range, so prefer the shorter one. "
-                    "With old instead of a range: the exact text that replaces it, character for character, with no newline added for you; required as a string for replace, forbidden for delete. "
-                    "An explicit empty string deletes the matched range or text (replace). For create: the whole file."
-                ),
+                "description": "Complete new text for create/replace; nothing is added automatically. Omit for delete.",
             },
         }, ["op"])
         return cls.object_schema({
             "path": {"type": "string", "description": "File to create or patch"},
-            "source": {"type": "string", "description": "The view.N id returned by Read, Search, or InspectCode for this path. Its lines= ranges must cover every start:end, and the newest same-path view may cover only a recent edit. Omit it to prove each target with old instead; forbidden for create and beside any old"},
-            "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Ordered edit operations to apply"},
+            "source": {"type": "string", "description": "view.N proving every start:end; omit for create or direct old mode"},
+            "edits": {"type": "array", "items": edit, "minItems": 1, "description": "Operations validated and applied together"},
         }, ["path", "edits"])
         # fmt: on
 

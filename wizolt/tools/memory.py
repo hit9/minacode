@@ -14,7 +14,9 @@ from wizolt.tools.base import Tool
 class RecallTool(Tool):
     NAME = "Recall"
     _KEY_RE: ClassVar[re.Pattern] = re.compile(r"tr\.\d+")
-    DESCRIPTION = 'Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context. Outputs truncated to the context budget are also materialized to a file: the <bounded_output> marker carries its absolute path under file="...", navigable with Read/Search/Bash; use ranges for in-context slices.'
+    DESCRIPTION = (
+        "Recall stored tool output by tr.N, optionally slicing inclusive output lines. A bounded_output marker names a file containing any truncated remainder."
+    )
     STORES_RESULT = False
 
     @classmethod
@@ -96,9 +98,8 @@ class RecallContextTool(Tool):
     MAX_LIMIT = 100
     MAX_QUERY_LENGTH = 500
     EXAMPLE = (
-        'List newest segments. Example: {"action":"list","limit":20}',
-        'Retrieve one segment. Example: {"action":"get","keys":["seg.1"]}',
-        'Search all segments. Example: {"action":"search","query":"cache prefix|task memory","limit":10}',
+        'Retrieve segments. Example: {"action":"get","keys":["seg.1","seg.2"]}',
+        'Search segments. Example: {"action":"search","query":"cache prefix|task memory","limit":10}',
     )
     STORES_RESULT = False
 
@@ -106,12 +107,12 @@ class RecallContextTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         return cls.object_schema({
-            "action": {"type": "string", "enum": ["list", "get", "search"], "description": "Operation; omitted legacy calls infer get from keys or search from query"},
-            "keys": {"type": "array", "items": {"type": "string", "pattern": "^seg\\.\\d+$"}, "minItems": 1, "description": "Segment keys to retrieve, or to restrict query search"},
-            "query": {"type": "string", "maxLength": cls.MAX_QUERY_LENGTH, "description": "Case-insensitive regex over segment titles and text; A|B|C is allowed"},
-            "case_sensitive": {"type": "boolean", "description": "Make query matching case-sensitive; default false"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Maximum list entries or matching lines; default {cls.DEFAULT_LIMIT}"},
-            "before": {"type": "string", "pattern": "^seg\\.\\d+$", "description": "For list pagination, return segments older than this key"},
+            "action": {"type": "string", "enum": ["list", "get", "search"], "description": "Operation"},
+            "keys": {"type": "array", "items": {"type": "string", "pattern": "^seg\\.\\d+$"}, "minItems": 1, "description": "Keys to get or search within"},
+            "query": {"type": "string", "maxLength": cls.MAX_QUERY_LENGTH, "description": "Regex over segment titles and text"},
+            "case_sensitive": {"type": "boolean", "description": "Case-sensitive search; default false"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Result limit; default {cls.DEFAULT_LIMIT}"},
+            "before": {"type": "string", "pattern": "^seg\\.\\d+$", "description": "List segments older than this key"},
         })
         # fmt: on
 
@@ -269,11 +270,7 @@ class RecallContextTool(Tool):
 
 class NoteTool(Tool):
     NAME = "Note"
-    DESCRIPTION = (
-        "View or update durable working notes; "
-        "set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts. "
-        "Plan items are objects with status todo|doing|done|blocked and text."
-    )
+    DESCRIPTION = "View or update durable goal, plan, facts, and verification notes. Replacement fields replace their whole value; append_known adds facts."
     STORES_RESULT = False
     MUTATES = True
 
@@ -290,13 +287,13 @@ class NoteTool(Tool):
             "text": {"type": "string", "description": "Plan step description"},
         }, ["status", "text"])
         return cls.object_schema({
-            "action": {"type": "string", "enum": ["view", "update"], "description": "View or update notes; omitted mutation calls infer update"},
-            "fields": {"type": "array", "items": {"type": "string", "enum": ["goal", "plan", "known", "check"]}, "minItems": 1, "description": "For view, fields to return; defaults to all"},
-            "set_goal": {"type": "string", "description": "Replace the current goal; an empty string clears it"},
-            "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
-            "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
-            "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
-            "set_check": {"type": "string", "description": "Replace the success/verification criteria; an empty string clears it"},
+            "action": {"type": "string", "enum": ["view", "update"], "description": "Operation"},
+            "fields": {"type": "array", "items": {"type": "string", "enum": ["goal", "plan", "known", "check"]}, "minItems": 1, "description": "Fields to view; default all"},
+            "set_goal": {"type": "string", "description": "Replace or clear goal"},
+            "replace_plan": {"type": "array", "items": plan_item, "description": "Replace plan"},
+            "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append facts"},
+            "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all facts"},
+            "set_check": {"type": "string", "description": "Replace or clear verification criteria"},
         })
         # fmt: on
 
@@ -405,11 +402,8 @@ class NoteTool(Tool):
 class NextHintsTool(Tool):
     NAME = "NextHints"
     DESCRIPTION = (
-        "Offer 2-3 short next-step prompts shown to the user after your answer. "
-        "Call it only once you have finished the turn's work and know your answer; base the prompts on what you completed and the resulting task state, not on wording you have not written yet. "
-        "Use sparingly: only at a natural stopping point when genuinely useful follow-ups exist; most turns need none, so call nothing then. "
-        "Call it in the same response as your final answer: output your answer text together with this call, and the turn ends right there. "
-        "Each input is a complete short one-line message the user would send; never restate what was just done."
+        "Offer 2-3 useful one-line follow-up inputs after completed work. Use sparingly and only when natural next steps exist. "
+        "Call once in the same response as the final answer; that response ends the turn."
     )
     STORES_RESULT = False
     SILENT = True

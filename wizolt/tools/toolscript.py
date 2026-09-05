@@ -135,25 +135,13 @@ class _StdoutCapture:
 class ToolScript(Tool):
     NAME = "ToolScript"
     DESCRIPTION = (
-        "Batch-query tool shapes for scripting, or run a Python script that calls tools: "
-        'action="call" executes code where call(name, {...}) performs nested tool invocations with '
-        "normal confirmation and logging, and only printed output returns. Worth it at 4+ "
-        "consecutive same-shape calls whose individual results you do not need -- the script "
-        "keeps them out of context and returns the summary you print. Not worth it below that, "
-        "when you must read each result, or when a step needs your judgment: the script runs to "
-        'the end on its own. Name an MCP tool the way the tool list spells it: call("server.tool", '
-        '{...}). call() returns the result as text, or parsed JSON with format="json" (MCP only). A '
-        "failed call raises, ending the script -- catch it per item so one bad item does not lose the "
-        "batch. Hand independent calls over together with call_many([(name, args), ...]) rather than "
-        "looping call(): it returns one value per entry in the order given, runs read-only ones "
-        "concurrently, and gives back a failed entry as the error object instead of ending the script. "
-        "Never start threads of your own -- call_many is how a script runs calls at once. "
-        'Describe one tool with MCP(action="describe"). Built-in tools are scriptable with '
-        'format="text"; Delegate/Job/ToolScript are not.'
+        "Describe tool shapes or run Python that invokes tools through call(name, args) and prints only the derived result. "
+        "Use for 4+ same-shape calls when individual outputs are unnecessary; otherwise emit normal tool calls. "
+        "Use call_many([(name, args), ...]) for independent calls; it preserves order and returns failures as values. "
+        "call raises on failure. MCP calls may use format='json'; built-ins use text. Do not start threads."
     )
     EXAMPLE = (
         'Aggregate many same-shape calls into one line. Example: {"action":"call","code":"hits = 0\\nfor path in (\\"a.py\\", \\"b.py\\", \\"c.py\\", \\"d.py\\"):\\n    hits += call(\\"Search\\", {\\"pattern\\": \\"TODO\\", \\"path\\": path}).count(\\"TODO\\")\\nprint(hits)"}',
-        'Fan out over an MCP tool at once, keeping going past a failure. Example: {"action":"call","code":"keys = (\\"A\\", \\"B\\", \\"C\\", \\"D\\")\\nfor key, r in zip(keys, call_many([(\\"server.tool\\", {\\"key\\": key}) for key in keys], format=\\"json\\")):\\n    if isinstance(r, Exception):\\n        print(\\"FAIL\\", key, r)\\n    else:\\n        print(\\"ok\\", key, r[\\"id\\"])"}',
         'Learn call shapes before scripting them. Example: {"action":"describe","tools":["Read","server.tool"]}',
     )
     MUTATES = True
@@ -166,14 +154,14 @@ class ToolScript(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         return cls.object_schema({
-            "action": {"type": "string", "enum": ["describe", "call"], "description": '"describe" batch-queries tool return shapes; "call" runs a Python script that invokes tools'},
+            "action": {"type": "string", "enum": ["describe", "call"], "description": "Describe tool shapes or run code"},
             "tools": {
                 "type": "array",
                 "items": {"type": "string", "description": 'a built-in tool name like "Read", or an MCP tool as "server.tool"'},
                 "minItems": 1,
-                "description": 'Tools to describe, e.g. ["Read", "server.tool", ...]',
+                "description": "Tools to describe",
             },
-            "code": {"type": "string", "description": 'Python source for action="call"; nested tool invocations go through call(name, {...}, format="text"|"json") or call_many([(name, {...}), ...], format=...) for independent calls at once, where name is a built-in tool or an MCP "server.tool"'},
+            "code": {"type": "string", "description": "Python for action=call; invoke tools only through call or call_many"},
         }, ["action"])
         # fmt: on
 

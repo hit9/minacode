@@ -168,37 +168,34 @@ class DelegateTool(Tool):
     NAME = "Delegate"
     runner: ToolRunner | None = None  # injected by ToolRunner.call_tool; the runner owns the cancel wiring
     MUTATES = True  # the delegation itself needs confirmation; the worker's own tools still confirm per call
-    DESCRIPTION = """Hand a bounded task to the worker: a second in-process wizolt session on its own provider, with its own system prompt and tool set. The worker cannot see this session's history -- only the order text and its own prior history -- so the order must stand alone.
-
-Delegate bounded, verifiable work you can spec in one order and judge from its diff or test output; it buys context hygiene and the worker's model, never speed (delegation is serial). Do small work yourself, explore yourself until the task is bounded, and keep the heart of the current request here: writing the order and reviewing the result cost about as much as doing the work.
-
-Accept the result against the order's `how to verify` by looking at actual evidence -- the diff, the test output, the recorded command output -- never the worker's own report: it is the worker's summary and rationalizes in its favor. Say what you accepted on and name it (which hunk, which test, which command's output); "the worker reports the tests pass" is not acceptance, and neither is a green test run on tests the worker also wrote. Re-run the decisive checks yourself, through the real entry point of the change -- an inner-method test can pass while the wiring above it is broken -- and wider than the order's file list: the worker verifies only what the order named. Prefer a rerunnable black-box test of the external contract (one you can read and rerun yourself) over your own judgment over a diff, and for complex or error-prone implementations have the order ask the worker to write that test before implementing; do not force test-first on tasks it does not fit (wording changes, config additions, open-ended exploration) -- decide per task in the order.
-
-Write the order to state: the goal, the files it touches, the constraints, how to verify, the boundaries (what not to touch), and the facts you already established -- exact signatures, `path:line` locations, the approach chosen and the ones already ruled out. That last part is what keeps the delegation cheap: the worker starts on an empty context, so every fact the order leaves out it re-derives and every gap it re-decides, and its decision is the one you then have to review or undo. Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again. Set `language` to the user's reply language (e.g. \"Chinese\"): they watch the worker's live output and read its report, so the worker must speak their language; omit `language` only when the user works in English. Also set a short `title` while writing the spec -- a few words capturing the intent (e.g. \"fix /status blank line\") -- used as the human-readable label of the delegation's start and done dividers; omit `title` to fall back to the order's first line.
-
-Reset the worker when switching tasks, when the spec changed, or after it failed twice in a row (its context has accumulated wrong beliefs). Each send's result reports `rounds` (how many orders this worker has already taken) and `context_percent` (its live context fill); when the fill is high and the next task is still substantial, reset before re-delegating to give the worker a clean context. Reset discards the worker's process, not its products: file changes and merged diffs stay."""
+    DESCRIPTION = (
+        "Send one bounded, verifiable task to a serial worker with separate context and provider. The worker sees only the standalone order and its own history. "
+        "Use it for well-specified work worth isolating, not small or exploratory work. Include the goal, files, known facts, constraints, boundaries, and verification. "
+        "Judge the result from the actual diff and rerun decisive checks through the affected public boundary; the worker report is not proof. "
+        "Reset when changing tasks, after the spec changes or repeated failure, or before substantial work at high context. Reset keeps file changes."
+    )
 
     @classmethod
     def params_schema(cls) -> Json:
         return cls.object_schema(
             {
-                "action": {"type": "string", "enum": ["send", "reset", "status"], "description": "Operation to perform"},
+                "action": {"type": "string", "enum": ["send", "reset", "status"], "description": "Worker operation"},
                 "order": {
                     "type": "string",
-                    "description": "Complete work order for action=send. Must stand alone (the worker cannot see this session's history) and state the goal, the files, the constraints, the facts already established (signatures, path:line locations, decisions already made), how to verify, and what not to touch",
+                    "description": "Standalone send order: goal, files, known facts, constraints, boundaries, and verification",
                 },
                 "max_steps": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Optional step cap for this single delegation; defaults to the parent's runtime.max_agent_steps",
+                    "description": "Optional step cap for this send",
                 },
                 "language": {
                     "type": "string",
-                    "description": "Reply language for all of the worker's visible output, live stream included (e.g. \"Chinese\"). Pass the user's language unless they work in English",
+                    "description": "Worker output language, including its live stream",
                 },
                 "title": {
                     "type": "string",
-                    "description": "Short human-readable title summarizing the task (shown in the start/done dividers). Omit to fall back to the order's first line.",
+                    "description": "Short title shown in start/done dividers",
                 },
             },
             ["action"],

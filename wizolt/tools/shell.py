@@ -46,11 +46,8 @@ class BashTool(Tool):
     _CONTROL_OPERATOR_RE: ClassVar[re.Pattern] = re.compile(r"&&|\|\||[|;\n]")
     LOG_LEXER = "bash"
     DESCRIPTION = (
-        "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Compose several steps into one "
-        "invocation with `&&`, `||`, `|`, and `;` rather than issuing separate calls. Avoid unbounded output; "
-        "limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks. "
-        "Its output is never a source view, so it cannot be an Edit `source=view.N`; exact text located here with `rg` or `cat` is editable straight away as Edit `old`, with no Read in between. "
-        "Never use it to read or print secrets (private keys, credentials, tokens, `.env`)."
+        "Run one shell invocation in the workspace with live stdout/stderr and an exit code. Combine dependent shell steps; bound noisy output. "
+        "Output is never source=view.N, but exact text seen here can be edited directly as Edit old without Read. Never expose secrets or `.env`."
     )
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
@@ -400,7 +397,7 @@ class BashTool(Tool):
 
 class JobTool(Tool):
     NAME = "Job"
-    DESCRIPTION = "Start, monitor, wait for, list, and kill background shell jobs. Processes run in their own process group and do not block the agent."
+    DESCRIPTION = "Start, inspect, wait for, list, or kill background shell jobs."
     MUTATES = True
     ACTIONS: ClassVar[tuple[str, ...]] = ("start", "status", "wait", "list", "kill")
     MAX_JOBS: ClassVar[int] = 8
@@ -434,8 +431,8 @@ class JobTool(Tool):
             "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
             "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
             "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
-            "timeout": {"type": "integer", "minimum": 0, "description": f"Seconds to wait for action=wait; omit or 0 waits {cls.DEFAULT_WAIT}s, and every wait is capped at {cls.MAX_WAIT}s. A wait that ends with the job still running says so; check it again later"},
-            "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
+            "timeout": {"type": "integer", "minimum": 0, "description": f"Wait seconds; default {cls.DEFAULT_WAIT}s, capped at {cls.MAX_WAIT}s"},
+            "limit": {"type": "integer", "minimum": 1, "description": "Output character limit; default 4096"},
         }, ["action"])
         # fmt: on
 

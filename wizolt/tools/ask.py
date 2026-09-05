@@ -22,16 +22,10 @@ class AskSpec:
 class AskTool(Tool):
     NAME = "Ask"
     DESCRIPTION = (
-        "Ask the user one or more questions (asked in sequence) and wait for their answers. "
-        "Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; "
-        "prefer offering choices with previews, and optionally a recommended index when one option is clearly best. "
-        "Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; "
-        "if a reasonable default exists, proceed."
+        "Ask one or more material questions and wait. Use only when missing intent or a choice changes the result or public shape; "
+        "do not ask what tools or context can answer. Batch related questions and offer concise choices, previews, and a recommendation when useful."
     )
-    EXAMPLE = (
-        'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["auth/\\n  session.py  (new, +87)\\n  views.py    (-12)","auth.py -> deleted\\nauth/*      all new (+430)"],"recommended":0}]}',
-        'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',
-    )
+    EXAMPLE = ('Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"recommended":0}]}',)
     MUTATES = False
     STORES_RESULT = True
     # Injected by ToolRunner: asks the whole batch and awaits the answers. Awaitable because the
@@ -45,7 +39,7 @@ class AskTool(Tool):
         question = cls.object_schema({
             "question": {"type": "string", "description": "The question to ask the user"},
             "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
-            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview per choice, shown as the user navigates. Make it graphic and concrete, not a restatement of the label: a code/diff snippet, an ASCII layout or tree, a table, or a file/API shape. Multi-line is fine (use \\n); the selector renders it as a rich preview panel, so dozens of lines are welcome"},
+            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional concrete preview per choice, such as a snippet, diff, tree, or API shape"},
             "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
         }, ["question"])
         return cls.object_schema({
