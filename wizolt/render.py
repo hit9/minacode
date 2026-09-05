@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.application import get_app_or_none
@@ -21,9 +21,10 @@ from prompt_toolkit.output import create_output
 from prompt_toolkit.utils import get_cwidth
 from rich import box
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.markdown import CodeBlock, Heading, Markdown, MarkdownElement, TableElement
+from rich.markdown import CodeBlock, Heading, ListElement, ListItem, Markdown, MarkdownElement, TableElement
 from rich.padding import Padding
 from rich.rule import Rule
+from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text as RichText
@@ -360,14 +361,23 @@ class Theme:
             "markdown.text": "none",
             "markdown.item": "none",
             # No background band: the block is read as code by its highlighting, and a filled band
-            # is the single loudest thing a theme can put on a terminal.
-            "markdown.code": accent,
+            # is the single loudest thing a theme can put on a terminal. The tone is the one code
+            # strings take, not the accent: inline code lands several times in a sentence, and the
+            # accent at that density turns a paragraph into confetti.
+            "markdown.code": cls.color("syntax_string"),
             "markdown.code_block": "none",
             "markdown.block_quote": muted,
             "markdown.hr": cls.color("rule"),
-            "markdown.item.bullet": f"bold {subtle}",
-            "markdown.item.number": subtle,
+            # The marker is what makes a list a list, so it is the one part of it that carries color.
+            "markdown.item.bullet": f"bold {accent}",
+            "markdown.item.number": accent,
             "markdown.list": "none",
+            "markdown.em": "italic",
+            "markdown.emph": "italic",
+            "markdown.strong": "bold",
+            "markdown.s": "strike",
+            # Underline rather than color: a sentence with three links in it should still read as a
+            # sentence. The URL follows in the supporting tone, since nothing here is clickable.
             "markdown.link": "underline",
             "markdown.link_url": muted,
             "markdown.table.border": subtle,
@@ -433,6 +443,14 @@ class _Heading(Heading):
 
     LEVEL_ALIGN: ClassVar[dict[str, Any]] = dict.fromkeys(Heading.LEVEL_ALIGN, "left")
 
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        # A heading opens a section, so it gets more room above it than the single row that parts
+        # two paragraphs; one row below keeps it attached to the text it introduces. A document
+        # that opens on a heading does not start with a gap: `emit_answer` trims the outer rows,
+        # because what sits above a block is the printer's business, not the document's.
+        yield RichText("")
+        yield from super().__rich_console__(console, options)
+
 
 class _CodeBlock(CodeBlock):
     """A fenced block highlighted on the terminal's own background.
@@ -470,6 +488,65 @@ class _Table(TableElement):
         yield table
 
 
+class _ListItem(ListItem):
+    """One list item, with a marker that can be seen.
+
+    Rich draws a bare number (`1 `) and leaves both markers in whatever the theme dims them to, so
+    a list reads as text that happens to be indented. The marker is the one thing that says "this
+    is a list": it takes the accent, and an ordered item keeps its period, which is what tells a
+    numbered list from a line that merely starts with a digit.
+    """
+
+    def render_bullet(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        lines = console.render_lines(self.elements, options.update(width=options.max_width - 3), style=self.style)
+        marker = Segment(" • ", console.get_style("markdown.item.bullet", default="none"))
+        padding = Segment(" " * 3)
+        for index, line in enumerate(lines):
+            yield padding if index else marker
+            yield from line
+            yield Segment("\n")
+
+    def render_number(self, console: Console, options: ConsoleOptions, number: int, last_number: int) -> RenderResult:
+        width = len(f"{last_number}.") + 2  # " 12. "
+        lines = console.render_lines(self.elements, options.update(width=options.max_width - width), style=self.style)
+        marker = Segment(f"{number}.".rjust(width - 1) + " ", console.get_style("markdown.item.number", default="none"))
+        padding = Segment(" " * width)
+        for index, line in enumerate(lines):
+            yield padding if index else marker
+            yield from line
+            yield Segment("\n")
+
+
+class _ListElement(ListElement):
+    """A list whose items are parted only when they need to be.
+
+    A list of one-line items reads as one object, and a blank row between each of them turns it
+    into a column of fragments. Once any item wraps, the opposite is true: without a gap the reader
+    cannot see where one item ends and the next begins, and the bullets stop being enough.
+
+    So the list decides for itself: tight while every item fits on a line, spaced once one does not.
+    """
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        start = 1 if self.list_start is None else self.list_start
+        # Both renderers yield Segments; the annotation is what lets the newline count below be a
+        # count of rendered rows rather than of whatever a renderable might be.
+        rendered: list[list[Segment]] = [
+            cast(
+                "list[Segment]",
+                list(item.render_bullet(console, options))
+                if self.list_type == "bullet_list_open"
+                else list(item.render_number(console, options, start + index, start + len(self.items))),
+            )
+            for index, item in enumerate(self.items)
+        ]
+        spaced = any(sum(segment.text.count("\n") for segment in item) > 1 for item in rendered)
+        for index, item in enumerate(rendered):
+            if spaced and index:
+                yield Segment("\n")
+            yield from item
+
+
 class WizoltMarkdown(Markdown):
     """The one Markdown renderable in the app, so every surface lays a document out the same way.
 
@@ -480,6 +557,9 @@ class WizoltMarkdown(Markdown):
     elements: ClassVar[dict[str, type[MarkdownElement]]] = {
         **Markdown.elements,
         "heading_open": _Heading,
+        "bullet_list_open": _ListElement,
+        "ordered_list_open": _ListElement,
+        "list_item_open": _ListItem,
         "fence": _CodeBlock,
         "code_block": _CodeBlock,
         "table_open": _Table,
@@ -493,6 +573,13 @@ class WizoltMarkdown(Markdown):
         super().__init__(markup, code_theme=style, hyperlinks=False)
 
 
+# The widest a rendered document is allowed to get, however wide the terminal is. Prose stops being
+# readable well before the right edge of a full-screen terminal -- the eye loses the start of the
+# next line -- and a fixed measure also keeps an answer the same shape whatever window it lands in.
+# Wide enough for ordinary code and small tables, narrow enough to read in one sweep.
+MARKDOWN_MEASURE = 100
+
+
 def markdown_console(width: int) -> Console:
     """A Rich console for the capture-then-emit path, carrying the palette's named styles.
 
@@ -502,7 +589,7 @@ def markdown_console(width: int) -> Console:
 
     Colors come from the theme, so `wizolt.*` style names resolve here and nowhere else.
     """
-    return Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(10, width), theme=Theme.rich_theme())
+    return Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(10, min(width, MARKDOWN_MEASURE)), theme=Theme.rich_theme())
 
 
 class UiPrinter:
@@ -836,6 +923,10 @@ class UiPrinter:
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        # A block owns its inside, never its outside: the gap above it is `separate`'s to open and
+        # the one below belongs to whatever comes next, so a document that opens on a heading or
+        # closes on a list cannot smuggle in blank rows of its own.
+        cleaned = cleaned.strip("\n") + "\n"
         if compact:
             # Rich markdown pads a blank line after every heading plus a whitespace row above and
             # below each table box; /status wants the heading tight against its table, so drop

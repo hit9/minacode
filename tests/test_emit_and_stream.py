@@ -257,16 +257,19 @@ def rendered_answer(text, width, *, mode="dark", monkeypatch=None, **kwargs):
 
 
 @pytest.mark.parametrize("width", [80, 120])
-def test_markdown_blocks_are_parted_by_exactly_one_blank_row(width):
-    """Every block boundary in a document gets the same single blank row: no construct arrives
-    glued to the one above it, and none opens a two-row gap of its own."""
+def test_markdown_blocks_are_parted_by_a_stable_gap(width):
+    """A document has one rhythm: a blank row between blocks, two above a heading because a heading
+    opens a section, and nothing else. No construct arrives glued to the one above it, and none
+    carries an outer margin of its own -- the gap above a block belongs to the printer."""
     rows = rendered_answer(MARKDOWN_SAMPLE, width, role="assistant", rule=False)
 
-    blanks = {index for index, row in enumerate(rows) if row.strip() == ""}
-    assert not any(index + 1 in blanks for index in blanks), rows  # never two blank rows together
-    for opener in ("Title", "Section", "def f():", "▌ quoted", "• first"):
+    for opener in ("def f():", "▌ quoted", "• first", "Closing."):
         index = next(i for i, row in enumerate(rows) if opener in row)
-        assert index == 0 or rows[index - 1].strip() == "", (opener, rows[index - 2 : index + 1])
+        assert rows[index - 1].strip() == "" and rows[index - 2].strip(), (opener, rows[index - 3 : index + 1])
+    for heading in ("Title", "Section"):
+        index = next(i for i, row in enumerate(rows) if heading in row)
+        assert index == 0 or (rows[index - 1].strip() == "" and rows[index - 2].strip() == ""), heading
+    assert rows[0].strip() and rows[-2].strip()  # no leading or trailing gap of its own
 
 
 @pytest.mark.parametrize("width", [80, 120])
@@ -313,3 +316,24 @@ def test_blank_rows_at_the_end_of_a_block_are_not_doubled_by_the_next_one():
     assert ui.trailing_blanks == 2
     ui.emit("another")
     assert ui.trailing_blanks == 0
+
+
+def test_a_list_is_tight_until_an_item_wraps():
+    """List spacing follows the list. Single-line items read as one object and stay together; once
+    an item wraps, the bullets are no longer enough to show where an item ends, so the items are
+    parted."""
+    tight = rendered_answer("- one\n- two\n- three\n", 92, role="assistant", rule=False)
+    assert not any(row.strip() == "" for row in tight[:-1])
+
+    long_item = "an item long enough to wrap past the measure " * 3
+    spaced = rendered_answer(f"- {long_item}\n- short\n", 92, role="assistant", rule=False)
+    bullets = [index for index, row in enumerate(spaced) if row.lstrip().startswith("• ")]
+    assert len(bullets) == 2
+    assert spaced[bullets[1] - 1].strip() == ""
+
+
+def test_prose_stops_at_a_readable_measure_however_wide_the_terminal():
+    rows = rendered_answer("word " * 200, 240, role="assistant", rule=False)
+
+    assert max(get_cwidth(row) for row in rows) <= render_module.MARKDOWN_MEASURE
+    assert max(get_cwidth(row) for row in rows) > render_module.MARKDOWN_MEASURE - 12  # and fills it

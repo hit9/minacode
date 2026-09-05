@@ -63,10 +63,14 @@
   rules are visible enough to part the transcript into blocks; and selected rows paint a band of
   their own instead of borrowing the terminal's reverse video. `theme` still takes `auto`, `light`,
   and `dark`, and diff colors are unchanged.
-- Markdown in answers is laid out for a terminal rather than a web page: headings are left aligned
-  and step down by weight, fenced code keeps the terminal's own background instead of a filled
-  band, tables lose their empty outer edge, inline code takes the accent without a background, and
-  links are underlined instead of turning a sentence blue. Every block boundary is one blank row.
+- Markdown in answers is laid out for reading in a terminal rather than for a web page. It has one
+  vertical rhythm: a blank row between blocks, two above a heading because a heading opens a
+  section, list items tight until one of them wraps, and no outer margin of its own. Prose stops at
+  a fixed measure instead of running to the edge of a wide terminal. Headings are left aligned and
+  step down by weight, fenced code keeps the terminal's own background instead of a filled band,
+  tables lose their empty outer edge, list markers carry the accent (and an ordered item keeps its
+  period), inline code takes a quiet code tone rather than the accent, and links are underlined
+  instead of turning a sentence blue.
 - The system prompt now asks for short paragraphs, few headings, and lists only where they aid
   reading, so answers arrive shaped for a terminal rather than for a web page.
 - A restored transcript is spaced like the live turn it replays. Replayed tool calls went
