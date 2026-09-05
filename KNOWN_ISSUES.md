@@ -1,10 +1,13 @@
-# TUI Resize and Scrollback: Known Issues
+# Known Issues
 
-This document records terminal behavior that remains unresolved. It is an investigation record,
-not an implementation specification. Do not claim these issues are fixed unless a solution passes
-the real-tmux acceptance criteria below.
+This document records unresolved product and engineering problems. Each topic is an investigation
+record, not an implementation specification.
 
-## Current decision
+## TUI resize and scrollback
+
+Do not claim this issue is fixed unless a solution passes the real-tmux acceptance criteria below.
+
+### Current decision
 
 Wizolt keeps its ordinary input, activity, Ask, approval, and command-selector UI on the terminal's
 primary screen. Completed output remains available in native terminal and tmux scrollback.
@@ -17,9 +20,9 @@ repeated resizes, or made selectors materially worse to use.
 Exclusive viewers such as `/diff` may still use the alternate screen. Ordinary command selectors
 must not be moved there again without satisfying this document's acceptance criteria.
 
-## Symptoms still reproducible
+### Symptoms still reproducible
 
-### Dynamic activity and thinking output
+#### Dynamic activity and thinking output
 
 During a long-running or streaming turn, repeatedly zooming and unzooming a tmux pane can leave:
 
@@ -31,7 +34,7 @@ During a long-running or streaming turn, repeatedly zooming and unzooming a tmux
 The current resize re-anchor keeps the live prompt from steadily climbing toward the top of the
 pane, but it does not make the underlying primary-screen text flow reversible.
 
-### Inline command selectors
+#### Inline command selectors
 
 Selectors such as `/provider`, `/model`, and `/effort` temporarily make the non-full-screen
 prompt-toolkit application taller. After the selector closes, a later tmux zoom/unzoom can expose
@@ -47,7 +50,7 @@ A typical reproduction is:
 The selector remains inline today because the alternatives tested below were less safe or less
 usable.
 
-## Related issue that is only partially solved
+### Related issue that is only partially solved
 
 Commit `79fbfc2` added the current resize re-anchor. It fixes one specific failure: after tmux moves
 the already-rendered application during reflow, the prompt no longer trusts the drifted cursor
@@ -58,7 +61,7 @@ That fix does not remove physical rows already inserted into the primary-screen 
 does not prove that real tmux scrollback is unchanged. Treat prompt anchoring and scrollback
 preservation as separate properties.
 
-## Why this is difficult
+### Why this is difficult
 
 Wizolt deliberately combines two different models:
 
@@ -89,9 +92,9 @@ The available terminal operations do not close that information gap:
 There is consequently no safe primary-screen command that means "remove exactly the old live UI
 and preserve every transcript row".
 
-## Attempts and outcomes
+### Attempts and outcomes
 
-### Bottom re-anchor and erase
+#### Bottom re-anchor and erase
 
 Commits `79fbfc2` and `80fa665` explored re-anchoring, erasing, and repainting from the pane bottom.
 This can keep the visible prompt and live region single-copy in slow or static cases. Under repeated
@@ -100,13 +103,13 @@ fast resizing it still accumulates blank rows because erase does not shorten the
 The broader live-region change from `80fa665` was reverted by `cb88770`. Commit `8ec86d4` preserves
 the detailed handoff for that unresolved investigation.
 
-### CSI line deletion
+#### CSI line deletion
 
 Deleting reflowed rows with CSI `M` produced clean results for an isolated resize. It failed over
 long sequences because the estimated number of excess physical rows drifted. Under-deletion left
 fragments; over-deletion consumed real transcript lines. This is not an acceptable trade-off.
 
-### Alternate screen for command selectors
+#### Alternate screen for command selectors
 
 Commit `7ea8536` moved ordinary command selectors to the alternate screen. It appeared correct on
 the first selector and resize cycle, but later cycles could restore an incomplete primary screen
@@ -115,13 +118,13 @@ the primary buffer before the switch did not stabilize repeated resize behavior.
 
 The change was fully reverted by `14c25ea`.
 
-### Fixed-height compact selector
+#### Fixed-height compact selector
 
 An uncommitted experiment replaced the normal input region with a three-row selector. It avoided
 height growth by construction, but the selector was too small to compare options or read useful
 previews. The implementation was discarded.
 
-### Floating selector
+#### Floating selector
 
 A second uncommitted experiment used a roughly ten-row prompt-toolkit `Float`, whose preferred
 height does not contribute to the main layout. In practice the available region was still too
@@ -129,14 +132,14 @@ narrow in important terminal states, and real tmux testing still showed primary-
 unit model's stable preferred height was not evidence that tmux's physical history was preserved.
 The implementation was discarded.
 
-### Full-screen application
+#### Full-screen application
 
 Running the entire interactive application on the alternate screen would avoid most primary-screen
 reflow artifacts and is the conventional design for full-screen TUIs. It would also remove the live
 conversation from native terminal scrollback and make Wizolt behave more like an editor or system
 monitor. That is a product-level trade-off, not a local resize fix, and has not been accepted.
 
-## Testing limitations
+### Testing limitations
 
 `tests/test_tui_resize.py` uses a deterministic terminal model and is valuable for cursor anchoring,
 but it cannot reproduce all of tmux's behavior:
@@ -150,7 +153,7 @@ but it cannot reproduce all of tmux's behavior:
 A single successful resize, an unchanged prompt-toolkit preferred height, or a clean visible pane
 is not sufficient evidence. Scrollback must also be inspected after repeated cycles.
 
-## Acceptance criteria for any future fix
+### Acceptance criteria for any future fix
 
 A future implementation must use a real tmux integration test in addition to unit tests. At a
 minimum it must demonstrate all of the following:
@@ -173,7 +176,7 @@ The test must fail against the current implementation for the specific artifact 
 Do not replace the real-tmux test with `DummyOutput`, preferred-height assertions, or a synthetic
 terminal alone.
 
-## Relevant code and tests
+### Relevant code and tests
 
 - `wizolt/tui/app.py`: modal layout, primary/alternate-screen transitions, animation, and resize
   re-anchoring.
@@ -183,7 +186,7 @@ terminal alone.
 - `tests/test_tui_scrollback.py`: prompt-toolkit suspension and ordered scrollback output.
 - `tests/test_diff_command.py`: alternate-screen capability behavior for the exclusive diff viewer.
 
-## Reopening the problem
+### Reopening the problem
 
 Do not reopen this as another small erase, CPR, cursor-move, or alternate-screen patch. A credible
 next attempt needs at least one of these foundations:
