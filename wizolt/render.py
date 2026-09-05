@@ -108,9 +108,12 @@ class ThemePalette:
     (`muted`, `error`, `status_provider`) and an adapter turns that into Rich, prompt-toolkit, or
     Pygments syntax; no component picks a color of its own, and no framework spelling appears here.
 
-    Every value is a normalized `#rrggbb` string or the sentinel `default`, the terminal's own
-    foreground. Body text takes `default` on purpose: the reader already chose a comfortable text
-    color for their terminal, and the palette's job is to place everything else around it.
+    A value is either one of the terminal's own colors (`default`, `ansigreen`, `ansibrightblack`)
+    or a `#rrggbb` tone. The first kind is the default and the important one: the reader chose a
+    scheme for their terminal, and a UI painted in it inherits their contrast, their brightness, and
+    their taste. A fixed hex freezes one designer's guess into every terminal it ever runs in, so it
+    is reserved for the few places that need a specific tone rather than a role -- an identity color,
+    the syntax tones that pair with a Pygments style, the status footer, a gradient's endpoints.
 
     Layout is deliberately absent. Spacing, indentation, and rules are decisions about structure,
     not about color, and they belong to the renderers.
@@ -118,22 +121,22 @@ class ThemePalette:
 
     appearance: Literal["light", "dark"]
 
-    # Text hierarchy: body, supporting detail, and the near-invisible tones separators take.
+    # Text hierarchy: body, supporting detail, and the tones structure takes.
     text: str
     muted: str
     subtle: str
-    # One or two accents carry attention. Everything else is state (`success`/`warning`/`error`)
-    # or identity (`user`, `tool`).
+    # One accent carries attention; the second is the model's own voice, and `info` marks what the
+    # runtime did on its own. Everything else is state (`success`/`warning`/`error`) or identity
+    # (`user`, `tool`).
     accent: str
     accent_secondary: str
+    info: str
     user: str
     tool: str
     success: str
     warning: str
     error: str
     rule: str
-    selection_fg: str
-    selection_bg: str
 
     # Lightweight highlighting for tool arguments, which never reach a Pygments lexer.
     syntax_assign: str
@@ -156,6 +159,12 @@ class ThemePalette:
     status_yolo: str
     status_worker: str
 
+    # The working divider's comet fades from one of these to the other, and the live spark breathes
+    # around the first. A gradient needs channels to interpolate, which is the one thing a terminal
+    # color name cannot give, so these two stay hex.
+    divider_glow: str
+    divider_rule: str
+
     pygments_style: str
 
     def color(self, role: str) -> str:
@@ -169,89 +178,86 @@ class ThemePalette:
 THEME_ROLES: tuple[str, ...] = tuple(field.name for field in fields(ThemePalette) if field.name not in {"appearance", "pygments_style"})
 
 
-# Two appearances, one shape. The tuning goals are the same in both: body text is the terminal's
-# own, supporting detail is clearly weaker than body text without the interface going grey, one
-# accent carries attention (with a second for the model's own voice), and state colors — success,
-# warning, error — are told apart by hue rather than by shouting.
+# The roles that describe text take the terminal's own colors, so the interface is drawn in the
+# scheme the reader already chose: their grey is the grey, their green is the green, and the whole
+# UI has their contrast rather than a designer's. Light and dark therefore agree on most of this
+# table -- the terminal resolves those names differently on its own -- and the two appearances
+# differ only where a fixed tone is unavoidable.
 DARK_PALETTE = ThemePalette(
     appearance="dark",
     text=TERMINAL_DEFAULT,
-    # The greys are warm. A cool grey beside warm text is what makes a terminal read as washed out,
-    # and supporting detail is most of what is on screen.
-    muted="#a49484",
-    # Structure, not text: rails, gutters, bullets. Below muted, above the background.
-    subtle="#6b6156",
-    # Teal, not sky blue, and worn by few things: the prompt, field labels, inline code. One cool
-    # note against warm text is contrast; a screen of blue is a scheme with nothing to say.
-    accent="#5fb3a1",
+    # Supporting detail, and the structure under it. The terminal's dim grey, which is what a
+    # terminal UI has always used to say "this is not the point".
+    muted="ansibrightblack",
+    subtle="ansibrightblack",
+    accent="ansicyan",
     # The model's own voice: interim narration, thinking, the working divider.
-    accent_secondary="#cf8fa6",
+    accent_secondary="ansimagenta",
+    # What the runtime did on its own, rather than what the model asked for.
+    info="ansiblue",
+    # An identity, not a role: the desert tone the user's own lines have always had.
     user="#e0a96d",
-    tool="#98c379",
-    success="#98c379",
-    warning="#e0a34a",
-    error="#e8767c",
-    # Visible enough to read as a boundary: a rule that fades into the background stops parting
-    # anything, and the transcript loses its sense of blocks. Neutral and warm, never colored.
-    rule="#7a6f63",
-    # A warm band rather than the accent: a selected row is a large area of color, and an accent
-    # at that size takes over the screen.
-    selection_fg="#f2ece4",
-    selection_bg="#3a332d",
-    syntax_assign="#5fb3a1",
-    syntax_string="#d9b48c",
-    syntax_number="#cf8fa6",
-    syntax_ident="#c8bfb3",
-    syntax_builtin="#5fb3a1",
+    tool="ansigreen",
+    success="ansigreen",
+    warning="ansiyellow",
+    error="ansired",
+    rule="ansibrightblack",
+    # Tuned against the Pygments style below, which is where tool arguments borrow their look from.
+    syntax_assign="#79c0ff",
+    syntax_string="#a5d6ff",
+    syntax_number="#d2a8ff",
+    syntax_ident="#a5d6ff",
+    syntax_builtin="#79c0ff",
     # Must stay the Pygments style's own body color: a token painted in it is painted in no color
     # at all, so code inherits the terminal's foreground instead of a near-match.
-    syntax_default="#dddddd",
-    # The status row is a footer: its plain tone stays below full strength, and each field carries
-    # just enough color to be picked out without competing with the transcript above it.
-    status_base="#cdc3b6",
-    status_provider="#5fb3a1",
-    status_reason="#cf8fa6",
-    status_mcp="#8fc9bb",
-    status_context="#e0a34a",
-    status_index="#a49484",
-    status_yolo="#d987b4",
-    status_worker="#e0b45f",
-    # Warm highlighting, so a code block does not reintroduce the blues the rest of the scheme
-    # spends its effort avoiding.
-    pygments_style="gruvbox-dark",
+    syntax_default="#e6edf3",
+    # The status row sits under the conversation and should read as a quiet footer, not compete
+    # with it, so its plain tone stays below full white and each field keeps just enough color to
+    # be told apart at a glance.
+    status_base="#cbd5e1",
+    status_provider="#60a5fa",
+    status_reason="#a5b4fc",
+    status_mcp="#93c5fd",
+    status_context="#facc15",
+    status_index="#94a3b8",
+    status_yolo="#c084fc",
+    status_worker="#fbbf24",
+    divider_glow="#67e8f9",
+    divider_rule="#4b5563",
+    pygments_style="github-dark",
 )
 
 LIGHT_PALETTE = ThemePalette(
     appearance="light",
     text=TERMINAL_DEFAULT,
-    muted="#6f6257",
-    subtle="#a89e93",
-    accent="#116b60",
-    accent_secondary="#9c4f6c",
+    muted="ansibrightblack",
+    subtle="ansibrightblack",
+    accent="ansicyan",
+    accent_secondary="ansimagenta",
+    info="ansiblue",
     user="#9a5b2e",
-    tool="#3f7a2e",
-    success="#3f7a2e",
-    warning="#a2620a",
-    error="#b3261e",
-    # Lighter than the text it parts, but still a line the eye lands on.
-    rule="#a89e93",
-    selection_fg="#2b2019",
-    selection_bg="#ecdfcd",
-    syntax_assign="#116b60",
-    syntax_string="#7a5c2e",
-    syntax_number="#9c4f6c",
-    syntax_ident="#4a4038",
-    syntax_builtin="#116b60",
-    syntax_default="#3c3836",
-    status_base="#54493f",
-    status_provider="#116b60",
-    status_reason="#9c4f6c",
-    status_mcp="#1f6b5e",
-    status_context="#a2620a",
-    status_index="#635649",
-    status_yolo="#8a3f6a",
-    status_worker="#a2620a",
-    pygments_style="gruvbox-light",
+    tool="ansigreen",
+    success="ansigreen",
+    warning="ansiyellow",
+    error="ansired",
+    rule="ansibrightblack",
+    syntax_assign="#005cc5",
+    syntax_string="#032f62",
+    syntax_number="#6f42c1",
+    syntax_ident="#032f62",
+    syntax_builtin="#005cc5",
+    syntax_default="#24292e",
+    status_base="#4b5563",
+    status_provider="#1d4ed8",
+    status_reason="#5b21b6",
+    status_mcp="#1e40af",
+    status_context="#a16207",
+    status_index="#475569",
+    status_yolo="#7e22ce",
+    status_worker="#b45309",
+    divider_glow="#0e7490",
+    divider_rule="#9ca3af",
+    pygments_style="default",
 )
 
 
@@ -289,10 +295,25 @@ class Theme:
     def palette(cls) -> ThemePalette:
         return LIGHT_PALETTE if cls._mode == "light" else DARK_PALETTE
 
+    # prompt-toolkit spells a terminal color `ansibrightblack`; Rich spells the same one
+    # `bright_black`. The palette speaks prompt-toolkit's dialect, since that is what most of the UI
+    # is drawn in, and this is where the other one is translated. Hex passes through untouched.
+    RICH_COLOR_NAMES: ClassVar[dict[str, str]] = {
+        f"ansi{prefix}{name}": f"{'bright_' if prefix else ''}{name}"
+        for prefix in ("", "bright")
+        for name in ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
+    }
+
     @classmethod
     def color(cls, role: str) -> str:
-        """The active palette's color for one semantic role, as `#rrggbb` or `default`."""
+        """The active palette's color for one semantic role: a terminal color name or `#rrggbb`."""
         return cls.palette().color(role)
+
+    @classmethod
+    def rich_color(cls, role: str) -> str:
+        """One role in Rich's spelling of the same color."""
+        color = cls.color(role)
+        return cls.RICH_COLOR_NAMES.get(color, color)
 
     @classmethod
     def diff_style(cls, key: str) -> str:
@@ -328,11 +349,11 @@ class Theme:
         Rich resolves an unknown style name by raising, so a console that renders our markup must
         be built with this theme; `markdown_console` is the only place that happens.
         """
-        styles = {f"wizolt.{role.replace('_', '.')}": cls.color(role) for role in THEME_ROLES}
+        styles = {f"wizolt.{role.replace('_', '.')}": cls.rich_color(role) for role in THEME_ROLES}
         # Rich resolves a style string either as a theme name or as attributes, never as both, so
         # anything wearing a weight on top of a role is named here rather than spelled at the call.
-        styles["wizolt.role.user"] = f"bold {cls.color('accent')}"
-        styles["wizolt.role.assistant"] = f"bold {cls.color('accent_secondary')}"
+        styles["wizolt.role.user"] = f"bold {cls.rich_color('accent')}"
+        styles["wizolt.role.assistant"] = f"bold {cls.rich_color('accent_secondary')}"
         return RichTheme({**styles, **cls.markdown_styles()}, inherit=True)
 
     @classmethod
@@ -343,17 +364,18 @@ class Theme:
         headings and block quotes, blue links, a cyan table. Left alone they win every argument with
         the palette and turn an answer into a page of blue and cyan.
 
-        The replacements spend one hue and carry everything else in weight. A document is mostly
-        words, and each additional colour is another thing the eye has to sort before it can read:
-        the accent marks the two things a reader looks for rather than reads -- the top of a section
-        and code inside a sentence -- and nothing else in a document is coloured at all. Headings
-        below it step down by weight, markers and table headings take weight, links are underlined
-        with the URL beside them in the supporting tone, and body text, list text, and table cells
-        stay the terminal's own foreground.
+        The replacements spend colour exactly once, on inline code: it is the one thing in a
+        paragraph a reader has to pick out at a glance rather than read in sequence. Everything
+        else carries its role in weight -- headings step down bold, bold-dim, dim; markers and
+        table headings are bold; a link is underlined with its URL beside it in the supporting
+        tone; body text, list text, and table cells stay the terminal's own foreground.
+
+        A document is mostly words, and each hue in it is one more thing to sort before reading
+        can start. Structure is a shape, not a colour.
         """
-        muted, subtle, accent = cls.color("muted"), cls.color("subtle"), cls.color("accent")
+        muted, subtle = cls.rich_color("muted"), cls.rich_color("subtle")
         return {
-            "markdown.h1": f"bold {accent}",
+            "markdown.h1": "bold",
             "markdown.h2": "bold",
             "markdown.h3": f"bold {muted}",
             "markdown.h4": f"italic {muted}",
@@ -363,12 +385,13 @@ class Theme:
             "markdown.paragraph": "none",
             "markdown.text": "none",
             "markdown.item": "none",
-            # No background band: the block is read as code by its highlighting, and a filled band
-            # is the single loudest thing a theme can put on a terminal.
-            "markdown.code": accent,
+            # The one colour a paragraph carries, and no background band behind it: a filled band is
+            # the loudest thing a theme can put on a terminal, and a second hue would make the
+            # sentence a mosaic. The terminal's own accent, so it agrees with the rest of the UI.
+            "markdown.code": cls.rich_color("accent"),
             "markdown.code_block": "none",
             "markdown.block_quote": muted,
-            "markdown.hr": cls.color("rule"),
+            "markdown.hr": cls.rich_color("rule"),
             # The marker is what makes a list a list, so it is set apart -- by weight, not by hue.
             "markdown.item.bullet": "bold",
             "markdown.item.number": "bold",
@@ -1116,7 +1139,7 @@ class UiPrinter:
     # ordinary text; the rows that are themselves supporting detail go muted on both.
     LOG_ROLES: ClassVar[dict[LogRole, tuple[str, str]]] = {
         LogRole.TOOL: ("tool", "text"),
-        LogRole.AUTO: ("accent_secondary", "text"),
+        LogRole.AUTO: ("info", "text"),
         LogRole.META: ("muted", "muted"),
         LogRole.WORKER: ("status_worker", "text"),
         LogRole.FIELD: ("accent", "text"),
@@ -1537,8 +1560,8 @@ class LiveSpark:
     # heartbeat, while this one sits over a wall of text and would nag at that rate.
     PERIOD: ClassVar[float] = 3.2
     STEPS: ClassVar[int] = 12
-    # The divider's own accent, so the live rule and the live region it caps read as one thing.
-    ROLE: ClassVar[str] = "accent"
+    # The divider's own glow, so the live rule and the live region it caps read as one thing.
+    ROLE: ClassVar[str] = "divider_glow"
     # How far the breath reaches past that color, as a fraction of the way to black at the trough
     # and to white at the crest. Wide on purpose: a shallow fade reads as the terminal mis-drawing
     # a cell rather than as a breath, and the crest has to clear the gray rows beside it. The

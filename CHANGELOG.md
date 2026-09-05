@@ -57,22 +57,24 @@
 ### Changed
 
 - Colors now come from one semantic palette per appearance instead of ANSI names scattered through
-  the renderer, and both built-in schemes were retuned around it. The greys are warm, so the
-  interface no longer reads as washed out; the accent is a single teal note worn by few things
-  instead of blue on blue; code highlighting is warm too; hints and other supporting text are grey;
-  rules are visible enough to part the transcript into blocks; and selected rows paint a band of
-  their own instead of borrowing the terminal's reverse video. `theme` still takes `auto`, `light`,
-  and `dark`, and diff colors are unchanged.
+  the renderer -- but the roles that carry text still resolve to the terminal's own colors, so the
+  interface is drawn in the scheme you already chose. A fixed tone is reserved for the few things
+  that are a specific color rather than a role: your own message tone, the syntax colors that pair
+  with the highlighting theme, the status footer, the working divider's gradient, and the band on a
+  selected row. `theme` still takes `auto`, `light`, and `dark`, and diff colors are unchanged.
 - Markdown in answers is laid out for reading in a terminal rather than for a web page. It has one
   vertical rhythm: a blank row between blocks, two above a heading because a heading opens a
   section, list items tight until one of them wraps, and no outer margin of its own. Headings are
   left aligned and step down by weight, fenced code keeps the terminal's own background instead of
   a filled band, tables lose their empty outer edge, and list markers are set apart by weight (an
-  ordered item keeps its period). One hue is spent, on the two things a reader looks for rather
-  than reads: the top of a section and code inside a sentence. Nothing else in a document is
-  coloured -- links are underlined, emphasis is weight and slant.
+  ordered item keeps its period). One color is spent, on inline code -- the one thing in a
+  paragraph a reader picks out at a glance rather than reads in sequence. Nothing else in a
+  document is colored: headings step down by weight, links are underlined, emphasis is weight and
+  slant.
 - The system prompt now asks for short paragraphs, few headings, and lists only where they aid
   reading, so answers arrive shaped for a terminal rather than for a web page.
+- A user message no longer has a rule drawn underneath it. The message itself opens the turn; the
+  rules come where they part one stretch of work from the next.
 - A restored transcript is spaced like the live turn it replays. Replayed tool calls went
   straight to the printer while live ones were parted from what came before, so a resumed
   session ran its narration and every call together in one dense block, and the next user

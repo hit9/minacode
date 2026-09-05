@@ -31,7 +31,8 @@ def test_both_appearances_define_every_role_in_a_shape_the_adapters_accept():
     for palette in (render_module.DARK_PALETTE, render_module.LIGHT_PALETTE):
         for role in render_module.THEME_ROLES:
             value = palette.color(role)
-            assert value == render_module.TERMINAL_DEFAULT or re.fullmatch(r"#[0-9a-f]{6}", value), (role, value)
+            terminal = value == render_module.TERMINAL_DEFAULT or value in Theme.RICH_COLOR_NAMES
+            assert terminal or re.fullmatch(r"#[0-9a-f]{6}", value), (role, value)
 
 
 def test_unknown_roles_are_rejected_rather_than_silently_uncolored():
@@ -443,34 +444,27 @@ def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypat
     assert "• sent message" in desert_text
 
 
-def luminance(color: str) -> float:
-    """Relative luminance (WCAG), for contrast ratios between two palette entries."""
+def test_the_roles_that_carry_text_are_the_terminal_own_colors():
+    """The reader's scheme is the scheme.
 
-    def channel(value: int) -> float:
-        fraction = value / 255
-        return fraction / 12.92 if fraction <= 0.04045 else ((fraction + 0.055) / 1.055) ** 2.4
+    Contrast, brightness, and taste belong to whoever set up the terminal, and a role drawn in one
+    of its own colors inherits all three. A fixed tone can only guess at them, so it is reserved
+    for the handful of things that are a specific colour rather than a role: an identity, the
+    syntax tones that pair with a Pygments style, the status footer, and a gradient's endpoints.
+    """
+    fixed = {"user", "syntax_default", "divider_glow", "divider_rule"}
+    for palette in (render_module.DARK_PALETTE, render_module.LIGHT_PALETTE):
+        for role in render_module.THEME_ROLES:
+            if role in fixed or role.startswith(("status_", "syntax_")):
+                continue
+            value = palette.color(role)
+            assert value == render_module.TERMINAL_DEFAULT or value in Theme.RICH_COLOR_NAMES, (role, value)
 
-    red, green, blue = Theme.rgb(color)
-    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
 
-
-def contrast(first: str, second: str) -> float:
-    lighter, darker = sorted((luminance(first), luminance(second)), reverse=True)
-    return (lighter + 0.05) / (darker + 0.05)
-
-
-@pytest.mark.parametrize(
-    ("appearance", "background"),
-    [("dark", "#0d1117"), ("light", "#ffffff")],
-)
-def test_state_and_selection_colors_stay_readable_in_both_appearances(appearance, background):
-    """A warning nobody can read is not a warning. Each state color has to clear ordinary UI
-    contrast against the terminal ground it sits on, and a selected row has to stay legible in the
-    band it paints rather than relying on the terminal's own reverse video."""
-    palette = render_module.LIGHT_PALETTE if appearance == "light" else render_module.DARK_PALETTE
-    for role in ("muted", "accent", "accent_secondary", "user", "tool", "success", "warning", "error"):
-        assert contrast(palette.color(role), background) >= 3.0, (role, palette.color(role))
-    assert contrast(palette.selection_fg, palette.selection_bg) >= 4.5
-    # Supporting detail is weaker than body text, but never as weak as the structure it sits in.
-    assert luminance(palette.subtle) != luminance(palette.muted)
-    assert contrast(palette.muted, background) > contrast(palette.subtle, background)
+def test_the_two_appearances_agree_wherever_the_terminal_decides():
+    """A role the terminal resolves needs no light/dark branch, and having one would mean the
+    palette was overriding the reader's scheme in one appearance and not the other."""
+    for role in render_module.THEME_ROLES:
+        dark, light = render_module.DARK_PALETTE.color(role), render_module.LIGHT_PALETTE.color(role)
+        if dark in Theme.RICH_COLOR_NAMES or dark == render_module.TERMINAL_DEFAULT:
+            assert dark == light, role
