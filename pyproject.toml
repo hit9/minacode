@@ -103,4 +103,3 @@ include = ["wizolt"]
 exclude = ["build", "dist", "**/__pycache__", "**/.venv"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
-
