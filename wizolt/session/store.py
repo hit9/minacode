@@ -425,11 +425,6 @@ class SessionSnapshotStore:
                 os.rmdir(directory)
 
     @classmethod
-    def write_latest(cls, data_dir: str, cwd: str, uid: str) -> None:
-        with open(os.path.join(cls.project_dir(data_dir, cwd), "latest"), "w", encoding="utf-8") as file:
-            file.write(uid)
-
-    @classmethod
     def read_latest(cls, directory: str) -> str:
         try:
             with open(os.path.join(directory, "latest"), encoding="utf-8") as file:
