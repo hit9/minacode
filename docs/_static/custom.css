@@ -122,8 +122,8 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
     text-align: center;
 }
 .sphinxsidebar h3.site-title img {
-    width: 5rem;
-    height: 5rem;
+    width: 6.5rem;
+    height: 6.5rem;
     flex: none;
     object-fit: contain;
 }
